@@ -1,4 +1,4 @@
-import type { DeviceStatus, RequestStatus, RequestType, Rule, RuleType, TemporaryOverrideAction } from './types'
+import type { DeviceStatus, EnforcementSnapshot, RequestStatus, RequestType, Rule, RuleType, TemporaryOverrideAction } from './types'
 import {
   formatWeekdayGroup,
   groupWeekdays,
@@ -112,6 +112,10 @@ export function overrideActionLabel(action: TemporaryOverrideAction): string {
       return 'Cho phép website tạm thời'
     case 'block_domain':
       return 'Chặn website tạm thời'
+    case 'block_app':
+      return 'Chặn ứng dụng tạm thời'
+    case 'allow_app':
+      return 'Cho phép ứng dụng tạm thời'
     case 'cancel':
       return 'Hủy ghi đè tạm thời'
   }
@@ -235,6 +239,36 @@ function describeAppConfig(parsed: AppConfig): string[] {
       }
       return lines
     }
+    case 'app_block': {
+      if (parsed.apps.length === 0) return ['Chặn ứng dụng (chưa có ứng dụng nào).']
+      return [`Chặn: ${parsed.apps.map(formatAppEntry).join(', ')} (mọi lúc, đến khi tắt quy tắc)`]
+    }
+    case 'app_allowlist': {
+      if (parsed.apps.length === 0) return ['Chỉ cho phép một số ứng dụng (chưa có ứng dụng nào).']
+      return [
+        `Chỉ cho phép: ${parsed.apps.map(formatAppEntry).join(', ')} — mọi ứng dụng khác đều bị đóng`,
+      ]
+    }
+    case 'app_allowlist_by_time': {
+      const lines: string[] = []
+      if (parsed.apps.length === 0) {
+        lines.push('Chỉ cho phép một số ứng dụng theo giờ (chưa có ứng dụng nào).')
+      } else {
+        lines.push(`Chỉ cho phép: ${parsed.apps.map(formatAppEntry).join(', ')}`)
+      }
+      const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
+      for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
+        if (group.value === null) {
+          lines.push(`${formatWeekdayGroup(group.days)}: không giới hạn`)
+        } else {
+          const ranges = group.value.map((r) => `${r.start}–${r.end}`).join(', ')
+          lines.push(
+            `${formatWeekdayGroup(group.days)}: chỉ các ứng dụng trên được mở ${ranges} (ngoài giờ đó không giới hạn)`,
+          )
+        }
+      }
+      return lines
+    }
     case 'forced_break': {
       if (parsed.workMinutes <= 0 || parsed.breakMinutes <= 0) {
         return ['Nghỉ bắt buộc (chưa đặt số phút).']
@@ -264,6 +298,26 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
     case 'allowlist':
       if (parsed.domains.length === 0) return ['Chỉ cho phép một số website (chưa có domain nào).']
       return [`Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con) — mọi website khác đều bị chặn`]
+    case 'allowlist_by_time': {
+      const lines: string[] = []
+      if (parsed.domains.length === 0) {
+        lines.push('Chỉ cho phép một số website theo giờ (chưa có domain nào).')
+      } else {
+        lines.push(`Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+      }
+      const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
+      for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
+        if (group.value === null) {
+          lines.push(`${formatWeekdayGroup(group.days)}: không giới hạn`)
+        } else {
+          const ranges = group.value.map((r) => `${r.start}–${r.end}`).join(', ')
+          lines.push(
+            `${formatWeekdayGroup(group.days)}: chỉ các website trên được mở ${ranges} (ngoài giờ đó không giới hạn)`,
+          )
+        }
+      }
+      return lines
+    }
     case 'domain_time_limit': {
       if (parsed.domains.length === 0) return ['Giới hạn thời gian theo website (chưa có domain nào).']
       if (parsed.minutes_per_day <= 0) {
@@ -409,6 +463,73 @@ export function tamperEventLabel(action: string): string {
       return 'Service đã dừng'
     default:
       return action
+  }
+}
+
+export function enforcementDecisionLabel(decision: EnforcementSnapshot['decision']): string {
+  switch (decision) {
+    case 'allow':
+      return 'Cho phép'
+    case 'warn':
+      return 'Cảnh báo'
+    case 'lock':
+      return 'Đang khóa'
+  }
+}
+
+/** Nhãn cho một lý do trong enforcement snapshot: loại rule quen thuộc thì dịch, chuỗi lạ thì giữ nguyên. */
+export function enforcementReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'daily_limit':
+    case 'bedtime':
+    case 'time_window':
+    case 'app':
+    case 'website':
+      return ruleTypeLabel(reason)
+    default:
+      return reason
+  }
+}
+
+/**
+ * Đọc ảnh chụp thi hành (devices.enforcement_json, migration 6) một cách
+ * khoan dung: JSON hỏng, '{}', thiếu decision hoặc decision lạ đều trả về
+ * null (coi như "chưa có dữ liệu thi hành"). Các trường còn lại thiếu/sai
+ * kiểu thì lấy giá trị mặc định an toàn thay vì làm vỡ trang. Giá trị có
+ * thể là object (jsonb do supabase-js parse sẵn) hoặc chuỗi JSON.
+ */
+export function parseEnforcementSnapshot(value: unknown): EnforcementSnapshot | null {
+  let parsed: unknown = value
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed) as unknown
+    } catch {
+      return null
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const record = parsed as Record<string, unknown>
+  const decision = record['decision']
+  if (decision !== 'allow' && decision !== 'warn' && decision !== 'lock') return null
+  const lockedByRaw = record['lockedBy']
+  const lockedBy =
+    lockedByRaw === 'forced' || lockedByRaw === 'rule' || lockedByRaw === 'override' || lockedByRaw === 'break'
+      ? lockedByRaw
+      : null
+  const stringList = (raw: unknown): string[] =>
+    Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
+  const atRaw = record['at']
+  const vRaw = record['v']
+  return {
+    v: typeof vRaw === 'number' && Number.isFinite(vRaw) ? vRaw : 1,
+    at: typeof atRaw === 'string' ? atRaw : '',
+    decision,
+    lockedBy,
+    reasons: stringList(record['reasons']),
+    ruleIds: stringList(record['ruleIds']),
+    appBlocks: stringList(record['appBlocks']),
+    domainRulesActive: record['domainRulesActive'] === true,
+    focusActive: record['focusActive'] === true,
   }
 }
 

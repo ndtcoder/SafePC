@@ -8,8 +8,8 @@ export type RequestType = 'extra_time' | 'unblock_app'
 export type RequestStatus = 'pending' | 'approved' | 'denied'
 export type CommandType = 'lock_now' | 'unlock' | 'refresh_rules' | 'update' | 'temporary_override'
 export type CommandStatus = 'pending' | 'sent' | 'done' | 'failed'
-/** Hành động của lệnh temporary_override; allow_domain/block_domain mang thêm `domains` trong payload. */
-export type TemporaryOverrideAction = 'bonus_minutes' | 'lock' | 'unlock' | 'allow_domain' | 'block_domain' | 'cancel'
+/** Hành động của lệnh temporary_override; allow_domain/block_domain mang thêm `domains`, block_app/allow_app mang thêm `apps` (danh sách tên exe) trong payload. */
+export type TemporaryOverrideAction = 'bonus_minutes' | 'lock' | 'unlock' | 'allow_domain' | 'block_domain' | 'block_app' | 'allow_app' | 'cancel'
 
 export interface Family {
   id: string
@@ -37,8 +37,34 @@ export interface Device {
   last_seen_at: string | null
   // Lần cuối Agent thấy extension trình duyệt (thêm ở migration 5).
   last_extension_seen_at: string | null
+  // Ảnh chụp thi hành mới nhất do Agent ghi (thêm ở migration 6, cột
+  // enforcement_json / enforcement_updated_at). Truy vấn best-effort
+  // riêng — chưa áp dụng migration 6 thì hai trường này vắng mặt.
+  enforcement_json?: EnforcementSnapshot | Record<string, unknown> | string | null
+  enforcement_updated_at?: string | null
   status: DeviceStatus
   created_at: string
+}
+
+/**
+ * Ảnh chụp quyết định thi hành của Agent trên máy con (devices.
+ * enforcement_json, migration 6). Agent ghi sau mỗi lần đánh giá rules;
+ * Dashboard chỉ đọc để hiển thị. `reasons` là các chuỗi loại rule
+ * (vd 'daily_limit', 'website'); `ruleIds` là id các rule đang thi hành.
+ */
+export type EnforcementDecision = 'allow' | 'warn' | 'lock'
+export type EnforcementLockedBy = 'forced' | 'rule' | 'override' | 'break'
+
+export interface EnforcementSnapshot {
+  v: number
+  at: string
+  decision: EnforcementDecision
+  lockedBy: EnforcementLockedBy | null
+  reasons: string[]
+  ruleIds: string[]
+  appBlocks: string[]
+  domainRulesActive: boolean
+  focusActive: boolean
 }
 
 export interface Rule {

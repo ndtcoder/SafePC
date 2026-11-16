@@ -338,6 +338,7 @@ export type WebsiteMode =
   | 'block_domains'
   | 'block_domains_by_time'
   | 'allowlist'
+  | 'allowlist_by_time'
   | 'domain_time_limit'
   | 'safe_search'
   | 'focus'
@@ -351,6 +352,7 @@ export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
   { value: 'block_domains', label: 'Chặn website' },
   { value: 'block_domains_by_time', label: 'Chặn website theo giờ' },
   { value: 'allowlist', label: 'Chỉ cho phép một số website' },
+  { value: 'allowlist_by_time', label: 'Chỉ cho phép một số website theo giờ' },
   { value: 'domain_time_limit', label: 'Giới hạn thời gian theo website' },
   { value: 'safe_search', label: 'Tìm kiếm an toàn (SafeSearch / YouTube)' },
   { value: 'focus', label: 'Giờ học tập trung' },
@@ -373,6 +375,18 @@ export type BlockDomainsByTimeConfig = {
 export type AllowlistConfig = {
   mode: 'allowlist'
   domains: string[]
+}
+
+/**
+ * Chỉ cho phép các domain trong danh sách, chỉ trong các khung giờ theo
+ * thứ (khung giờ = thời gian danh sách cho phép có hiệu lực, giờ địa
+ * phương của máy con). Ngoài khung giờ, quy tắc không giới hạn website
+ * nào. Ngày nào không có khung giờ nào thì ngày đó không giới hạn.
+ */
+export type AllowlistByTimeConfig = {
+  mode: 'allowlist_by_time'
+  domains: string[]
+  windowsByWeekday: WindowsByWeekday
 }
 
 /** Tổng số phút mỗi ngày cho tất cả các domain trong danh sách cộng lại. */
@@ -407,6 +421,7 @@ export type WebsiteConfig =
   | BlockDomainsConfig
   | BlockDomainsByTimeConfig
   | AllowlistConfig
+  | AllowlistByTimeConfig
   | DomainTimeLimitConfig
   | SafeSearchConfig
   | FocusConfig
@@ -418,7 +433,13 @@ export type WebsiteConfig =
 // `interface`) để gán được trực tiếp vào `Record<string, unknown>`.
 // ---------------------------------------------------------------------------
 
-export type AppMode = 'app_time_limit' | 'app_block_by_time' | 'forced_break'
+export type AppMode =
+  | 'app_time_limit'
+  | 'app_block'
+  | 'app_block_by_time'
+  | 'app_allowlist'
+  | 'app_allowlist_by_time'
+  | 'forced_break'
 
 export interface AppModeOption {
   value: AppMode
@@ -427,7 +448,10 @@ export interface AppModeOption {
 
 export const APP_MODE_OPTIONS: AppModeOption[] = [
   { value: 'app_time_limit', label: 'Giới hạn thời gian theo ứng dụng' },
+  { value: 'app_block', label: 'Chặn ứng dụng' },
   { value: 'app_block_by_time', label: 'Chặn ứng dụng theo giờ' },
+  { value: 'app_allowlist', label: 'Chỉ cho phép một số ứng dụng' },
+  { value: 'app_allowlist_by_time', label: 'Chỉ cho phép một số ứng dụng theo giờ' },
   { value: 'forced_break', label: 'Nghỉ bắt buộc' },
 ]
 
@@ -461,6 +485,33 @@ export type AppBlockByTimeConfig = {
   windowsByWeekday: WindowsByWeekday
 }
 
+/** Chặn các ứng dụng trong danh sách mọi lúc (cho đến khi tắt quy tắc). */
+export type AppBlockConfig = {
+  mode: 'app_block'
+  apps: AppEntry[]
+}
+
+/**
+ * Chỉ cho phép các ứng dụng trong danh sách; mọi ứng dụng khác đều bị
+ * đóng (trừ các tiến trình hệ thống trong denylist của Agent).
+ */
+export type AppAllowlistConfig = {
+  mode: 'app_allowlist'
+  apps: AppEntry[]
+}
+
+/**
+ * Chỉ cho phép các ứng dụng trong danh sách, chỉ trong các khung giờ theo
+ * thứ (khung giờ = thời gian danh sách cho phép có hiệu lực, giờ địa
+ * phương của máy con). Ngoài khung giờ, quy tắc không đóng ứng dụng nào.
+ * Ngày nào không có khung giờ nào thì ngày đó không giới hạn.
+ */
+export type AppAllowlistByTimeConfig = {
+  mode: 'app_allowlist_by_time'
+  apps: AppEntry[]
+  windowsByWeekday: WindowsByWeekday
+}
+
 /** Dùng máy liên tục đủ `workMinutes` thì khóa máy trong `breakMinutes`. */
 export type ForcedBreakConfig = {
   mode: 'forced_break'
@@ -468,7 +519,13 @@ export type ForcedBreakConfig = {
   breakMinutes: number
 }
 
-export type AppConfig = AppTimeLimitConfig | AppBlockByTimeConfig | ForcedBreakConfig
+export type AppConfig =
+  | AppTimeLimitConfig
+  | AppBlockConfig
+  | AppBlockByTimeConfig
+  | AppAllowlistConfig
+  | AppAllowlistByTimeConfig
+  | ForcedBreakConfig
 
 // ---------------------------------------------------------------------------
 // Domain: chuẩn hoá + kiểm tra hợp lệ.
@@ -645,12 +702,20 @@ const WEBSITE_MODES: WebsiteMode[] = [
   'block_domains',
   'block_domains_by_time',
   'allowlist',
+  'allowlist_by_time',
   'domain_time_limit',
   'safe_search',
   'focus',
 ]
 
-const APP_MODES: AppMode[] = ['app_time_limit', 'app_block_by_time', 'forced_break']
+const APP_MODES: AppMode[] = [
+  'app_time_limit',
+  'app_block',
+  'app_block_by_time',
+  'app_allowlist',
+  'app_allowlist_by_time',
+  'forced_break',
+]
 
 export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConfig | null {
   const modeRaw = config['mode']
@@ -665,6 +730,8 @@ export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConf
         return { mode, domains, windowsByWeekday: parseTimeWindowConfig(config) }
       case 'allowlist':
         return { mode, domains }
+      case 'allowlist_by_time':
+        return { mode, domains, windowsByWeekday: parseTimeWindowConfig(config) }
       case 'domain_time_limit': {
         const minutes =
           asNonNegativeInt(config['minutes_per_day']) ?? asNonNegativeInt(config['minutes']) ?? 0
@@ -723,6 +790,12 @@ export function parseAppConfig(config: Record<string, unknown>): AppConfig | nul
     }
     case 'app_block_by_time':
       return { mode, apps: readStoredApps(config), windowsByWeekday: parseTimeWindowConfig(config) }
+    case 'app_block':
+      return { mode, apps: readStoredApps(config) }
+    case 'app_allowlist':
+      return { mode, apps: readStoredApps(config) }
+    case 'app_allowlist_by_time':
+      return { mode, apps: readStoredApps(config), windowsByWeekday: parseTimeWindowConfig(config) }
     case 'forced_break':
       return {
         mode,
@@ -741,6 +814,16 @@ export interface WebsiteDomainsDraft {
 }
 
 export interface BlockDomainsByTimeDraft {
+  domainsText: string
+  windows: TimeWindowDraft
+}
+
+/**
+ * Draft cho chế độ chỉ cho phép một số website theo giờ: cùng hình dạng
+ * với BlockDomainsByTimeDraft (danh sách domain + khung giờ theo thứ),
+ * nhưng khung giờ là thời gian danh sách cho phép có hiệu lực.
+ */
+export interface AllowlistByTimeDraft {
   domainsText: string
   windows: TimeWindowDraft
 }
@@ -770,6 +853,10 @@ export function emptyBlockDomainsByTimeDraft(): BlockDomainsByTimeDraft {
   return { domainsText: '', windows: emptyTimeWindowDraft() }
 }
 
+export function emptyAllowlistByTimeDraft(): AllowlistByTimeDraft {
+  return { domainsText: '', windows: emptyTimeWindowDraft() }
+}
+
 export function emptyDomainTimeLimitDraft(): DomainTimeLimitDraft {
   return { domainsText: '', minutes: '30' }
 }
@@ -795,6 +882,18 @@ export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): B
   if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
   draft.domainsText = config.domains.join('\n')
   if (config.mode === 'block_domains_by_time') {
+    draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
+  }
+  return draft
+}
+
+export function websiteConfigToAllowlistByTimeDraft(
+  config: WebsiteConfig | null,
+): AllowlistByTimeDraft {
+  const draft = emptyAllowlistByTimeDraft()
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
+  draft.domainsText = config.domains.join('\n')
+  if (config.mode === 'allowlist_by_time') {
     draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
   }
   return draft
@@ -850,6 +949,20 @@ export function validateBlockDomainsByTimeDraft(draft: BlockDomainsByTimeDraft):
 export function buildBlockDomainsByTimeConfig(draft: BlockDomainsByTimeDraft): BlockDomainsByTimeConfig {
   return {
     mode: 'block_domains_by_time',
+    domains: parseDomainsInput(draft.domainsText).domains,
+    windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
+  }
+}
+
+export function validateAllowlistByTimeDraft(draft: AllowlistByTimeDraft): string | null {
+  const domainsError = validateWebsiteDomainsText(draft.domainsText)
+  if (domainsError) return domainsError
+  return validateTimeWindowDraft(draft.windows)
+}
+
+export function buildAllowlistByTimeConfig(draft: AllowlistByTimeDraft): AllowlistByTimeConfig {
+  return {
+    mode: 'allowlist_by_time',
     domains: parseDomainsInput(draft.domainsText).domains,
     windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
   }
@@ -925,6 +1038,21 @@ export interface AppBlockByTimeDraft {
   windows: TimeWindowDraft
 }
 
+/** Draft cho chế độ chặn ứng dụng và chỉ cho phép một số ứng dụng (chung danh sách ứng dụng, không khung giờ). */
+export interface AppListDraft {
+  apps: Array<{ exe: string; name: string }>
+}
+
+/**
+ * Draft cho chế độ chỉ cho phép một số ứng dụng theo giờ: cùng hình dạng
+ * với AppBlockByTimeDraft, nhưng khung giờ là thời gian danh sách cho
+ * phép có hiệu lực.
+ */
+export interface AppAllowlistByTimeDraft {
+  apps: Array<{ exe: string; name: string }>
+  windows: TimeWindowDraft
+}
+
 export interface ForcedBreakDraft {
   workMinutes: string
   breakMinutes: string
@@ -936,6 +1064,14 @@ export function emptyAppTimeLimitDraft(): AppTimeLimitDraft {
 }
 
 export function emptyAppBlockByTimeDraft(): AppBlockByTimeDraft {
+  return { apps: [{ exe: '', name: '' }], windows: emptyTimeWindowDraft() }
+}
+
+export function emptyAppListDraft(): AppListDraft {
+  return { apps: [{ exe: '', name: '' }] }
+}
+
+export function emptyAppAllowlistByTimeDraft(): AppAllowlistByTimeDraft {
   return { apps: [{ exe: '', name: '' }], windows: emptyTimeWindowDraft() }
 }
 
@@ -959,6 +1095,25 @@ export function appConfigToTimeLimitDraft(config: AppConfig | null): AppTimeLimi
 export function appConfigToBlockByTimeDraft(config: AppConfig | null): AppBlockByTimeDraft {
   const draft = emptyAppBlockByTimeDraft()
   if (config?.mode !== 'app_block_by_time') return draft
+  if (config.apps.length > 0) {
+    draft.apps = config.apps.map((app) => ({ exe: app.exe, name: app.name }))
+  }
+  draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
+  return draft
+}
+
+export function appConfigToListDraft(config: AppConfig | null): AppListDraft {
+  const draft = emptyAppListDraft()
+  if (config?.mode !== 'app_block' && config?.mode !== 'app_allowlist') return draft
+  if (config.apps.length > 0) {
+    draft.apps = config.apps.map((app) => ({ exe: app.exe, name: app.name }))
+  }
+  return draft
+}
+
+export function appConfigToAllowlistByTimeDraft(config: AppConfig | null): AppAllowlistByTimeDraft {
+  const draft = emptyAppAllowlistByTimeDraft()
+  if (config?.mode !== 'app_allowlist_by_time') return draft
   if (config.apps.length > 0) {
     draft.apps = config.apps.map((app) => ({ exe: app.exe, name: app.name }))
   }
@@ -1083,6 +1238,43 @@ export function buildAppBlockByTimeConfig(draft: AppBlockByTimeDraft): AppBlockB
   }
 }
 
+export function validateAppListDraft(draft: AppListDraft): string | null {
+  return validateAppRows(draft.apps)
+}
+
+export function buildAppBlockConfig(draft: AppListDraft): AppBlockConfig {
+  return { mode: 'app_block', apps: buildAppEntries(draft.apps) }
+}
+
+export function buildAppAllowlistConfig(draft: AppListDraft): AppAllowlistConfig {
+  return { mode: 'app_allowlist', apps: buildAppEntries(draft.apps) }
+}
+
+export function validateAppAllowlistByTimeDraft(draft: AppAllowlistByTimeDraft): string | null {
+  const rowsError = validateAppRows(draft.apps)
+  if (rowsError) return rowsError
+  return validateTimeWindowDraft(draft.windows)
+}
+
+export function buildAppAllowlistByTimeConfig(
+  draft: AppAllowlistByTimeDraft,
+): AppAllowlistByTimeConfig {
+  return {
+    mode: 'app_allowlist_by_time',
+    apps: buildAppEntries(draft.apps),
+    windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
+  }
+}
+
+/**
+ * Danh sách tên exe (đã trim) từ draft danh sách ứng dụng, dùng làm
+ * payload `apps` của ghi đè tạm thời block_app/allow_app. Giả định draft
+ * đã qua kiểm tra (quy ước như các hàm build*).
+ */
+export function appListDraftToExeList(draft: AppListDraft): string[] {
+  return buildAppEntries(draft.apps).map((app) => app.exe)
+}
+
 export function validateForcedBreakDraft(draft: ForcedBreakDraft): string | null {
   const workText = draft.workMinutes.trim()
   if (workText === '') return 'Hãy nhập số phút dùng máy liên tục trước khi nghỉ.'
@@ -1105,6 +1297,91 @@ export function buildForcedBreakConfig(draft: ForcedBreakDraft): ForcedBreakConf
     workMinutes: Number(draft.workMinutes.trim()),
     breakMinutes: Number(draft.breakMinutes.trim()),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Form danh sách (chặn/cho phép × luôn luôn/theo giờ/tạm thời): form thêm
+// quy tắc website/ứng dụng cho phụ huynh chọn LOẠI DANH SÁCH trước, rồi
+// chọn THỜI GIAN. "Tạm thời" không tạo dòng rule — nó gửi lệnh ghi đè tạm
+// thời tới một máy (xem RulesPage). Các hàm dưới đây là ánh xạ thuần giữa
+// lựa chọn trên form và mode/action trong config/payload; tên mode và tên
+// action phải khớp ĐÚNG hợp đồng với PC Agent (C# thi hành cùng hình dạng).
+// ---------------------------------------------------------------------------
+
+/** Loại danh sách: 'block' = danh sách chặn, 'allow' = danh sách cho phép. */
+export type ListKind = 'block' | 'allow'
+
+/**
+ * Thời gian áp dụng: 'always' = luôn luôn (đến khi tắt quy tắc),
+ * 'by_time' = theo khung giờ trong tuần, 'temporary' = tạm thời, đếm
+ * ngược (ghi đè tạm thời, không tạo rule).
+ */
+export type TimeKind = 'always' | 'by_time' | 'temporary'
+
+export interface ListSelection {
+  listKind: ListKind
+  timeKind: TimeKind
+}
+
+/** Hành động ghi đè tạm thời theo danh sách (payload mang `domains` hoặc `apps`). */
+export type TempListOverrideAction = 'allow_domain' | 'block_domain' | 'allow_app' | 'block_app'
+
+export function websiteModeFromListSelection(
+  listKind: ListKind,
+  timeKind: 'always' | 'by_time',
+): WebsiteMode {
+  if (listKind === 'block') return timeKind === 'always' ? 'block_domains' : 'block_domains_by_time'
+  return timeKind === 'always' ? 'allowlist' : 'allowlist_by_time'
+}
+
+export function appModeFromListSelection(
+  listKind: ListKind,
+  timeKind: 'always' | 'by_time',
+): AppMode {
+  if (listKind === 'block') return timeKind === 'always' ? 'app_block' : 'app_block_by_time'
+  return timeKind === 'always' ? 'app_allowlist' : 'app_allowlist_by_time'
+}
+
+/** Suy ra lựa chọn trên form từ mode của rule website đã lưu; mode không thuộc nhóm danh sách thì trả về null. */
+export function websiteListSelectionFromMode(mode: WebsiteMode): ListSelection | null {
+  switch (mode) {
+    case 'block_domains':
+      return { listKind: 'block', timeKind: 'always' }
+    case 'block_domains_by_time':
+      return { listKind: 'block', timeKind: 'by_time' }
+    case 'allowlist':
+      return { listKind: 'allow', timeKind: 'always' }
+    case 'allowlist_by_time':
+      return { listKind: 'allow', timeKind: 'by_time' }
+    default:
+      return null
+  }
+}
+
+/** Suy ra lựa chọn trên form từ mode của rule ứng dụng đã lưu; mode không thuộc nhóm danh sách thì trả về null. */
+export function appListSelectionFromMode(mode: AppMode): ListSelection | null {
+  switch (mode) {
+    case 'app_block':
+      return { listKind: 'block', timeKind: 'always' }
+    case 'app_block_by_time':
+      return { listKind: 'block', timeKind: 'by_time' }
+    case 'app_allowlist':
+      return { listKind: 'allow', timeKind: 'always' }
+    case 'app_allowlist_by_time':
+      return { listKind: 'allow', timeKind: 'by_time' }
+    default:
+      return null
+  }
+}
+
+/** Hành động ghi đè website tạm thời theo loại danh sách: chặn -> block_domain, cho phép -> allow_domain. */
+export function websiteTempOverrideAction(listKind: ListKind): 'allow_domain' | 'block_domain' {
+  return listKind === 'block' ? 'block_domain' : 'allow_domain'
+}
+
+/** Hành động ghi đè ứng dụng tạm thời theo loại danh sách: chặn -> block_app, cho phép -> allow_app. */
+export function appTempOverrideAction(listKind: ListKind): 'allow_app' | 'block_app' {
+  return listKind === 'block' ? 'block_app' : 'allow_app'
 }
 
 // ---------------------------------------------------------------------------
