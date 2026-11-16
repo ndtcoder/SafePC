@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 export function Spinner({ label = 'Đang tải…' }: { label?: string }) {
   return (
     <div className="flex items-center gap-3 text-slate-600" role="status" aria-live="polite">
-      <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+      <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600 motion-reduce:animate-none" />
       <span>{label}</span>
     </div>
   )
@@ -11,7 +11,7 @@ export function Spinner({ label = 'Đang tải…' }: { label?: string }) {
 
 export function LoadingState({ label }: { label?: string }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-6">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6">
       <Spinner label={label} />
     </div>
   )
@@ -27,14 +27,14 @@ export function ErrorState({
   onRetry?: () => void
 }) {
   return (
-    <div className="rounded-xl border border-red-200 bg-red-50 p-6" role="alert">
+    <div className="rounded-xl border border-red-200 bg-red-50 p-4 sm:p-6" role="alert">
       <h3 className="font-semibold text-red-800">{title}</h3>
       <p className="mt-1 text-sm text-red-700">{message}</p>
       {onRetry && (
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+          className={`mt-4 ${dangerButtonClassName}`}
         >
           Thử lại
         </button>
@@ -53,7 +53,7 @@ export function EmptyState({
   children?: ReactNode
 }) {
   return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+    <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center sm:p-8">
       <h3 className="text-base font-semibold text-slate-800">{title}</h3>
       <p className="mx-auto mt-1 max-w-xl text-sm text-slate-600">{description}</p>
       {children && <div className="mt-4">{children}</div>}
@@ -64,7 +64,7 @@ export function EmptyState({
 /** Trạng thái hiển thị trên mọi trang khi chưa cấu hình Supabase. */
 export function NotConfiguredState() {
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 p-6" role="status">
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 sm:p-6" role="status">
       <h3 className="font-semibold text-amber-900">Chưa cấu hình Supabase</h3>
       <p className="mt-1 text-sm text-amber-800">
         Dashboard chưa kết nối được tới Supabase nên chưa hiển thị dữ liệu thật.
@@ -101,9 +101,9 @@ export function PageHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">{title}</h1>
+    <div className="mb-5 flex flex-wrap items-start justify-between gap-3 sm:mb-6 sm:gap-4">
+      <div className="min-w-0">
+        <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{title}</h1>
         {description && <p className="mt-1 text-sm text-slate-600">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
@@ -121,7 +121,7 @@ export function Card({
   className?: string
 }) {
   return (
-    <section className={`rounded-xl border border-slate-200 bg-white p-5 shadow-sm ${className}`}>
+    <section className={`rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 ${className}`}>
       {title && <h2 className="mb-3 text-base font-semibold text-slate-900">{title}</h2>}
       {children}
     </section>
@@ -150,11 +150,34 @@ export function Field({
   )
 }
 
+// Ô nhập liệu: cao tối thiểu 44px để dễ chạm trên điện thoại; chữ 16px trên
+// màn hình hẹp để iOS không tự phóng to khi focus, thu lại text-sm từ sm.
 export const inputClassName =
-  'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400'
+  'min-h-[44px] w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 sm:text-sm'
+
+// Nút bấm: cao tối thiểu 44px, vòng focus-visible rõ cho bàn phím, chuyển
+// màu tôn trọng prefers-reduced-motion.
+const buttonBaseClassName =
+  'inline-flex min-h-[44px] items-center justify-center rounded-lg px-4 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none'
 
 export const primaryButtonClassName =
-  'rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
+  `${buttonBaseClassName} bg-indigo-600 text-white hover:bg-indigo-700 focus-visible:ring-indigo-500`
 
 export const secondaryButtonClassName =
-  'rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
+  `${buttonBaseClassName} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus-visible:ring-indigo-500`
+
+export const dangerButtonClassName =
+  `${buttonBaseClassName} bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500`
+
+export const dangerOutlineButtonClassName =
+  `${buttonBaseClassName} border border-red-200 bg-white text-red-700 hover:bg-red-50 focus-visible:ring-red-500`
+
+export const successButtonClassName =
+  `${buttonBaseClassName} bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-500`
+
+/** Chip chọn nhanh (VD: chọn số phút ghi đè): trạng thái chọn rõ bằng màu nền. */
+export function chipClassName(active: boolean): string {
+  return active
+    ? 'inline-flex min-h-[44px] items-center justify-center rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 motion-reduce:transition-none'
+    : 'inline-flex min-h-[44px] items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 motion-reduce:transition-none'
+}

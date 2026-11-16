@@ -15,7 +15,7 @@ import {
   type WebsiteDomainsDraft,
   type WeekdayNumber,
 } from '../lib/ruleConfig'
-import { inputClassName, secondaryButtonClassName } from './ui'
+import { dangerOutlineButtonClassName, inputClassName, secondaryButtonClassName } from './ui'
 
 // Các form nhập quy tắc theo từng loại. Component chỉ quản lý hiển thị;
 // dữ liệu (draft) do trang cha giữ, kiểm tra hợp lệ ở lib/ruleConfig.ts.
@@ -46,7 +46,7 @@ export function DailyLimitForm({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-3">
-        <div>
+        <div className="min-w-[11rem] flex-1">
           <label htmlFor="daily-fill-all" className="mb-1 block text-sm font-medium text-slate-700">
             Đặt cùng một số phút cho cả tuần
           </label>
@@ -153,7 +153,7 @@ export function WeekdayWindowsEditor({
             <div className="mt-2 space-y-2">
               {draft[value].map((range, index) => (
                 <div key={index} className="flex flex-wrap items-end gap-2">
-                  <div>
+                  <div className="min-w-[9rem] flex-1">
                     <label htmlFor={`${idPrefix}-start-${value}-${index}`} className="mb-1 block text-xs text-slate-500">
                       Từ giờ
                     </label>
@@ -166,7 +166,7 @@ export function WeekdayWindowsEditor({
                       className={inputClassName}
                     />
                   </div>
-                  <div>
+                  <div className="min-w-[9rem] flex-1">
                     <label htmlFor={`${idPrefix}-end-${value}-${index}`} className="mb-1 block text-xs text-slate-500">
                       Đến giờ
                     </label>
@@ -182,7 +182,7 @@ export function WeekdayWindowsEditor({
                   <button
                     type="button"
                     onClick={() => removeRange(value, index)}
-                    className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                    className={dangerOutlineButtonClassName}
                   >
                     Xoá khung giờ
                   </button>
@@ -244,16 +244,16 @@ export function BedtimeForm({
         const day = draft[value]
         return (
           <div key={value} className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 p-3">
-            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
+            <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
               <input
                 type="checkbox"
                 checked={day.enabled}
                 onChange={(e) => setDay(value, { enabled: e.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+                className="h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
               />
               {label}
             </label>
-            <div>
+            <div className="min-w-[9rem] flex-1">
               <label htmlFor={`bedtime-start-${value}`} className="mb-1 block text-xs text-slate-500">
                 Bắt đầu khóa
               </label>
@@ -266,7 +266,7 @@ export function BedtimeForm({
                 className={inputClassName}
               />
             </div>
-            <div>
+            <div className="min-w-[9rem] flex-1">
               <label htmlFor={`bedtime-end-${value}`} className="mb-1 block text-xs text-slate-500">
                 Kết thúc khóa
               </label>
@@ -459,21 +459,21 @@ export function SafeSearchForm({
         Ép chế độ tìm kiếm an toàn trên trình duyệt của con. Quy tắc này không chặn website nào — nó chỉ lọc
         kết quả tìm kiếm và video không phù hợp.
       </p>
-      <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
+      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
         <input
           type="checkbox"
           checked={draft.searchProviders}
           onChange={(e) => onChange({ ...draft, searchProviders: e.target.checked })}
-          className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+          className="h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
         />
         Bật SafeSearch cho công cụ tìm kiếm (Google, Bing…)
       </label>
-      <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
+      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
         <input
           type="checkbox"
           checked={draft.youtubeRestricted}
           onChange={(e) => onChange({ ...draft, youtubeRestricted: e.target.checked })}
-          className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+          className="h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
         />
         Bật chế độ hạn chế của YouTube (Restricted Mode)
       </label>
@@ -587,7 +587,7 @@ export function AppsField<Row extends { exe: string; name: string }>({
               type="button"
               onClick={() => removeRow(index)}
               aria-label={`Xoá ứng dụng ${row.exe.trim() || index + 1}`}
-              className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+              className={dangerOutlineButtonClassName}
             >
               Xoá
             </button>
