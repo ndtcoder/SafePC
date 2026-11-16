@@ -160,11 +160,59 @@ export interface AppRuleConfig {
   action: RuleAction;
 }
 
-/** Chặn/cho phép 1 domain. Chỉ lưu domain, không lưu path/query. */
-export interface WebsiteRuleConfig {
-  domain: string;
-  action: RuleAction;
+/**
+ * Quy tắc website (Sprint 2 đợt 2): một dòng rule type='website' mang đúng
+ * 1 chế độ (`mode`). Chỉ lưu domain (kể cả tên miền con), không lưu
+ * path/query. Hình dạng cũ `{"domain","action"}` (1 domain) vẫn được
+ * Dashboard đọc như `block_domains` (hoặc `allowlist` khi action là
+ * "allow") để tương thích dữ liệu cũ; Dashboard chỉ ghi hình dạng mới này.
+ */
+export type WebsiteMode =
+  | "block_domains"
+  | "block_domains_by_time"
+  | "allowlist"
+  | "domain_time_limit"
+  | "safe_search";
+
+/** Chặn các domain trong danh sách (kể cả tên miền con). */
+export interface BlockDomainsConfig {
+  mode: "block_domains";
+  domains: string[];
 }
+
+/** Chặn các domain trong danh sách, chỉ trong các khung giờ theo thứ (giờ địa phương của máy con). */
+export interface BlockDomainsByTimeConfig {
+  mode: "block_domains_by_time";
+  domains: string[];
+  windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
+}
+
+/** Chỉ cho phép các domain trong danh sách; mọi website khác đều bị chặn. */
+export interface AllowlistConfig {
+  mode: "allowlist";
+  domains: string[];
+}
+
+/** Tổng số phút mỗi ngày cho tất cả các domain trong danh sách cộng lại. */
+export interface DomainTimeLimitConfig {
+  mode: "domain_time_limit";
+  domains: string[];
+  minutes_per_day: number;
+}
+
+/** Ép SafeSearch / chế độ hạn chế của YouTube. Cả hai đều mặc định bật khi rule tồn tại. */
+export interface SafeSearchConfig {
+  mode: "safe_search";
+  searchProviders: boolean;
+  youtubeRestricted: boolean;
+}
+
+export type WebsiteRuleConfig =
+  | BlockDomainsConfig
+  | BlockDomainsByTimeConfig
+  | AllowlistConfig
+  | DomainTimeLimitConfig
+  | SafeSearchConfig;
 
 /** Ánh xạ loại rule -> hình dạng `config` tương ứng. */
 export interface RuleConfigMap {
@@ -218,6 +266,8 @@ export interface WebVisit {
   /** Chỉ domain (vd: "youtube.com"), đã cắt bỏ path/query. */
   domain: string;
   visited_at: string;
+  /** Số giây đã xem domain trong lần thăm này (thêm ở migration 4). */
+  duration_sec: number;
   blocked: boolean;
   created_at: string;
 }
@@ -258,7 +308,13 @@ export type CommandStatus = "pending" | "sent" | "done" | "failed";
  * ở mỗi lần đánh giá rules, nên ghi đè vẫn hết hạn đúng giờ kể cả khi
  * Service khởi động lại. Ghi đè mới nhất sẽ thay thế ghi đè trước đó.
  */
-export type TemporaryOverrideAction = "bonus_minutes" | "lock" | "unlock" | "cancel";
+export type TemporaryOverrideAction =
+  | "bonus_minutes"
+  | "lock"
+  | "unlock"
+  | "allow_domain"
+  | "block_domain"
+  | "cancel";
 
 /**
  * Payload JSONB của lệnh (cột `payload`). Các trường đã biết:
@@ -266,6 +322,8 @@ export type TemporaryOverrideAction = "bonus_minutes" | "lock" | "unlock" | "can
  * - `target_version`: phiên bản Agent đích (lệnh `update`).
  * - `action` / `minutes` / `expires_at`: lệnh `temporary_override` (xem
  *   `TemporaryOverrideAction`); `expires_at` là ISO 8601 có múi giờ.
+ * - `domains`: lệnh `temporary_override` với action `allow_domain` /
+ *   `block_domain` (ghi đè website tạm thời, Sprint 2 đợt 2).
  * Kiểu để mở (index signature) để Dashboard/Agent bổ sung trường mà không vỡ
  * contract; siết chặt dần khi 2 bên chốt hình dạng payload từng loại lệnh.
  */
@@ -275,6 +333,7 @@ export interface CommandPayload {
   action?: TemporaryOverrideAction;
   minutes?: number;
   expires_at?: string;
+  domains?: string[];
   [key: string]: unknown;
 }
 
