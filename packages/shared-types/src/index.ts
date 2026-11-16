@@ -107,20 +107,50 @@ export interface PairingCode {
 // rules — config JSONB theo từng loại (cột `config`)
 // ---------------------------------------------------------------------------
 
-export type RuleType = "daily_limit" | "bedtime" | "app" | "website";
+export type RuleType = "daily_limit" | "bedtime" | "time_window" | "app" | "website";
 
 /** Hành động của rule chặn app/website. MVP chủ yếu dùng `"block"`. */
 export type RuleAction = "block" | "allow";
 
-/** Giới hạn số phút dùng máy mỗi ngày. Ngày vắng mặt = không giới hạn ngày đó. */
+/**
+ * Một khoảng giờ trong ngày, dạng "HH:MM" (24h), theo GIỜ ĐỊA PHƯƠNG của
+ * máy con. `start < end` là khoảng trong ngày; riêng bedtime cho phép
+ * `end <= start` nghĩa là khoảng chạy qua đêm sang ngày hôm sau.
+ */
+export interface TimeRange {
+  start: string;
+  end: string;
+}
+
+/**
+ * Giới hạn số phút dùng máy mỗi ngày. Ngày vắng mặt = không giới hạn ngày đó.
+ * Agent vẫn chấp nhận hình dạng cũ `{"minutes_per_day": N}` /
+ * `{"daily_minutes": N}` (áp cho mọi ngày) để tương thích rule đã lưu trước
+ * Sprint 2; Dashboard chỉ ghi hình dạng mới này.
+ */
 export interface DailyLimitRuleConfig {
   minutesByWeekday: Partial<Record<Weekday, number>>;
 }
 
-/** Giờ đi ngủ: khóa máy từ `start` đến `end`, dạng "HH:MM" (24h). */
+/**
+ * Giờ đi ngủ / giờ cấm theo từng thứ. Ngày vắng mặt = không khóa ngày đó.
+ * Khoảng qua đêm (`end <= start`, vd 21:00–07:00) khóa từ `start` hôm nay
+ * tới `end` hôm sau. Agent vẫn chấp nhận hình dạng cũ `{"start","end"}`
+ * (áp cho mọi ngày) để tương thích rule đã lưu trước Sprint 2.
+ */
 export interface BedtimeRuleConfig {
-  start: string;
-  end: string;
+  bedtimeByWeekday: Partial<Record<Weekday, TimeRange>>;
+}
+
+/**
+ * Khung giờ ĐƯỢC dùng máy theo từng thứ (giờ địa phương của máy con).
+ * Ngoài mọi khung giờ của ngày hôm đó, máy bị khóa. Ngày vắng mặt hoặc
+ * mảng rỗng = KHÔNG được dùng máy ngày đó. Mỗi khoảng phải có
+ * `start < end` (không qua đêm — muốn khóa qua đêm thì dùng `bedtime`).
+ * Khi có nhiều rule time_window, các khung giờ được hợp (union) lại.
+ */
+export interface TimeWindowRuleConfig {
+  windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
 }
 
 /** Chặn/cho phép 1 app. `exePathHash` là SHA-256 của đường dẫn exe (tránh lộ username Windows). */
@@ -140,6 +170,7 @@ export interface WebsiteRuleConfig {
 export interface RuleConfigMap {
   daily_limit: DailyLimitRuleConfig;
   bedtime: BedtimeRuleConfig;
+  time_window: TimeWindowRuleConfig;
   app: AppRuleConfig;
   website: WebsiteRuleConfig;
 }
@@ -214,19 +245,36 @@ export interface RequestItem {
 // commands
 // ---------------------------------------------------------------------------
 
-export type CommandType = "lock_now" | "unlock" | "refresh_rules" | "update";
+export type CommandType = "lock_now" | "unlock" | "refresh_rules" | "update" | "temporary_override";
 export type CommandStatus = "pending" | "sent" | "done" | "failed";
+
+/**
+ * Hành động của lệnh `temporary_override` (ghi đè tạm thời, tự hết hạn):
+ * - `bonus_minutes`: cộng thêm `minutes` vào hạn mức hôm nay.
+ * - `lock`: khóa máy tới `expires_at`.
+ * - `unlock`: tạm ngưng các quy tắc giờ giấc tới `expires_at`.
+ * - `cancel`: hủy ghi đè đang hiệu lực (không cần `minutes`/`expires_at`).
+ * Agent lưu ghi đè đang hiệu lực vào SQLite local và kiểm tra `expires_at`
+ * ở mỗi lần đánh giá rules, nên ghi đè vẫn hết hạn đúng giờ kể cả khi
+ * Service khởi động lại. Ghi đè mới nhất sẽ thay thế ghi đè trước đó.
+ */
+export type TemporaryOverrideAction = "bonus_minutes" | "lock" | "unlock" | "cancel";
 
 /**
  * Payload JSONB của lệnh (cột `payload`). Các trường đã biết:
  * - `message`: thông báo hiển thị cho con (vd: kèm lệnh `lock_now`).
  * - `target_version`: phiên bản Agent đích (lệnh `update`).
+ * - `action` / `minutes` / `expires_at`: lệnh `temporary_override` (xem
+ *   `TemporaryOverrideAction`); `expires_at` là ISO 8601 có múi giờ.
  * Kiểu để mở (index signature) để Dashboard/Agent bổ sung trường mà không vỡ
  * contract; siết chặt dần khi 2 bên chốt hình dạng payload từng loại lệnh.
  */
 export interface CommandPayload {
   message?: string;
   target_version?: string;
+  action?: TemporaryOverrideAction;
+  minutes?: number;
+  expires_at?: string;
   [key: string]: unknown;
 }
 
