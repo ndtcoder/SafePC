@@ -6,7 +6,12 @@
 Singapore).** Migration 1 (schema + RLS) và migration 2 (loại rule Sprint 2)
 ĐÃ áp dụng và kiểm chứng. Migration 3 (RPC cho Agent) chờ áp dụng theo các
 bước dưới đây. Migration 4 (RPC đẩy web visits + cột `duration_sec` cho
-`web_visits`, Sprint 2 đợt 2) đã viết xong, chờ áp dụng. Edge Function
+`web_visits`, Sprint 2 đợt 2) đã viết xong, chờ áp dụng. Migration 5
+(cảnh báo can thiệp + heartbeat extension, Sprint 2 đợt 3: cột
+`last_extension_seen_at` cho `devices`, cột `child_id`/`device_id`/`details`
+cho `audit_logs`, RPC `safepc_push_tamper_event` +
+`safepc_report_extension_heartbeat`) đã viết xong, CHƯA áp dụng (PENDING) —
+chờ áp dụng cùng lúc với lần kiểm thử đầu-cuối. Edge Function
 pair-device KHÔNG deploy (đã thay bằng RPC).
 
 Tài liệu liên quan: `../../docs/02-ARCHITECTURE.md` (mục 3: mô hình dữ liệu,
@@ -22,6 +27,7 @@ backend/supabase/
     20261116120000_sprint2_rule_types.sql  # Sprint 2 đợt 1: thêm type time_window + temporary_override
     20261116170000_device_rpc.sql  # RPC cho Agent: pairing, heartbeat, rules, commands, usage
     20261116180000_web_usage_rpc.sql  # Sprint 2 đợt 2: thêm cột duration_sec cho web_visits + RPC safepc_push_web_visits (chờ áp dụng)
+    20261116190000_tamper_events.sql  # Sprint 2 đợt 3: cột last_extension_seen_at (devices) + child_id/device_id/details (audit_logs) + RPC safepc_push_tamper_event, safepc_report_extension_heartbeat (PENDING, chưa áp dụng)
   functions/
     pair-device/index.ts             # Edge Function stub — ĐÃ THAY BẰNG RPC, không deploy
   README.md                          # File này
@@ -127,5 +133,5 @@ Thư mục `functions/` chứa các Edge Function (Deno). Hiện chỉ có stub
 supabase functions deploy pair-device
 ```
 
-Edge Function đọc `SUPABASE_URL` và `SUPABASE_SERVICE_ROLE_KEY` từ biến môi
-trường do Supabase cấp sẵn — không hardcode key vào code.
+Edge Function đọc URL của project và khóa quản trị từ biến môi trường do
+Supabase cấp sẵn — không hardcode key vào code.
