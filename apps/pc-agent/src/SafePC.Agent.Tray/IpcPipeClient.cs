@@ -20,11 +20,35 @@ namespace SafePC.Agent.Tray;
 /// 2026-11-16: "đã kết nối" rồi rớt ngay, server giữ kết nối tới 8 phút).
 /// Mọi quyết định nối/rớt đều dựa vào kết quả I/O thật (ReadLineAsync/
 /// WriteLineAsync) và mọi lần rớt kết nối đều phải ghi log.
+///
+/// CHỐNG KẸT IM LẶNG (chẩn đoán từ log thật tối 16/11/2026): vòng nối lại
+/// của Tray đã im lặng suốt 24 phút không một dòng log nối/timeout nào.
+/// Từ bản này: mọi lần đọc đều có idle timeout 120 giây (khớp phía server —
+/// Service gửi cảnh báo/khóa không thường xuyên, nhưng kết nối sống vẫn bị
+/// thu hồi sau 120s im lặng rồi nối lại ngay, nên không có kết nối chết nào
+/// nằm im mãi); mọi đường thoát của vòng đọc đều ghi log kèm kết quả
+/// (connected/timeout/closed/exception); chờ khóa ghi tối đa 5 giây để một
+/// lần ghi kẹt không bao giờ chặn sampler; cảnh báo "chưa kết nối" chống
+/// spam tối đa 1 lần/60 giây.
 /// </summary>
 public sealed class IpcPipeClient : IDisposable
 {
+    /// <summary>
+    /// Idle timeout cho mỗi lần đọc: 120 giây không có dòng nào thì đóng và
+    /// nối lại. PHẢI khớp phía server (IpcPipeServer.IdleTimeout).
+    /// </summary>
+    private static readonly TimeSpan ReadIdleTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>Chờ khóa ghi tối đa 5 giây: quá hạn thì bỏ message đó, không chặn sampler.</summary>
+    private static readonly TimeSpan WriteGateTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>Chống spam cảnh báo "chưa kết nối": tối đa 1 lần/60 giây.</summary>
+    private static readonly TimeSpan NoConnectionLogThrottle = TimeSpan.FromSeconds(60);
+
     private readonly LocalLogger _log;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly object _logThrottleLock = new();
+    private DateTimeOffset _lastNoConnectionLogAt;
 
     private NamedPipeClientStream? _pipe;
     private StreamWriter? _writer;
@@ -38,29 +62,36 @@ public sealed class IpcPipeClient : IDisposable
         _log = log;
     }
 
-    /// <summary>Vòng lặp kết nối + đọc message. Chạy cho tới khi token bị hủy hoặc Dispose.</summary>
+    /// <summary>
+    /// Vòng lặp kết nối + đọc message. Chạy cho tới khi token bị hủy hoặc
+    /// Dispose. MỌI lần lặp đều ghi log kết quả — không có đường thoát im
+    /// lặng nào: nối thành công rồi rớt, timeout, đóng, hay exception đều
+    /// hiện trong log để lần kẹt sau (nếu có) nhìn thấy được.
+    /// </summary>
     public async Task RunAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested && !_disposed)
         {
             try
             {
-                await ConnectAndReadAsync(ct);
+                string outcome = await ConnectAndReadAsync(ct);
                 if (!ct.IsCancellationRequested && !_disposed)
                 {
-                    // ConnectAndReadAsync trả về mà không qua các đường đã
-                    // ghi log (timeout, server đóng, exception): ghi rõ để
-                    // lần rớt kết nối nào cũng hiện trong log, không im lặng.
-                    _log.Warning("IPC: phiên kết nối kết thúc, thử lại sau 5 giây.");
+                    _log.Warning("IPC: phiên kết nối kết thúc (" + outcome + "), thử lại sau 5 giây.");
+                }
+                else
+                {
+                    _log.Info("IPC: phiên kết nối kết thúc (" + outcome + "), đang dừng.");
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                _log.Info("IPC: vòng kết nối dừng theo yêu cầu.");
                 break;
             }
             catch (Exception ex)
             {
-                _log.Error("IPC: mất kết nối tới Service, thử lại sau 5 giây.", ex);
+                _log.Error("IPC: mất kết nối tới Service (exception), thử lại sau 5 giây.", ex);
             }
             finally
             {
@@ -76,14 +107,18 @@ public sealed class IpcPipeClient : IDisposable
                 break;
             }
         }
+
+        _log.Info("IPC: vòng kết nối đã thoát.");
     }
 
     /// <summary>
-    /// Nối tới Service rồi đọc message cho tới khi server đóng kết nối hoặc
-    /// token bị hủy. Trả về (không ném) khi hết timeout nối hoặc server đóng
-    /// êm — RunAsync sẽ chờ 5 giây rồi thử lại.
+    /// Nối tới Service rồi đọc message cho tới khi server đóng kết nối, idle
+    /// quá 120 giây, hoặc token bị hủy. Trả về chuỗi kết quả của phiên
+    /// (connect-timeout / closed-by-server / idle-timeout / stopping) — nơi
+    /// gọi ghi log kết quả này; exception I/O thì ném lên RunAsync ghi log.
+    /// Không bao giờ trả về im lặng mà không có kết quả rõ ràng.
     /// </summary>
-    private async Task ConnectAndReadAsync(CancellationToken ct)
+    private async Task<string> ConnectAndReadAsync(CancellationToken ct)
     {
         _pipe = new NamedPipeClientStream(".", AgentConstants.IpcPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
 
@@ -99,7 +134,7 @@ public sealed class IpcPipeClient : IDisposable
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             _log.Error("IPC: không nối được tới Service trong 10 giây (pipe chưa sẵn sàng?), thử lại sau 5 giây.");
-            return;
+            return "connect-timeout";
         }
 
         _log.Info("IPC: đã kết nối tới Service.");
@@ -107,26 +142,69 @@ public sealed class IpcPipeClient : IDisposable
 
         using var reader = new StreamReader(_pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
         // KHÔNG kiểm tra _pipe.IsConnected ở đây (xem ghi chú ở đầu file):
-        // chỉ thoát khi ReadLineAsync trả về null (server đóng) hoặc ném
-        // exception — cả hai đều phải ghi log.
+        // chỉ thoát khi ReadLineAsync trả về null (server đóng), ném
+        // exception, idle quá 120 giây, hoặc token bị hủy — mọi đường thoát
+        // đều ghi log. Mỗi lần đọc dùng một CancellationTokenSource liên
+        // kết riêng với CancelAfter(120s), cùng mẫu với phía server.
         while (!ct.IsCancellationRequested)
         {
-            string? line = await reader.ReadLineAsync();
+            string? line;
+            bool idleTimedOut = false;
+            using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                readCts.CancelAfter(ReadIdleTimeout);
+                try
+                {
+                    line = await reader.ReadLineAsync(readCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    if (ct.IsCancellationRequested)
+                    {
+                        return "stopping";
+                    }
+
+                    idleTimedOut = true;
+                    line = null;
+                }
+            }
+
+            if (idleTimedOut)
+            {
+                _log.Warning("IPC: không nhận message nào trong 120 giây, đóng kết nối để nối lại.");
+                return "idle-timeout";
+            }
+
             if (line is null)
             {
                 _log.Warning("IPC: Service đã đóng kết nối, thử lại sau 5 giây.");
-                return;
+                return "closed-by-server";
             }
 
             IpcMessage? message = IpcMessage.FromLine(line);
             if (message is not null)
             {
-                MessageReceived?.Invoke(message);
+                // Một message lỗi không được làm chết vòng đọc: bắt + ghi
+                // log từng message, vòng lặp tiếp tục với message sau.
+                try
+                {
+                    MessageReceived?.Invoke(message);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error("IPC: xử lý message " + message.Type + " lỗi, tiếp tục nhận message sau.", ex);
+                }
             }
         }
+
+        return "stopping";
     }
 
-    /// <summary>Gửi một message lên Service. Bỏ qua (ghi log) nếu chưa kết nối.</summary>
+    /// <summary>
+    /// Gửi một message lên Service. Bỏ qua (ghi log chống spam) nếu chưa kết
+    /// nối. Chờ khóa ghi tối đa 5 giây: quá hạn thì bỏ message đó chứ không
+    /// chặn sampler/UI thread vô hạn.
+    /// </summary>
     public async Task SendAsync(IpcMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -134,14 +212,35 @@ public sealed class IpcPipeClient : IDisposable
         StreamWriter? writer = _writer;
         if (writer is null)
         {
-            _log.Warning("IPC: chưa kết nối tới Service, bỏ qua message " + message.Type + ".");
+            bool due;
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            lock (_logThrottleLock)
+            {
+                due = now - _lastNoConnectionLogAt >= NoConnectionLogThrottle;
+                if (due)
+                {
+                    _lastNoConnectionLogAt = now;
+                }
+            }
+
+            if (due)
+            {
+                _log.Warning("IPC: chưa kết nối tới Service, bỏ qua message " + message.Type + ".");
+            }
+
             return;
         }
 
         // Không kiểm tra _pipe.IsConnected (xem ghi chú ở đầu file): cứ ghi,
         // lỗi ghi sẽ hiện rõ trong log và vòng đọc sẽ tự nối lại.
 
-        await _writeGate.WaitAsync();
+        bool entered = await _writeGate.WaitAsync(WriteGateTimeout);
+        if (!entered)
+        {
+            _log.Warning("IPC: chờ khóa ghi quá 5 giây, bỏ qua message " + message.Type + " (không chặn sampler).");
+            return;
+        }
+
         try
         {
             await writer.WriteLineAsync(message.ToLine());

@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
+using SafePC.Agent.Shared;
 using WinForms = System.Windows.Forms;
 
 namespace SafePC.Agent.Tray;
@@ -21,9 +22,15 @@ namespace SafePC.Agent.Tray;
 /// Cửa sổ menu thật tự kích hoạt và nhận chuột như mọi cửa sổ WPF khác.
 /// Mọi kiểu WPF đều ghi rõ namespace đầy đủ vì project bật cả UseWPF lẫn
 /// UseWindowsForms (nhiều tên tồn tại ở cả hai).
+///
+/// CHẨN ĐOÁN (tối 16/11/2026): người dùng báo icon biến mất khi bấm, cả hai
+/// phiên, mà log không có dòng bấm menu nào. Mọi đường chuột (MouseUp,
+/// DoubleClick) và mọi lần mở/đóng menu đều ghi breadcrumb và chạy trong
+/// try/catch, để log đuôi cho thấy chính xác Tray đang làm gì nếu nó chết.
 /// </summary>
 public sealed class TrayIconManager : IDisposable
 {
+    private readonly LocalLogger _log;
     private readonly WinForms.NotifyIcon _icon;
     private readonly System.Windows.Window _anchor;
     private readonly Action _showRemainingTime;
@@ -33,13 +40,15 @@ public sealed class TrayIconManager : IDisposable
     private DateTimeOffset _menuClosedAt;
     private bool _disposed;
 
-    public TrayIconManager(System.Windows.Window anchor, Action showRemainingTime, Action showExtraTime, Action requestExit)
+    public TrayIconManager(LocalLogger log, System.Windows.Window anchor, Action showRemainingTime, Action showExtraTime, Action requestExit)
     {
+        ArgumentNullException.ThrowIfNull(log);
         ArgumentNullException.ThrowIfNull(anchor);
         ArgumentNullException.ThrowIfNull(showRemainingTime);
         ArgumentNullException.ThrowIfNull(showExtraTime);
         ArgumentNullException.ThrowIfNull(requestExit);
 
+        _log = log;
         _anchor = anchor;
         _showRemainingTime = showRemainingTime;
         _showExtraTime = showExtraTime;
@@ -55,59 +64,89 @@ public sealed class TrayIconManager : IDisposable
         _icon.MouseUp += OnIconMouseUp;
         _icon.DoubleClick += (_, _) =>
         {
-            CloseMenu();
-            showRemainingTime();
+            _log.Info("Tray: bấm đúp icon khay (bắt đầu).");
+            try
+            {
+                CloseMenu();
+                showRemainingTime();
+                _log.Info("Tray: bấm đúp icon khay (xong).");
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Tray: xử lý bấm đúp icon lỗi (đã bắt, Tray tiếp tục chạy): " + ex.ToString());
+            }
         };
     }
 
     private void OnIconMouseUp(object? sender, WinForms.MouseEventArgs e)
     {
-        if (_disposed || e.Button != WinForms.MouseButtons.Right)
+        try
         {
-            return;
-        }
+            if (_disposed || e.Button != WinForms.MouseButtons.Right)
+            {
+                return;
+            }
 
-        // Menu đang mở: chuột phải thì đóng (bật/tắt, như tray chuẩn).
-        if (_menuWindow is { IsVisible: true })
+            _log.Info("Tray: chuột phải vào icon khay.");
+
+            // Menu đang mở: chuột phải thì đóng (bật/tắt, như tray chuẩn).
+            if (_menuWindow is { IsVisible: true })
+            {
+                _log.Info("Tray: menu đang mở, đóng menu (bật/tắt).");
+                CloseMenu();
+                return;
+            }
+
+            // Menu vừa đóng do mất kích hoạt (cú chuột phải này khiến menu mất
+            // kích hoạt rồi đóng ngay trước MouseUp): coi như bật/tắt, không mở
+            // lại, nếu không menu sẽ nháy lên ngay sau khi vừa đóng.
+            if (DateTimeOffset.UtcNow - _menuClosedAt < TimeSpan.FromMilliseconds(250))
+            {
+                _log.Info("Tray: bỏ qua chuột phải (menu vừa đóng dưới 250ms).");
+                return;
+            }
+
+            OpenMenu();
+        }
+        catch (Exception ex)
         {
-            CloseMenu();
-            return;
+            _log.Error("Tray: xử lý chuột phải vào icon lỗi (đã bắt, Tray tiếp tục chạy): " + ex.ToString());
         }
-
-        // Menu vừa đóng do mất kích hoạt (cú chuột phải này khiến menu mất
-        // kích hoạt rồi đóng ngay trước MouseUp): coi như bật/tắt, không mở
-        // lại, nếu không menu sẽ nháy lên ngay sau khi vừa đóng.
-        if (DateTimeOffset.UtcNow - _menuClosedAt < TimeSpan.FromMilliseconds(250))
-        {
-            return;
-        }
-
-        OpenMenu();
     }
 
     private void OpenMenu()
     {
-        CloseMenu();
+        _log.Info("Tray: mở menu (bắt đầu).");
+        try
+        {
+            CloseMenu();
 
-        var menu = new TrayMenuWindow(_showRemainingTime, _showExtraTime, _requestExit)
-        {
-            Owner = _anchor,
-            Left = -10000,
-            Top = -10000,
-        };
-        menu.Closed += (_, _) =>
-        {
-            _menuClosedAt = DateTimeOffset.UtcNow;
-            if (ReferenceEquals(_menuWindow, menu))
+            var menu = new TrayMenuWindow(_log, _showRemainingTime, _showExtraTime, _requestExit)
             {
-                _menuWindow = null;
-            }
-        };
-        _menuWindow = menu;
-        menu.Show();
-        menu.UpdateLayout();
-        PositionMenu(menu);
-        menu.Activate();
+                Owner = _anchor,
+                Left = -10000,
+                Top = -10000,
+            };
+            menu.Closed += (_, _) =>
+            {
+                _menuClosedAt = DateTimeOffset.UtcNow;
+                _log.Info("Tray: menu đã đóng.");
+                if (ReferenceEquals(_menuWindow, menu))
+                {
+                    _menuWindow = null;
+                }
+            };
+            _menuWindow = menu;
+            menu.Show();
+            menu.UpdateLayout();
+            PositionMenu(menu);
+            menu.Activate();
+            _log.Info("Tray: menu đã mở (xong).");
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Tray: mở menu lỗi (đã bắt, Tray tiếp tục chạy): " + ex.ToString());
+        }
     }
 
     /// <summary>
@@ -186,7 +225,15 @@ public sealed class TrayIconManager : IDisposable
     {
         if (_menuWindow is { IsVisible: true } window)
         {
-            window.Close();
+            _log.Info("Tray: đóng menu.");
+            try
+            {
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Tray: đóng menu lỗi (đã bắt): " + ex.ToString());
+            }
         }
 
         _menuWindow = null;
