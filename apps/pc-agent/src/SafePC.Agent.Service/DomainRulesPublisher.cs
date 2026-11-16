@@ -764,12 +764,12 @@ internal sealed class DomainRulesFile
     /// <summary>
     /// Allowlist theo giờ (hợp từ mọi rule website mode 'allowlist_by_time'):
     /// mỗi entry là một rule (domains + khung giờ theo thứ). Null = không có
-    /// rule hợp lệ nào — khóa JSON được BỎ HOÀN TOÀN khi null (WhenNull) để
+    /// rule hợp lệ nào — khóa JSON được BỎ HOÀN TOÀN khi null (WhenWritingNull) để
     /// extension cũ không thấy khóa lạ. Hình dạng entry tái dùng
     /// <see cref="TimeBlockedEntry"/> (domains + windowsByWeekday).
     /// </summary>
     [JsonPropertyName("allowlistByTime")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenNull)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<TimeBlockedEntry>? AllowlistByTime { get; set; }
 
     [JsonPropertyName("domainLimits")]
