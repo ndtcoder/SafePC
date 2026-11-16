@@ -32,7 +32,7 @@
 | Backend + DB | Supabase Free | Postgres 500MB, 50k MAU, 2GB bandwidth, Auth + Realtime có sẵn. RLS mạnh cho dữ liệu nhạy cảm. Đủ cho <100 user. |
 | Dashboard | React 18 + TypeScript + Vite + Tailwind, PWA | Nhanh, dễ tuyển/bảo trì, deploy Vercel Free (100GB bandwidth). PWA cài được lên PC/Android. |
 | Android (GĐ2) | Capacitor wrapper của Dashboard | Tái dùng 100% code web, ra APK nhanh. Nếu cần native sâu hơn thì chuyển Flutter sau, không làm lại backend. |
-| Extension | Manifest V3, TypeScript | Chạy được Chrome + Edge, code chung 1 repo. |
+| Extension | Manifest V3, JavaScript thuần, không bước build (load unpacked) | Chạy được Chrome + Edge, code chung 1 repo. Quy tắc lấy qua NativeHost của Agent, không gọi Supabase trực tiếp. |
 | CI/CD | GitHub Actions Free | Build + test + quét dependency (Dependabot, CodeQL free cho public repo; private repo vẫn có free minutes). |
 | Monitoring | Sentry Free / Logtail Free + Supabase Logs | Bắt lỗi Agent/Dashboard, cảnh báo Agent offline. |
 
@@ -48,7 +48,7 @@ devices (id, family_id, child_id, hostname, os_version, agent_version, last_seen
 device_tokens (device_id, token_hash, created_at, revoked_at) -- không lưu token thô
 rules (id, child_id, type: daily_limit|bedtime|time_window|app|website, config JSONB, enabled)
 app_usage (id, device_id, child_id, app_name, exe_path_hash, started_at, duration_sec)
-web_visits (id, device_id, child_id, domain, visited_at, blocked: bool) -- chỉ domain
+web_visits (id, device_id, child_id, domain, visited_at, duration_sec, blocked: bool) -- chỉ domain + thời lượng, không path/query
 requests (id, child_id, type: extra_time|unblock_app, status, reason, decided_by, decided_at)
 commands (id, device_id, type: lock_now|unlock|refresh_rules|update|temporary_override, payload, status, created_at)
 audit_logs (id, family_id, actor, action, target, ip_hash, created_at)
@@ -83,6 +83,12 @@ Phụ huynh bấm Khóa ngay -> insert vào `commands` -> Agent poll 15s, thi h�
 Giờ giấc của rules thi hành theo đồng hồ địa phương của máy con, nên con có thể lách bằng cách chỉnh đồng hồ hệ thống (cần quyền Admin — tài khoản con là Standard User nên không chỉnh được giờ hệ thống trong mặc định Windows, nhưng vẫn cần lớp phát hiện).
 
 Đã triển khai kiểm tra lệch giờ (16/11/2026): trong vòng lặp heartbeat 60s, Worker so sánh giờ máy với giờ server trả về; lệch quá 5 phút thì ghi log cảnh báo. Chưa triển khai: báo phụ huynh (qua `audit_logs` / trạng thái thiết bị) — TODO đợt 3. Không tự động sửa giờ máy.
+
+### 4.5. Lọc web qua extension (Sprint 2 đợt 2)
+
+Phụ huynh đặt rule `type = website` trên Dashboard → Agent đồng bộ về cache SQLite → `DomainRulesPublisher` (Service) xuất bản file `domain_rules.json` vào `%ProgramData%\SafePC\shared\` (chỉ ghi lại khi nội dung website thay đổi; khi đồng bộ rules, khi ghi đè áp dụng/hết hạn/hủy, và lúc khởi động nếu cache không rỗng) → NativeHost (`SafePC.Agent.NativeHost.exe`, giao thức native messaging stdio) đọc file và trả cho extension → extension dựng lại declarativeNetRequest dynamic rules mỗi phút: chặn domain, chặn theo giờ (đánh giá theo giờ địa phương, ranh giới có hiệu lực trong ~1 phút), chế độ allowlist, cho phép/chặn tạm thời, giới hạn thời gian theo domain (ngân sách tính theo ngày địa phương, hết thì chặn tới hôm sau), SafeSearch cho Google/Bing và Restricted Mode cho YouTube (redirect sang `restrict.youtube.com`). Ghi đè domain chỉ ảnh hưởng file này, không mở/khóa máy (`RuleEngine` bỏ qua chúng).
+
+Chiều ngược lại: extension đếm thời gian tab hiển thị theo domain (chỉ domain + giây, không URL/path/query) → gửi NativeHost mỗi phút → ghi thêm vào `shared\web_usage.jsonl` → Agent đọc trong chu kỳ flush 5 phút, đẩy qua RPC `safepc_push_web_visits` (migration 4) vào bảng `web_visits`; chỉ cắt file khi gửi thành công, gửi lỗi thì giữ lại chu kỳ sau. Extension không gọi Supabase, không có secret. Khi chưa nối được NativeHost, extension mở (fail-open) và popup báo chưa kết nối; bản unpacked có thể bị Standard User tắt — cứng hóa bằng store publishing + chính sách `ExtensionInstallForcelist` là việc sau (chưa triển khai). Manifest của NativeHost hiện dùng ID extension placeholder `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (xem `apps/browser-extension/README.md` mục 4).
 
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 
