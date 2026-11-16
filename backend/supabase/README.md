@@ -11,7 +11,10 @@ bước dưới đây. Migration 4 (RPC đẩy web visits + cột `duration_sec`
 `last_extension_seen_at` cho `devices`, cột `child_id`/`device_id`/`details`
 cho `audit_logs`, RPC `safepc_push_tamper_event` +
 `safepc_report_extension_heartbeat`) đã viết xong, CHƯA áp dụng (PENDING) —
-chờ áp dụng cùng lúc với lần kiểm thử đầu-cuối. Edge Function
+chờ áp dụng cùng lúc với lần kiểm thử đầu-cuối. Migration 6 (trạng thái thi
+hành: cột `enforcement_json` + `enforcement_updated_at` cho `devices`, RPC
+`safepc_report_enforcement`) đã viết xong, CHƯA áp dụng (PENDING) — chờ áp
+dụng cùng đợt với migration 5. Edge Function
 pair-device KHÔNG deploy (đã thay bằng RPC).
 
 Tài liệu liên quan: `../../docs/02-ARCHITECTURE.md` (mục 3: mô hình dữ liệu,
@@ -28,6 +31,7 @@ backend/supabase/
     20261116170000_device_rpc.sql  # RPC cho Agent: pairing, heartbeat, rules, commands, usage
     20261116180000_web_usage_rpc.sql  # Sprint 2 đợt 2: thêm cột duration_sec cho web_visits + RPC safepc_push_web_visits (chờ áp dụng)
     20261116190000_tamper_events.sql  # Sprint 2 đợt 3: cột last_extension_seen_at (devices) + child_id/device_id/details (audit_logs) + RPC safepc_push_tamper_event, safepc_report_extension_heartbeat (PENDING, chưa áp dụng)
+    20261116220000_enforcement_state.sql  # Bản sửa lỗi sau đợt 3: cột enforcement_json + enforcement_updated_at (devices) + RPC safepc_report_enforcement (PENDING, chưa áp dụng)
   functions/
     pair-device/index.ts             # Edge Function stub — ĐÃ THAY BẰNG RPC, không deploy
   README.md                          # File này
