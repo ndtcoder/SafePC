@@ -21,5 +21,56 @@ jobs:
           echo "Docs OK"
       - name: Check no secrets in tracked files (basic)
         run: |
-          ! grep -rInE "supabase.*service_role|BEGIN (RSA |OPENSSH )?PRIVATE KEY|sk-live|ghp_[A-Za-z0-9]{20,}" --exclude-dir=.git . || (echo "Possible secret found" && exit 1)
+          # --exclude=ci.yml: mau grep se tu khop voi chinh dong lenh nay neu khong loai tru.
+          ! grep -rInE "supabase.*service_role|BEGIN (RSA |OPENSSH )?PRIVATE KEY|sk-live|ghp_[A-Za-z0-9]{20,}" --exclude-dir=.git --exclude=ci.yml . || (echo "Possible secret found" && exit 1)
           echo "Secret scan OK"
+
+  build-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check dashboard project exists
+        id: check
+        run: |
+          if [ -f apps/dashboard-web/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Dashboard chua co package.json - bo qua build."
+          fi
+      - name: Setup Node.js
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install and build dashboard
+        if: steps.check.outputs.exists == 'true'
+        working-directory: apps/dashboard-web
+        run: |
+          npm ci
+          npm run build
+
+  build-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check agent solution exists
+        id: check
+        shell: pwsh
+        run: |
+          if (Test-Path 'apps/pc-agent/SafePC.Agent.sln') {
+            'exists=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            'exists=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host 'Chua co file .sln - bo qua build agent.'
+          }
+      - name: Setup .NET 8 SDK
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore and build agent
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          dotnet restore apps/pc-agent/SafePC.Agent.sln
+          dotnet build apps/pc-agent/SafePC.Agent.sln -c Release --no-restore
