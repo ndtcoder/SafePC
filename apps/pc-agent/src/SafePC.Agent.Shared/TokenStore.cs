@@ -29,6 +29,40 @@ public sealed class TokenStore
     /// <summary>Đã có token được lưu hay chưa (dùng để biết máy đã pairing chưa).</summary>
     public bool HasToken() => File.Exists(_filePath);
 
+    /// <summary>
+    /// Lưu thông tin ghép nối (device id + token) dưới dạng một blob mã hóa
+    /// DPAPI duy nhất. Device id không phải secret nhưng lưu chung cho gọn;
+    /// định dạng bên trong blob là "deviceId\ntoken".
+    /// </summary>
+    public void SaveCredentials(DeviceCredentials credentials)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+        SaveToken(credentials.DeviceId.ToString("D") + "\n" + credentials.Token);
+    }
+
+    /// <summary>
+    /// Đọc thông tin ghép nối. Trả về null khi chưa pairing, file bị hỏng,
+    /// hoặc định dạng cũ không có device id (trường hợp này cần ghép nối lại).
+    /// </summary>
+    public DeviceCredentials? TryLoadCredentials()
+    {
+        string? raw = TryLoadToken();
+        if (string.IsNullOrEmpty(raw))
+        {
+            return null;
+        }
+
+        string[] parts = raw.Split('\n', 2);
+        if (parts.Length != 2
+            || !Guid.TryParse(parts[0], out Guid deviceId)
+            || string.IsNullOrEmpty(parts[1]))
+        {
+            return null;
+        }
+
+        return new DeviceCredentials(deviceId, parts[1]);
+    }
+
     /// <summary>Mã hóa token bằng DPAPI và ghi ra file.</summary>
     public void SaveToken(string token)
     {
@@ -117,3 +151,6 @@ public sealed class TokenStore
         }
     }
 }
+
+/// <summary>Thông tin ghép nối của máy: id thiết bị + token bí mật (chỉ lưu mã hóa DPAPI).</summary>
+public sealed record DeviceCredentials(Guid DeviceId, string Token);

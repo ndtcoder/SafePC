@@ -40,3 +40,13 @@ public static class AgentConstants
     /// <summary>Ngưỡng cảnh báo trước khi hết giờ: còn 15/5/1 phút (docs/01-PRD.md mục 2.3).</summary>
     public static readonly int[] WarningThresholdMinutes = { 15, 5, 1 };
 }
+
+/// <summary>Các khóa trạng thái bền vững của Service trong bảng SQLite device_state.</summary>
+public static class StateKeys
+{
+    /// <summary>Khóa cưỡng chế của phụ huynh (lệnh lock_now): tồn tại tới khi có lệnh unlock.</summary>
+    public const string ForcedLock = "forced_lock";
+
+    /// <summary>Watermark đẩy usage: thời điểm mẫu mới nhất đã gửi lên server.</summary>
+    public const string UsagePushedUntil = "usage_pushed_until";
+}
