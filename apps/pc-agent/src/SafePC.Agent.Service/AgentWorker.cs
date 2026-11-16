@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Threading;
 using Microsoft.Extensions.Hosting;
@@ -80,6 +81,12 @@ public sealed class AgentWorker : BackgroundService
         {
             try
             {
+                // TODO Sprint 2 (chống chỉnh đồng hồ — docs/02-ARCHITECTURE.md
+                // mục 4.4): khi heartbeat gọi thật, so sánh giờ máy
+                // (DateTimeOffset.Now) với giờ server trả về; nếu lệch quá
+                // 5 phút thì ghi log cảnh báo và báo phụ huynh. Chưa triển
+                // khai vì SupabaseApiClient vẫn là skeleton; engine vẫn thi
+                // hành hoàn toàn offline theo giờ máy + cache rules.
                 _ = await _api.SendHeartbeatAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -183,13 +190,27 @@ public sealed class AgentWorker : BackgroundService
             {
                 IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
                 TimeSpan usedToday = await _outbox.GetUsageTodayAsync(ct);
-                RuleDecision decision = _ruleEngine.Evaluate(rules, usedToday, DateTimeOffset.Now, foregroundAppName: null);
+
+                // Đọc ghi đè tạm thời ở mỗi lần kiểm tra: hết hạn thì tự
+                // vô hiệu (kể cả sau khi Service khởi động lại), không cần
+                // lệnh hủy riêng. RuleEngine kiểm tra lại hết hạn một lần nữa.
+                TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideAsync(ct);
+                RuleDecision decision = _ruleEngine.Evaluate(rules, usedToday, DateTimeOffset.Now, foregroundAppName: null, activeOverride);
 
                 switch (decision.Kind)
                 {
                     case RuleDecisionKind.Allowed:
                         _lastWarnBucket = 0;
-                        _lockSent = false;
+                        if (_lockSent)
+                        {
+                            // Chuyển từ khóa sang cho phép (hết giờ ngủ, hết
+                            // khung cấm, ghi đè hết hạn...): báo Tray đóng
+                            // màn hình khóa, nếu không cửa sổ khóa sẽ ở lại
+                            // dù rules đã cho phép.
+                            _lockSent = false;
+                            _log.Info("Hết điều kiện khóa. Báo Tray đóng màn hình khóa.");
+                            await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                        }
                         break;
 
                     case RuleDecisionKind.Warn:
@@ -254,6 +275,10 @@ public sealed class AgentWorker : BackgroundService
                 _log.Info("Đã làm mới cache rules: " + rules.Count + " rules.");
                 break;
 
+            case CommandTypes.TemporaryOverride:
+                await ExecuteTemporaryOverrideAsync(command, ct);
+                break;
+
             case CommandTypes.Update:
                 // TODO Sprint 2+: cập nhật Agent có kiểm tra hash + HTTPS (docs/03).
                 _log.Warning("Command update chưa được triển khai (skeleton).");
@@ -265,6 +290,93 @@ public sealed class AgentWorker : BackgroundService
         }
 
         // TODO Sprint 1: cập nhật status của command (done/failed) lên server.
+    }
+
+    /// <summary>
+    /// Thi hành lệnh ghi đè tạm thời (payload: action, minutes, expires_at).
+    /// Ghi đè được lưu xuống SQLite để sống sót qua khởi động lại Service;
+    /// lệnh mới nhất thay thế lệnh trước đó. Payload thiếu/sai thì bỏ qua
+    /// và ghi log — không đoán ý phụ huynh.
+    /// </summary>
+    private async Task ExecuteTemporaryOverrideAsync(Command command, CancellationToken ct)
+    {
+        JsonElement payload = command.Payload;
+        string? action = TryGetPayloadString(payload, "action");
+
+        if (action == OverrideActions.Cancel)
+        {
+            await _outbox.ClearOverrideAsync(ct);
+            _lockSent = false;
+            _log.Info("Đã hủy ghi đè tạm thời theo lệnh phụ huynh.");
+            return;
+        }
+
+        if (action != OverrideActions.BonusMinutes
+            && action != OverrideActions.Lock
+            && action != OverrideActions.Unlock)
+        {
+            _log.Warning("Ghi đè tạm thời không rõ action, bỏ qua: " + (action ?? "(trống)"));
+            return;
+        }
+
+        if (!TryGetPayloadInt32(payload, "minutes", out int minutes) || minutes <= 0)
+        {
+            _log.Warning("Ghi đè tạm thời thiếu minutes hợp lệ, bỏ qua.");
+            return;
+        }
+
+        if (!TryGetPayloadDateTimeOffset(payload, "expires_at", out DateTimeOffset expiresAt))
+        {
+            _log.Warning("Ghi đè tạm thời thiếu expires_at hợp lệ, bỏ qua.");
+            return;
+        }
+
+        if (expiresAt <= DateTimeOffset.UtcNow)
+        {
+            _log.Info("Ghi đè tạm thời đã hết hạn trước khi nhận, bỏ qua.");
+            return;
+        }
+
+        await _outbox.SaveOverrideAsync(new TemporaryOverride(action, minutes, expiresAt), ct);
+        _log.Info("Đã lưu ghi đè tạm thời: " + action + " " + minutes + " phút, hết hạn " + expiresAt.ToString("o") + ".");
+
+        // Tác dụng ngay, không chờ tới lần kiểm tra rules tiếp theo (15 giây).
+        if (action == OverrideActions.Lock)
+        {
+            _lockSent = true;
+            await _ipc.SendToTrayAsync(
+                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy tạm thời.")), ct);
+        }
+        else if (action == OverrideActions.Unlock)
+        {
+            _lockSent = false;
+            await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+        }
+    }
+
+    private static string? TryGetPayloadString(JsonElement payload, string property)
+    {
+        return payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(property, out JsonElement element)
+            && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : null;
+    }
+
+    private static bool TryGetPayloadInt32(JsonElement payload, string property, out int value)
+    {
+        value = 0;
+        return payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(property, out JsonElement element)
+            && element.ValueKind == JsonValueKind.Number
+            && element.TryGetInt32(out value);
+    }
+
+    private static bool TryGetPayloadDateTimeOffset(JsonElement payload, string property, out DateTimeOffset value)
+    {
+        value = default;
+        return TryGetPayloadString(payload, property) is string text
+            && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out value);
     }
 
     /// <summary>Chờ một khoảng thời gian. Trả về false nếu bị hủy (Service đang dừng).</summary>

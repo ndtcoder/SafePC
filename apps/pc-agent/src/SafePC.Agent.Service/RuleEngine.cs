@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using SafePC.Agent.Shared;
 
@@ -16,15 +17,29 @@ public sealed record RuleDecision(RuleDecisionKind Kind, string Reason, int Minu
 
 /// <summary>
 /// Đánh giá rules từ cache local (thuần logic, không I/O — dễ kiểm thử).
-/// Thứ tự: bedtime trước, rồi daily_limit.
+/// Thứ tự ưu tiên: ghi đè tạm thời (khóa/mở) trước, rồi bedtime, rồi khung
+/// giờ được dùng, rồi giới hạn ngày. Trong các quyết định cảnh báo, ngưỡng
+/// gần nhất (ít phút còn lại nhất) thắng.
+///
+/// Mọi giờ giấc đều theo GIỜ ĐỊA PHƯƠNG của máy con. Quy ước thứ: số 0-6
+/// khớp <see cref="DayOfWeek"/> của C# và <c>Date.getDay()</c> của JS
+/// (0 = Chủ nhật, 6 = Thứ 7) — xem packages/shared-types.
 ///
 /// Định dạng config (JSONB, khớp cột rules.config):
-/// - bedtime: {"start":"21:30","end":"07:00"} (giờ địa phương, qua đêm được).
-/// - daily_limit: {"daily_minutes":120}
+/// - daily_limit: {"minutesByWeekday": {"1": 120, "6": 180}} — ngày vắng mặt
+///   = không giới hạn. Vẫn chấp nhận {"minutes_per_day": 120} và
+///   {"daily_minutes": 120} (mọi ngày) cho rule đã lưu trước Sprint 2.
+/// - bedtime: {"bedtimeByWeekday": {"1": {"start": "21:00", "end": "07:00"}}}
+///   — ngày vắng mặt = không khóa. Khoảng qua đêm (end &lt;= start) khóa từ
+///   start hôm nay tới end hôm sau. Vẫn chấp nhận {"start","end"} (mọi ngày).
+/// - time_window: {"windowsByWeekday": {"1": [{"start": "07:00", "end": "21:00"}]}}
+///   — ngoài mọi khung giờ của hôm nay thì khóa; ngày vắng mặt hoặc mảng
+///   rỗng = không được dùng máy ngày đó. Nhiều rule thì hợp (union) các
+///   khung giờ lại. Chỉ khoảng start &lt; end mới có hiệu lực.
 ///
-/// TODO Sprint 1: daily_limit theo thứ trong tuần (VD: T2-T6: 120, T7-CN: 180).
-/// TODO Sprint 2: rule theo app (chặn/giới hạn từng app, dùng foregroundAppName)
-/// và rule website (phối hợp với extension). Hiện các rule đó được bỏ qua.
+/// TODO Sprint 2 (đợt 2-3): rule theo app (chặn/giới hạn từng app, dùng
+/// foregroundAppName) và rule website (phối hợp với extension). Hiện các
+/// rule đó được bỏ qua.
 /// </summary>
 public sealed class RuleEngine
 {
@@ -32,9 +47,31 @@ public sealed class RuleEngine
         IReadOnlyList<Rule> rules,
         TimeSpan usedToday,
         DateTimeOffset now,
-        string? foregroundAppName)
+        string? foregroundAppName,
+        TemporaryOverride? activeOverride)
     {
         ArgumentNullException.ThrowIfNull(rules);
+
+        int bonusMinutes = 0;
+        if (activeOverride is not null && activeOverride.ExpiresAt > now)
+        {
+            if (activeOverride.Action == OverrideActions.Lock)
+            {
+                return new RuleDecision(RuleDecisionKind.Lock, "Phụ huynh đã khóa máy tạm thời.", 0);
+            }
+
+            if (activeOverride.Action == OverrideActions.Unlock)
+            {
+                return new RuleDecision(RuleDecisionKind.Allowed, string.Empty, int.MaxValue);
+            }
+
+            if (activeOverride.Action == OverrideActions.BonusMinutes)
+            {
+                bonusMinutes = activeOverride.Minutes;
+            }
+        }
+
+        DateTime local = now.LocalDateTime;
 
         foreach (Rule rule in rules)
         {
@@ -43,12 +80,183 @@ public sealed class RuleEngine
                 continue;
             }
 
-            RuleDecision? bedtime = CheckBedtime(rule, now);
-            if (bedtime is not null)
+            if (IsInBedtime(rule, local))
             {
-                return bedtime;
+                return new RuleDecision(RuleDecisionKind.Lock, "Đã đến giờ ngủ.", 0);
             }
         }
+
+        RuleDecision? warn = null;
+
+        RuleDecision? windowDecision = CheckTimeWindows(rules, local);
+        if (windowDecision is { Kind: RuleDecisionKind.Lock })
+        {
+            return windowDecision;
+        }
+
+        if (windowDecision is not null)
+        {
+            warn = windowDecision;
+        }
+
+        RuleDecision? limitDecision = CheckDailyLimit(rules, usedToday, local, bonusMinutes);
+        if (limitDecision is { Kind: RuleDecisionKind.Lock })
+        {
+            return limitDecision;
+        }
+
+        if (limitDecision is not null && (warn is null || limitDecision.MinutesLeft < warn.MinutesLeft))
+        {
+            warn = limitDecision;
+        }
+
+        if (warn is not null)
+        {
+            return warn;
+        }
+
+        // TODO Sprint 2: dùng foregroundAppName để đánh giá rule loại "app".
+        _ = foregroundAppName;
+        return new RuleDecision(RuleDecisionKind.Allowed, string.Empty, int.MaxValue);
+    }
+
+    /// <summary>
+    /// Có đang trong giờ ngủ không? Kiểm tra khung của hôm nay và đuôi qua
+    /// đêm của khung hôm qua (bedtime bắt đầu 21:00 hôm qua khóa tới 07:00
+    /// hôm nay). Hình dạng cũ {"start","end"} được hiểu là cùng một khung
+    /// cho mọi ngày.
+    /// </summary>
+    private static bool IsInBedtime(Rule rule, DateTime local)
+    {
+        TimeOnly current = TimeOnly.FromDateTime(local);
+        int weekday = (int)local.DayOfWeek;
+
+        if (TryGetObject(rule.Config, "bedtimeByWeekday", out JsonElement byWeekday))
+        {
+            if (TryGetTimeRange(byWeekday, weekday.ToString(), out TimeOnly start, out TimeOnly end)
+                && IsInBedtimeToday(current, start, end))
+            {
+                return true;
+            }
+
+            int yesterday = (weekday + 6) % 7;
+            if (TryGetTimeRange(byWeekday, yesterday.ToString(), out TimeOnly yesterdayStart, out TimeOnly yesterdayEnd)
+                && yesterdayEnd <= yesterdayStart
+                && current < yesterdayEnd)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        if (TryGetTime(rule.Config, "start", out TimeOnly legacyStart)
+            && TryGetTime(rule.Config, "end", out TimeOnly legacyEnd))
+        {
+            if (IsInBedtimeToday(current, legacyStart, legacyEnd))
+            {
+                return true;
+            }
+
+            return legacyEnd <= legacyStart && current < legacyEnd;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Phần khung giờ ngủ thuộc về "hôm nay": khung trong ngày là [start, end);
+    /// khung qua đêm chỉ tính phần tối nay [start, 24:00) — phần sáng mai do
+    /// nhánh "đuôi hôm qua" xử lý khi sang ngày mới.
+    /// </summary>
+    private static bool IsInBedtimeToday(TimeOnly current, TimeOnly start, TimeOnly end)
+    {
+        return start <= end
+            ? current >= start && current < end
+            : current >= start;
+    }
+
+    /// <summary>
+    /// Đánh giá các rule khung giờ được dùng (hợp union): ngoài mọi khung giờ
+    /// của hôm nay thì khóa; trong khung giờ mà sắp hết (còn &lt;= 15 phút)
+    /// thì cảnh báo. Không có rule time_window nào đang bật thì không quyết
+    /// định gì (trả về null). Ngày không có khung giờ nào = không được dùng.
+    /// </summary>
+    private static RuleDecision? CheckTimeWindows(IReadOnlyList<Rule> rules, DateTime local)
+    {
+        bool hasEnabledRule = false;
+        int? minutesUntilWindowEnd = null;
+        TimeOnly current = TimeOnly.FromDateTime(local);
+        string weekdayKey = ((int)local.DayOfWeek).ToString();
+
+        foreach (Rule rule in rules)
+        {
+            if (!rule.Enabled || rule.Type != RuleTypes.TimeWindow)
+            {
+                continue;
+            }
+
+            hasEnabledRule = true;
+
+            if (!TryGetObject(rule.Config, "windowsByWeekday", out JsonElement byWeekday)
+                || !byWeekday.TryGetProperty(weekdayKey, out JsonElement dayRanges)
+                || dayRanges.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (JsonElement range in dayRanges.EnumerateArray())
+            {
+                if (!TryGetTime(range, "start", out TimeOnly start)
+                    || !TryGetTime(range, "end", out TimeOnly end)
+                    || start >= end)
+                {
+                    // Khoảng không hợp lệ (thiếu giờ hoặc qua đêm) thì bỏ qua:
+                    // khung giờ qua đêm thuộc về rule bedtime, không phải đây.
+                    continue;
+                }
+
+                if (current >= start && current < end)
+                {
+                    int remaining = (int)(end - current).TotalMinutes;
+                    minutesUntilWindowEnd = minutesUntilWindowEnd is null
+                        ? remaining
+                        : Math.Max(minutesUntilWindowEnd.Value, remaining);
+                }
+            }
+        }
+
+        if (!hasEnabledRule)
+        {
+            return null;
+        }
+
+        if (minutesUntilWindowEnd is null)
+        {
+            return new RuleDecision(RuleDecisionKind.Lock, "Ngoài khung giờ được dùng máy.", 0);
+        }
+
+        if (minutesUntilWindowEnd.Value <= 15)
+        {
+            return new RuleDecision(RuleDecisionKind.Warn, "Sắp hết khung giờ được dùng máy.", minutesUntilWindowEnd.Value);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Đánh giá giới hạn ngày: lấy giới hạn chặt nhất (nhỏ nhất) trong các
+    /// rule daily_limit đang bật, cộng thêm phút bonus nếu có. Ngày không có
+    /// giới hạn (vắng mặt trong minutesByWeekday) thì rule đó không áp.
+    /// </summary>
+    private static RuleDecision? CheckDailyLimit(
+        IReadOnlyList<Rule> rules,
+        TimeSpan usedToday,
+        DateTime local,
+        int bonusMinutes)
+    {
+        int? effectiveLimit = null;
+        int weekday = (int)local.DayOfWeek;
 
         foreach (Rule rule in rules)
         {
@@ -57,53 +265,21 @@ public sealed class RuleEngine
                 continue;
             }
 
-            RuleDecision? limit = CheckDailyLimit(rule, usedToday);
+            int? limit = GetDailyLimitMinutes(rule, weekday);
             if (limit is not null)
             {
-                return limit;
+                effectiveLimit = effectiveLimit is null
+                    ? limit.Value
+                    : Math.Min(effectiveLimit.Value, limit.Value);
             }
         }
 
-        // TODO Sprint 2: dùng foregroundAppName để đánh giá rule loại "app".
-        _ = foregroundAppName;
-        return new RuleDecision(RuleDecisionKind.Allowed, string.Empty, int.MaxValue);
-    }
-
-    private static RuleDecision? CheckBedtime(Rule rule, DateTimeOffset now)
-    {
-        if (!TryGetString(rule.Config, "start", out string? startText)
-            || !TryGetString(rule.Config, "end", out string? endText))
+        if (effectiveLimit is null)
         {
             return null;
         }
 
-        if (!TimeOnly.TryParse(startText, out TimeOnly start)
-            || !TimeOnly.TryParse(endText, out TimeOnly end))
-        {
-            return null;
-        }
-
-        TimeOnly current = TimeOnly.FromDateTime(now.LocalDateTime);
-        bool inBedtime = start <= end
-            ? current >= start && current < end
-            : current >= start || current < end;
-
-        if (!inBedtime)
-        {
-            return null;
-        }
-
-        return new RuleDecision(RuleDecisionKind.Lock, "Đã đến giờ ngủ.", 0);
-    }
-
-    private static RuleDecision? CheckDailyLimit(Rule rule, TimeSpan usedToday)
-    {
-        if (!TryGetInt32(rule.Config, "daily_minutes", out int dailyMinutes))
-        {
-            return null;
-        }
-
-        int minutesLeft = dailyMinutes - (int)usedToday.TotalMinutes;
+        int minutesLeft = effectiveLimit.Value + bonusMinutes - (int)usedToday.TotalMinutes;
         if (minutesLeft <= 0)
         {
             return new RuleDecision(RuleDecisionKind.Lock, "Đã hết thời gian dùng máy hôm nay.", 0);
@@ -117,13 +293,68 @@ public sealed class RuleEngine
         return null;
     }
 
-    private static bool TryGetString(JsonElement config, string property, out string? value)
+    /// <summary>
+    /// Giới hạn phút của một rule daily_limit cho một thứ. Trả về null khi
+    /// rule không áp giới hạn cho ngày đó (ngày vắng mặt trong
+    /// minutesByWeekday, hoặc config không đọc được).
+    /// </summary>
+    private static int? GetDailyLimitMinutes(Rule rule, int weekday)
     {
-        value = null;
+        if (TryGetObject(rule.Config, "minutesByWeekday", out JsonElement byWeekday))
+        {
+            // Ngày vắng mặt = không giới hạn, KHÔNG fallback sang key cũ:
+            // rule có minutesByWeekday là rule kiểu mới.
+            if (byWeekday.TryGetProperty(weekday.ToString(), out JsonElement element)
+                && element.ValueKind == JsonValueKind.Number
+                && element.TryGetInt32(out int minutes))
+            {
+                return minutes;
+            }
+
+            return null;
+        }
+
+        // Hình dạng cũ: một giới hạn cho mọi ngày.
+        if (TryGetInt32(rule.Config, "minutes_per_day", out int perDay))
+        {
+            return perDay;
+        }
+
+        if (TryGetInt32(rule.Config, "daily_minutes", out int daily))
+        {
+            return daily;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetObject(JsonElement config, string property, out JsonElement value)
+    {
+        value = default;
         return config.ValueKind == JsonValueKind.Object
-            && config.TryGetProperty(property, out JsonElement element)
+            && config.TryGetProperty(property, out value)
+            && value.ValueKind == JsonValueKind.Object;
+    }
+
+    private static bool TryGetTimeRange(JsonElement parent, string property, out TimeOnly start, out TimeOnly end)
+    {
+        start = default;
+        end = default;
+        return parent.ValueKind == JsonValueKind.Object
+            && parent.TryGetProperty(property, out JsonElement range)
+            && range.ValueKind == JsonValueKind.Object
+            && TryGetTime(range, "start", out start)
+            && TryGetTime(range, "end", out end);
+    }
+
+    private static bool TryGetTime(JsonElement obj, string property, out TimeOnly value)
+    {
+        value = default;
+        return obj.ValueKind == JsonValueKind.Object
+            && obj.TryGetProperty(property, out JsonElement element)
             && element.ValueKind == JsonValueKind.String
-            && (value = element.GetString()) is not null;
+            && element.GetString() is string text
+            && TimeOnly.TryParseExact(text, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out value);
     }
 
     private static bool TryGetInt32(JsonElement config, string property, out int value)

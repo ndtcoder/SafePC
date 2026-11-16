@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Threading;
 using Microsoft.Data.Sqlite;
@@ -14,6 +15,8 @@ public sealed record OutboxItem(long Id, string PayloadJson);
 /// - Bảng <c>rules_cache</c>: rules tải về lần cuối, để mất mạng vẫn thi hành đúng.
 /// - Bảng <c>usage_samples</c>: mẫu foreground Tray gửi qua IPC, dùng ước lượng
 ///   thời gian đã dùng hôm nay.
+/// - Bảng <c>active_override</c>: ghi đè tạm thời đang hiệu lực (tối đa 1 hàng),
+///   để ghi đè không bị mất khi Service khởi động lại và vẫn hết hạn đúng giờ.
 ///
 /// Mọi câu lệnh đều dùng tham số (parameterized) — không nối chuỗi SQL.
 /// </summary>
@@ -64,6 +67,13 @@ public sealed class OutboxStore
                 app_name TEXT NOT NULL,
                 exe_path_hash TEXT,
                 sampled_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS active_override (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                action TEXT NOT NULL,
+                minutes INTEGER NOT NULL,
+                expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
             """;
         await command.ExecuteNonQueryAsync(ct);
@@ -231,6 +241,96 @@ public sealed class OutboxStore
         }
 
         return rules;
+    }
+
+    /// <summary>
+    /// Lưu ghi đè tạm thời đang hiệu lực (ghi đè mới thay thế ghi đè cũ).
+    /// Chỉ có tối đa 1 hàng (id = 1).
+    /// </summary>
+    public async Task SaveOverrideAsync(TemporaryOverride ov, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(ov);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO active_override (id, action, minutes, expires_at, updated_at)
+            VALUES (1, $action, $minutes, $expires, $now)
+            ON CONFLICT(id) DO UPDATE SET
+                action = excluded.action,
+                minutes = excluded.minutes,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at;
+            """;
+        command.Parameters.AddWithValue("$action", ov.Action);
+        command.Parameters.AddWithValue("$minutes", ov.Minutes);
+        command.Parameters.AddWithValue("$expires", ov.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Đọc ghi đè đang hiệu lực. Trả về null khi không có ghi đè, khi hàng
+    /// lưu bị hỏng, hoặc khi ghi đè đã hết hạn (hàng hết hạn được xóa luôn
+    /// để bảng không giữ trạng thái cũ). RuleEngine vẫn tự kiểm tra
+    /// <c>ExpiresAt</c> ở mỗi lần đánh giá — đây là lớp bảo vệ thứ hai.
+    /// </summary>
+    public async Task<TemporaryOverride?> GetActiveOverrideAsync(CancellationToken ct)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        string? action = null;
+        long minutes = 0;
+        string? expiresText = null;
+        await using (var select = connection.CreateCommand())
+        {
+            select.CommandText = "SELECT action, minutes, expires_at FROM active_override WHERE id = 1;";
+            await using var reader = await select.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                action = reader.GetString(0);
+                minutes = reader.GetInt64(1);
+                expiresText = reader.GetString(2);
+            }
+        }
+
+        if (action is null || expiresText is null)
+        {
+            return null;
+        }
+
+        if (!DateTimeOffset.TryParse(
+                expiresText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset expiresAt))
+        {
+            await DeleteOverrideRowAsync(connection, ct);
+            return null;
+        }
+
+        if (expiresAt <= DateTimeOffset.UtcNow)
+        {
+            await DeleteOverrideRowAsync(connection, ct);
+            return null;
+        }
+
+        return new TemporaryOverride(action, (int)minutes, expiresAt);
+    }
+
+    /// <summary>Xóa ghi đè đang hiệu lực (khi phụ huynh gửi lệnh hủy).</summary>
+    public async Task ClearOverrideAsync(CancellationToken ct)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+        await DeleteOverrideRowAsync(connection, ct);
+    }
+
+    private static async Task DeleteOverrideRowAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        await using var delete = connection.CreateCommand();
+        delete.CommandText = "DELETE FROM active_override WHERE id = 1;";
+        await delete.ExecuteNonQueryAsync(ct);
     }
 
     /// <summary>Ghi một mẫu foreground do Tray gửi qua IPC.</summary>
