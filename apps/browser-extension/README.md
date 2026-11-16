@@ -14,6 +14,8 @@ Extension làm:
 
 - Chặn domain trong danh sách chặn, chặn theo khung giờ, chỉ cho phép danh
   sách domain (chế độ allowlist), chặn tạm thời / cho phép tạm thời.
+- Giờ học tập trung: trong khung giờ học, chỉ các website học tập được phép
+  mới mở được (xem mục 7).
 - Giới hạn thời gian xem theo domain (ví dụ: YouTube 30 phút/ngày), tính
   theo ngày địa phương của máy con.
 - Bật SafeSearch cho Google/Bing và chế độ hạn chế (Restricted Mode) cho
@@ -156,6 +158,26 @@ lookahead — xem chú thích trong `background.js`). Bing không dùng tham s�
 thêm `adlt=strict`. YouTube (`www`/`m`) được redirect sang
 `restrict.youtube.com` giữ nguyên path+query (cơ chế Restricted Mode chính
 thức của Google).
+
+**Giờ học tập trung (focus mode):** phụ huynh đặt rule website chế độ
+`focus` trên Dashboard (khung giờ theo thứ + website và ứng dụng được phép).
+Agent gộp các rule focus thành `rules.focus = {"windowsByWeekday": {...},
+"allowedDomains": [...]}` (hoặc `null` khi không có rule nào) trong
+`domain_rules.json`; phần ứng dụng được phép (`allowedApps`) do Agent thi
+hành (đóng ứng dụng ngoài danh sách), extension chỉ nhận danh sách domain.
+Trong khung giờ focus (giờ địa phương, đánh giá lại mỗi ~1 phút cùng chu kỳ
+alarm), extension bỏ qua các bộ rule thường (chặn, chặn theo giờ, hết ngân
+sách, allowlist) và chỉ cho phép các domain trong danh sách focus — mọi
+website còn lại chuyển tới `blocked.html` với lý do "focus". Thứ tự ưu tiên:
+**chặn tạm thời vẫn thắng** danh sách cho phép của focus (domain bị chặn tạm
+thời thì vẫn bị chặn); **cho phép tạm thời không chọc thủng focus** (website
+ngoài danh sách focus vẫn bị chặn dù đang được cho phép tạm thời). Redirect
+SafeSearch và YouTube Restricted vẫn áp dụng trong giờ focus (chúng chỉ thêm
+tham số an toàn, không mở thêm website nào). Ngoài khung giờ focus, mọi hành
+vi trở lại như cũ. Khi `rules.focus` thiếu, `null`, sai hình dạng hoặc danh
+sách cho phép rỗng, extension coi như không có focus (fail-open, không chặn
+thêm gì vì focus). Trang chặn của chính extension không bị ảnh hưởng vì rule
+chặn-tất-cả chỉ khớp URL http/https.
 
 **Báo cáo:** usage gửi mỗi phút qua NativeHost; gửi lỗi thì giữ lại trong
 hàng đợi (tối đa 1000 domain, bỏ cũ nhất), không hiện lỗi cho user.

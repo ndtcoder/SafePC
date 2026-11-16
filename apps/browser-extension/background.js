@@ -58,7 +58,9 @@ const SUB_RESOURCE_TYPES = [
 // Thứ tự ưu tiên DNR (số lớn thắng, khác nhau hoàn toàn để không phụ thuộc
 // luật hòa của trình duyệt): chặn tạm thời > cho phép tạm thời > chặn vĩnh
 // viễn > chặn theo giờ > hết ngân sách > SafeSearch/YouTube > allowlist >
-// chặn tất cả (chế độ allowlist).
+// chặn tất cả (chế độ allowlist). Giờ học tập trung dùng chung 2 mức của
+// allowlist (allow cho danh sách được phép, blockAll cho chặn tất cả còn
+// lại) vì trong giờ tập trung, danh sách focus THAY cho allowlist thường.
 const PRIORITY = {
   tempBlock: 100,
   tempAllow: 95,
@@ -323,6 +325,22 @@ function buildDnrRules(rules, usageSeconds, now) {
   const blocked = normalizeDomainSet(rules.blocked);
   const allowlist = Array.isArray(rules.allowlist) ? normalizeDomainSet(rules.allowlist) : null;
 
+  // Giờ học tập trung: DomainRulesPublisher gộp các rule focus thành
+  // rules.focus = {"windowsByWeekday": {...}, "allowedDomains": [...]} hoặc
+  // null khi không có rule focus nào. Focus thiếu/sai hình dạng, khung giờ
+  // không hợp lệ, hoặc danh sách cho phép rỗng đều nghĩa là "không focus"
+  // (fail-open, không bao giờ throw): danh sách cho phép rỗng mà vẫn chặn
+  // tất cả thì sẽ khóa cả trình duyệt.
+  const focus =
+    rules.focus && typeof rules.focus === "object" && !Array.isArray(rules.focus)
+      ? rules.focus
+      : null;
+  const focusAllowed = focus ? normalizeDomainSet(focus.allowedDomains) : new Set();
+  const focusActive =
+    focus !== null &&
+    focusAllowed.size > 0 &&
+    isWindowActiveNow(focus.windowsByWeekday, now);
+
   const timeBlocked = new Set();
   const timeEntries = Array.isArray(rules.blockedByTime) ? rules.blockedByTime : [];
   for (const entry of timeEntries) {
@@ -339,11 +357,17 @@ function buildDnrRules(rules, usageSeconds, now) {
     }
   };
 
+  // Chặn tạm thời LUÔN áp dụng (ưu tiên 100 > 60 nên thắng cả danh sách
+  // cho phép của focus). Khi focus đang hiệu lực, các bộ rule thường
+  // (chặn, chặn theo giờ, hết ngân sách, allowlist) và cho phép tạm thời
+  // đều BỎ QUA: cho phép tạm thời không được chọc thủng giờ tập trung.
   addPair(tempBlock, PRIORITY.tempBlock, "tempblock");
-  for (const domain of tempAllow) rulesOut.push(allowRule(nextId++, PRIORITY.tempAllow, domain));
-  addPair(blocked, PRIORITY.blocked, "blocked");
-  addPair(timeBlocked, PRIORITY.time, "time");
-  addPair(exhausted, PRIORITY.limit, "limit");
+  if (!focusActive) {
+    for (const domain of tempAllow) rulesOut.push(allowRule(nextId++, PRIORITY.tempAllow, domain));
+    addPair(blocked, PRIORITY.blocked, "blocked");
+    addPair(timeBlocked, PRIORITY.time, "time");
+    addPair(exhausted, PRIORITY.limit, "limit");
+  }
 
   if (rules.safeSearch) {
     // Google dùng tham số safe=active. Bing không dùng tham số này mà dùng
@@ -356,7 +380,29 @@ function buildDnrRules(rules, usageSeconds, now) {
     rulesOut.push(youtubeRestrictedRule(nextId++));
   }
 
-  if (allowlist !== null) {
+  if (focusActive) {
+    // Giờ tập trung: chỉ các domain học tập được phép mới mở được; mọi
+    // website còn lại chuyển tới trang chặn (lý do "focus"). Cặp rule
+    // blockAll có cùng hình dạng với cặp của chế độ allowlist. Trang chặn
+    // của chính extension (chrome-extension://...) không bị ảnh hưởng vì
+    // regex blockAll chỉ khớp http/https.
+    for (const domain of focusAllowed) rulesOut.push(allowRule(nextId++, PRIORITY.allow, domain));
+    rulesOut.push({
+      id: nextId++,
+      priority: PRIORITY.blockAllRedirect,
+      action: {
+        type: "redirect",
+        redirect: { url: chrome.runtime.getURL("blocked.html?reason=focus") },
+      },
+      condition: { regexFilter: "^https?://", resourceTypes: ["main_frame"] },
+    });
+    rulesOut.push({
+      id: nextId++,
+      priority: PRIORITY.blockAll,
+      action: { type: "block" },
+      condition: { regexFilter: "^https?://", resourceTypes: SUB_RESOURCE_TYPES },
+    });
+  } else if (allowlist !== null) {
     // Chế độ allowlist: chỉ các domain trong danh sách mới mở được.
     for (const domain of allowlist) rulesOut.push(allowRule(nextId++, PRIORITY.allow, domain));
     rulesOut.push({

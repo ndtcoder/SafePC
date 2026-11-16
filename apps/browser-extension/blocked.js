@@ -10,6 +10,7 @@ const REASONS = {
   allowlist: "Trang web này không nằm trong danh sách được phép mở.",
   limit: "Con đã dùng hết thời gian cho phép hôm nay cho trang web này.",
   tempblock: "Trang web này đang bị chặn tạm thời theo yêu cầu của phụ huynh.",
+  focus: "Đang giờ học tập trung. Chỉ các website học tập được phép mới mở được.",
 };
 
 document.addEventListener("DOMContentLoaded", () => {
