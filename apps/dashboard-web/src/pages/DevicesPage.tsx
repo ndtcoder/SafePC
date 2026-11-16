@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
-import type { Child, Device, Family } from '../lib/types'
+import type { Child, Command, Device, EnforcementDecision, EnforcementSnapshot, Family } from '../lib/types'
 import {
   deviceStatusLabel,
+  enforcementDecisionLabel,
+  enforcementReasonLabel,
   formatDateTimeVi,
   formatRelativeVi,
   formatTimeVi,
+  parseEnforcementSnapshot,
   toVietnameseError,
 } from '../lib/format'
 import {
@@ -18,7 +21,9 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  chipClassName,
   dangerButtonClassName,
+  dangerOutlineButtonClassName,
   inputClassName,
   primaryButtonClassName,
   secondaryButtonClassName,
@@ -29,6 +34,15 @@ const STATUS_BADGE: Record<Device['status'], string> = {
   offline: 'bg-slate-200 text-slate-700',
   locked: 'bg-red-100 text-red-800',
 }
+
+const ENFORCEMENT_BADGE: Record<EnforcementDecision, string> = {
+  allow: 'bg-emerald-100 text-emerald-800',
+  warn: 'bg-amber-100 text-amber-800',
+  lock: 'bg-red-100 text-red-800',
+}
+
+/** Các thời lượng mở khóa tạm thời (phút), cùng bộ với ghi đè tạm thời ở trang Quy tắc. */
+const UNLOCK_DURATIONS = [15, 30, 60, 120]
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -93,6 +107,37 @@ function extensionStatus(seenAt: string | null | undefined, nowMs: number): {
   return { label: `Không thấy từ ${formatTimeVi(seenAt)}`, className: 'font-medium text-amber-700' }
 }
 
+/**
+ * Thời điểm hết hạn của ghi đè "mở khóa" đang hiệu lực trên một máy, suy
+ * ra từ các lệnh temporary_override mới nhất theo luật mới-nhất-thắng
+ * (cùng luật với getActiveOverride ở trang Quy tắc): lệnh mới nhất cho
+ * máy đó quyết định — cancel hoặc đã hết hạn nghĩa là không còn ghi đè,
+ * ghi đè khác loại (khóa, cộng giờ, chặn/mở website/ứng dụng) nghĩa là
+ * ghi đè mở khóa đã bị thay thế. `commands` phải xếp mới nhất trước.
+ */
+function getActiveUnlock(commands: Command[], deviceId: string, nowMs: number): Date | null {
+  for (const command of commands) {
+    if (command.device_id !== deviceId) continue
+    const action = command.payload['action']
+    if (action === 'cancel') return null
+    if (
+      action !== 'bonus_minutes' &&
+      action !== 'lock' &&
+      action !== 'unlock' &&
+      action !== 'allow_domain' &&
+      action !== 'block_domain' &&
+      action !== 'block_app' &&
+      action !== 'allow_app'
+    )
+      continue
+    const expiresRaw = command.payload['expires_at']
+    const expiresAt = typeof expiresRaw === 'string' ? new Date(expiresRaw) : null
+    if (!expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= nowMs) return null
+    return action === 'unlock' ? expiresAt : null
+  }
+  return null
+}
+
 export default function DevicesPage() {
   const { configured, user } = useAuth()
   const [state, setState] = useState<LoadState>('loading')
@@ -105,10 +150,29 @@ export default function DevicesPage() {
   const [extensionSeenByDevice, setExtensionSeenByDevice] = useState<Map<string, string | null>>(
     new Map(),
   )
+  // Ảnh chụp thi hành mới nhất theo từng máy (truy vấn riêng, best-effort
+  // — cột enforcement_json/enforcement_updated_at chỉ có sau migration
+  // 6). Snapshot null nghĩa là máy chưa có dữ liệu thi hành hợp lệ.
+  const [enforcementByDevice, setEnforcementByDevice] = useState<
+    Map<string, { snapshot: EnforcementSnapshot | null; updatedAt: string | null }>
+  >(new Map())
+  // Các lệnh ghi đè tạm thời mới nhất của gia đình, để suy ra máy nào
+  // đang được mở khóa tạm thời (cùng mẫu truy vấn với trang Quy tắc).
+  const [overrideCommands, setOverrideCommands] = useState<Command[]>([])
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [lockingId, setLockingId] = useState<string | null>(null)
   const [creatingFamily, setCreatingFamily] = useState(false)
+
+  // Mở khóa ngay: thời lượng đã chọn theo từng máy (mặc định 30 phút).
+  const [unlockMinutesByDevice, setUnlockMinutesByDevice] = useState<Record<string, number>>({})
+  const [sendingUnlockId, setSendingUnlockId] = useState<string | null>(null)
+  const [cancellingUnlockId, setCancellingUnlockId] = useState<string | null>(null)
+
+  // Xoá thiết bị: bấm 2 lần (bấm "Xóa thiết bị" rồi "Xác nhận xóa") để
+  // tránh xoá nhầm (cùng mẫu với xoá quy tắc ở trang Quy tắc).
+  const [confirmDeleteDeviceId, setConfirmDeleteDeviceId] = useState<string | null>(null)
+  const [deletingDeviceId, setDeletingDeviceId] = useState<string | null>(null)
 
   // Form tạo hồ sơ con (tối thiểu): tên hiển thị + năm sinh.
   const [showChildForm, setShowChildForm] = useState(false)
@@ -133,7 +197,7 @@ export default function DevicesPage() {
     setState('loading')
     setError('')
     try {
-      const [familyResult, devicesResult, childrenResult] = await Promise.all([
+      const [familyResult, devicesResult, childrenResult, commandsResult] = await Promise.all([
         getMyFamily(supabase, user.id),
         supabase
           .from('devices')
@@ -143,12 +207,20 @@ export default function DevicesPage() {
           .from('children')
           .select('id, family_id, display_name, birth_year, avatar_url, created_at')
           .order('created_at', { ascending: true }),
+        supabase
+          .from('commands')
+          .select('id, family_id, device_id, type, payload, status, created_at')
+          .eq('type', 'temporary_override')
+          .order('created_at', { ascending: false })
+          .limit(50),
       ])
       if (devicesResult.error) throw devicesResult.error
       if (childrenResult.error) throw childrenResult.error
+      if (commandsResult.error) throw commandsResult.error
       setFamily(familyResult)
       setDevices((devicesResult.data ?? []) as Device[])
       setChildren((childrenResult.data ?? []) as Child[])
+      setOverrideCommands((commandsResult.data ?? []) as Command[])
       // Truy vấn RIÊNG, best-effort: cột last_extension_seen_at chỉ có sau
       // migration 5. Truy vấn lỗi (cột chưa tồn tại) thì coi extension là
       // chưa biết với mọi máy, KHÔNG làm hỏng cả trang.
@@ -167,6 +239,34 @@ export default function DevicesPage() {
         }
       } catch {
         setExtensionSeenByDevice(new Map())
+      }
+      // Truy vấn RIÊNG, best-effort: cột enforcement_json /
+      // enforcement_updated_at chỉ có sau migration 6. Truy vấn lỗi (cột
+      // chưa tồn tại) thì coi mọi máy là chưa có dữ liệu thi hành, KHÔNG
+      // làm hỏng cả trang. JSON hỏng hoặc '{}' cũng coi là chưa có dữ
+      // liệu (xem parseEnforcementSnapshot).
+      try {
+        const enforcementResult = await supabase
+          .from('devices')
+          .select('id, enforcement_json, enforcement_updated_at')
+        if (enforcementResult.error) {
+          setEnforcementByDevice(new Map())
+        } else {
+          const snapshots = new Map<string, { snapshot: EnforcementSnapshot | null; updatedAt: string | null }>()
+          for (const row of (enforcementResult.data ?? []) as Array<{
+            id: string
+            enforcement_json: unknown
+            enforcement_updated_at: string | null
+          }>) {
+            snapshots.set(row.id, {
+              snapshot: parseEnforcementSnapshot(row.enforcement_json),
+              updatedAt: row.enforcement_updated_at,
+            })
+          }
+          setEnforcementByDevice(snapshots)
+        }
+      } catch {
+        setEnforcementByDevice(new Map())
       }
       setState('ready')
     } catch (err) {
@@ -190,6 +290,18 @@ export default function DevicesPage() {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [pairing?.status])
+
+  // Đồng hồ đếm ngược "đang mở khóa": chỉ chạy khi có ít nhất một máy
+  // đang được mở khóa tạm thời, để con số MM:SS cập nhật từng giây. Hết
+  // giờ thì đếm ngược tự biến mất ở lần render sau.
+  const anyUnlockActive = devices.some(
+    (device) => getActiveUnlock(overrideCommands, device.id, Date.now()) !== null,
+  )
+  useEffect(() => {
+    if (!anyUnlockActive) return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [anyUnlockActive])
 
   useEffect(() => {
     if (pairing?.status === 'waiting' && nowMs >= pairing.expiresAtMs) {
@@ -270,6 +382,89 @@ export default function DevicesPage() {
       setActionError(toVietnameseError(err))
     } finally {
       setLockingId(null)
+    }
+  }
+
+  const handleUnlockNow = async (device: Device) => {
+    if (!supabase || !user) return
+    if (!family) {
+      setActionError('Bạn chưa có gia đình. Vui lòng tạo gia đình trước khi gửi lệnh mở khóa.')
+      return
+    }
+    const minutes = unlockMinutesByDevice[device.id] ?? 30
+    setSendingUnlockId(device.id)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const expiresAt = new Date(Date.now() + minutes * 60000)
+      const { error: insertError } = await supabase.from('commands').insert({
+        family_id: device.family_id,
+        device_id: device.id,
+        type: 'temporary_override',
+        payload: { action: 'unlock', minutes, expires_at: expiresAt.toISOString() },
+        status: 'pending',
+      })
+      if (insertError) throw insertError
+      setActionMessage(
+        `Đã gửi lệnh mở khóa tạm thời (${minutes} phút) tới "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; các quy tắc giờ giấc tạm ngưng tới ${formatTimeVi(expiresAt.toISOString())}.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setSendingUnlockId(null)
+    }
+  }
+
+  const handleCancelDeviceOverride = async (device: Device) => {
+    if (!supabase || !user) return
+    if (!family) {
+      setActionError('Bạn chưa có gia đình. Vui lòng tạo gia đình trước khi gửi lệnh hủy ghi đè.')
+      return
+    }
+    setCancellingUnlockId(device.id)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const { error: insertError } = await supabase.from('commands').insert({
+        family_id: device.family_id,
+        device_id: device.id,
+        type: 'temporary_override',
+        payload: { action: 'cancel' },
+        status: 'pending',
+      })
+      if (insertError) throw insertError
+      setActionMessage(
+        `Đã gửi lệnh hủy ghi đè tới "${device.hostname}". Các quy tắc bình thường sẽ áp dụng lại như cũ.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setCancellingUnlockId(null)
+    }
+  }
+
+  const handleDeleteDevice = async (device: Device) => {
+    if (!supabase) return
+    setDeletingDeviceId(device.id)
+    setActionError(null)
+    try {
+      // Policy "family access" (FOR ALL) trên bảng devices cho phép thành
+      // viên gia đình xóa máy của gia đình mình. Các hàng con (token,
+      // lịch sử dùng máy/web, lệnh chờ) tự xóa theo ON DELETE CASCADE;
+      // audit_logs.device_id chuyển thành NULL (ON DELETE SET NULL).
+      const { error: deleteError } = await supabase.from('devices').delete().eq('id', device.id)
+      if (deleteError) throw deleteError
+      setConfirmDeleteDeviceId(null)
+      setActionMessage(
+        `Đã xóa thiết bị "${device.hostname}" khỏi Dashboard. Thiết bị đã mất quyền đồng bộ; Agent trên máy vẫn thi hành các quy tắc đã đồng bộ lần cuối cho đến khi được gỡ cài đặt.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setDeletingDeviceId(null)
     }
   }
 
@@ -454,6 +649,16 @@ export default function DevicesPage() {
                 const extension = extensionStatus(extensionSeenByDevice.get(device.id), Date.now())
                 const disconnected = isDisconnected(device, Date.now())
                 const extensionSeenAt = extensionSeenByDevice.get(device.id)
+                const enforcement = enforcementByDevice.get(device.id)
+                const enforcementSnapshot = enforcement?.snapshot ?? null
+                const enforcementUpdatedMs = enforcement?.updatedAt
+                  ? new Date(enforcement.updatedAt).getTime()
+                  : Number.NaN
+                const enforcementStale =
+                  !Number.isNaN(enforcementUpdatedMs) && Date.now() - enforcementUpdatedMs > 5 * 60 * 1000
+                const activeUnlockExpiresAt = getActiveUnlock(overrideCommands, device.id, Date.now())
+                const unlockMinutes = unlockMinutesByDevice[device.id] ?? 30
+                const confirmingDeleteDevice = confirmDeleteDeviceId === device.id
                 return (
                 <Card key={device.id}>
                   <div className="flex items-start justify-between gap-3">
@@ -501,6 +706,39 @@ export default function DevicesPage() {
                       </dd>
                     </div>
                     <div className="flex justify-between gap-4">
+                      <dt className="shrink-0 text-slate-500">Thi hành</dt>
+                      <dd className="min-w-0 break-words text-right text-slate-800">
+                        {enforcementSnapshot ? (
+                          <span className="inline-flex flex-col items-end gap-1">
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${ENFORCEMENT_BADGE[enforcementSnapshot.decision]}`}
+                            >
+                              {enforcementDecisionLabel(enforcementSnapshot.decision)}
+                            </span>
+                            {enforcementSnapshot.reasons.length > 0 && (
+                              <span className="text-xs text-slate-500">
+                                Theo luật:{' '}
+                                {enforcementSnapshot.reasons.map(enforcementReasonLabel).join(', ')}
+                              </span>
+                            )}
+                            <span className="text-xs text-slate-500">
+                              Cập nhật{' '}
+                              {enforcement?.updatedAt
+                                ? formatRelativeVi(enforcement.updatedAt)
+                                : 'không rõ thời điểm'}
+                              {enforcementStale && (
+                                <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                                  Dữ liệu cũ
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">Chưa có dữ liệu thi hành</span>
+                        )}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4">
                       <dt className="shrink-0 text-slate-500">Ngày thêm</dt>
                       <dd className="min-w-0 break-words text-right text-slate-800">{formatDateTimeVi(device.created_at)}</dd>
                     </div>
@@ -517,6 +755,93 @@ export default function DevicesPage() {
                     <p className="mt-2 text-xs text-slate-500">
                       Lệnh khóa được ghi vào bảng commands để Agent trên máy con nhận và thi hành.
                     </p>
+                  </div>
+                  <div className="mt-4 border-t border-slate-100 pt-4">
+                    <p className="mb-2 text-sm font-medium text-slate-700">Mở khóa ngay</p>
+                    {activeUnlockExpiresAt ? (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                        <p>
+                          Đang mở khóa, còn{' '}
+                          {formatCountdown(
+                            Math.max(0, Math.floor((activeUnlockExpiresAt.getTime() - Date.now()) / 1000)),
+                          )}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void handleCancelDeviceOverride(device)}
+                          disabled={cancellingUnlockId === device.id}
+                          className="mt-2 inline-flex min-h-[44px] items-center rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+                        >
+                          {cancellingUnlockId === device.id ? 'Đang gửi…' : 'Hủy'}
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-2" role="group" aria-label="Thời lượng mở khóa">
+                          {UNLOCK_DURATIONS.map((minutes) => (
+                            <button
+                              key={minutes}
+                              type="button"
+                              onClick={() =>
+                                setUnlockMinutesByDevice((prev) => ({ ...prev, [device.id]: minutes }))
+                              }
+                              aria-pressed={unlockMinutes === minutes}
+                              className={chipClassName(unlockMinutes === minutes)}
+                            >
+                              {minutes} phút
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleUnlockNow(device)}
+                          disabled={sendingUnlockId === device.id}
+                          className={`${primaryButtonClassName} mt-3`}
+                        >
+                          {sendingUnlockId === device.id ? 'Đang gửi…' : 'Mở khóa ngay'}
+                        </button>
+                        <p className="mt-2 text-xs text-slate-500">
+                          Các quy tắc giờ giấc tạm ngưng trong thời gian đã chọn, sau đó áp dụng lại như cũ.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  <div className="mt-4 border-t border-slate-100 pt-4">
+                    <div className="flex flex-wrap gap-2">
+                      {confirmingDeleteDevice ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteDevice(device)}
+                            disabled={deletingDeviceId === device.id}
+                            className={dangerButtonClassName}
+                          >
+                            {deletingDeviceId === device.id ? 'Đang xóa…' : 'Xác nhận xóa'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteDeviceId(null)}
+                            className={secondaryButtonClassName}
+                          >
+                            Huỷ
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteDeviceId(device.id)}
+                          className={dangerOutlineButtonClassName}
+                        >
+                          Xóa thiết bị
+                        </button>
+                      )}
+                    </div>
+                    {confirmingDeleteDevice && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Xóa thiết bị sẽ xóa cả lịch sử dùng máy, lịch sử web và lệnh chờ của máy này. Các
+                        quy tắc của con vẫn giữ nguyên.
+                      </p>
+                    )}
                   </div>
                 </Card>
                 )
