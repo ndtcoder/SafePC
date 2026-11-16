@@ -1,10 +1,14 @@
 import { useState } from 'react'
 import {
   WEEKDAY_OPTIONS,
+  type AppBlockByTimeDraft,
+  type AppTimeLimitDraft,
   type BedtimeDraft,
   type BlockDomainsByTimeDraft,
   type DailyLimitDraft,
   type DomainTimeLimitDraft,
+  type FocusDraft,
+  type ForcedBreakDraft,
   type SafeSearchDraft,
   type TimeRangeValue,
   type TimeWindowDraft,
@@ -473,6 +477,279 @@ export function SafeSearchForm({
         />
         Bật chế độ hạn chế của YouTube (Restricted Mode)
       </label>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Quy tắc ứng dụng + giờ học tập trung (đợt 3). AppsField dùng chung cho
+// 3 form ứng dụng và form focus; kiểm tra hợp lệ ở lib/ruleConfig.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Danh sách ứng dụng có thể sửa: mỗi dòng gồm tên file .exe + tên hiển
+ * thị (+ ô số phút khi `showMinutes`). `Row` là kiểu dòng của draft nơi
+ * dùng (dòng giới hạn thời gian có thêm `minutes`, các dòng khác không) —
+ * component chỉ đọc/ghi `minutes` khi `showMinutes` bật.
+ */
+export function AppsField<Row extends { exe: string; name: string }>({
+  apps,
+  onChange,
+  showMinutes = false,
+  minutesLabel = 'Giới hạn mỗi ngày (phút)',
+  idPrefix = 'app',
+}: {
+  apps: Row[]
+  onChange: (apps: Row[]) => void
+  showMinutes?: boolean
+  minutesLabel?: string
+  idPrefix?: string
+}) {
+  const updateRow = (index: number, patch: Partial<Row>) => {
+    onChange(apps.map((row, i) => (i === index ? { ...row, ...patch } : row)))
+  }
+
+  const removeRow = (index: number) => {
+    onChange(apps.filter((_, i) => i !== index))
+  }
+
+  const addRow = () => {
+    const blank = showMinutes
+      ? { exe: '', name: '', minutes: '60' }
+      : { exe: '', name: '' }
+    onChange([...apps, blank as Row])
+  }
+
+  return (
+    <div className="space-y-2">
+      {apps.map((row, index) => {
+        const minutes = (row as { minutes?: string }).minutes ?? ''
+        return (
+          <div key={index} className="flex flex-wrap items-end gap-2">
+            <div className="w-full sm:w-auto sm:flex-1">
+              <label
+                htmlFor={`${idPrefix}-exe-${index}`}
+                className="mb-1 block text-xs text-slate-500"
+              >
+                Tên file .exe
+              </label>
+              <input
+                id={`${idPrefix}-exe-${index}`}
+                type="text"
+                maxLength={100}
+                value={row.exe}
+                onChange={(e) => updateRow(index, { exe: e.target.value } as Partial<Row>)}
+                placeholder="game.exe"
+                className={inputClassName}
+              />
+            </div>
+            <div className="w-full sm:w-auto sm:flex-1">
+              <label
+                htmlFor={`${idPrefix}-name-${index}`}
+                className="mb-1 block text-xs text-slate-500"
+              >
+                Tên hiển thị (không bắt buộc)
+              </label>
+              <input
+                id={`${idPrefix}-name-${index}`}
+                type="text"
+                maxLength={100}
+                value={row.name}
+                onChange={(e) => updateRow(index, { name: e.target.value } as Partial<Row>)}
+                placeholder="Ví dụ: Game"
+                className={inputClassName}
+              />
+            </div>
+            {showMinutes && (
+              <div className="w-full sm:w-32">
+                <label
+                  htmlFor={`${idPrefix}-minutes-${index}`}
+                  className="mb-1 block text-xs text-slate-500"
+                >
+                  {minutesLabel}
+                </label>
+                <input
+                  id={`${idPrefix}-minutes-${index}`}
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={1440}
+                  step={5}
+                  value={minutes}
+                  onChange={(e) =>
+                    updateRow(index, { minutes: e.target.value } as unknown as Partial<Row>)
+                  }
+                  className={inputClassName}
+                />
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => removeRow(index)}
+              aria-label={`Xoá ứng dụng ${row.exe.trim() || index + 1}`}
+              className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+            >
+              Xoá
+            </button>
+          </div>
+        )
+      })}
+      <button type="button" onClick={addRow} className={secondaryButtonClassName}>
+        Thêm ứng dụng
+      </button>
+      <p className="text-xs text-slate-500">
+        Tên file .exe, ví dụ: game.exe. Chỉ nhập tên file, không nhập đường dẫn. Tên hiển thị để
+        trống thì lấy theo tên file.
+      </p>
+    </div>
+  )
+}
+
+export function AppTimeLimitForm({
+  draft,
+  onChange,
+}: {
+  draft: AppTimeLimitDraft
+  onChange: (draft: AppTimeLimitDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        Mỗi ứng dụng dưới đây chỉ được dùng tối đa số phút đã đặt mỗi ngày. Hết giờ, ứng dụng sẽ
+        bị đóng tới hết ngày.
+      </p>
+      <AppsField
+        apps={draft.apps}
+        onChange={(apps) => onChange({ ...draft, apps })}
+        showMinutes
+        minutesLabel="Giới hạn mỗi ngày (phút)"
+        idPrefix="app-limit"
+      />
+    </div>
+  )
+}
+
+export function AppBlockByTimeForm({
+  draft,
+  onChange,
+}: {
+  draft: AppBlockByTimeDraft
+  onChange: (draft: AppBlockByTimeDraft) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Các ứng dụng dưới đây <strong>chỉ được dùng trong các khung giờ</strong> đã đặt; ngoài
+        khung giờ, ứng dụng sẽ bị đóng. <strong>Ngày nào không có khung giờ nào thì các ứng
+        dụng trên bị chặn cả ngày.</strong> Giờ tính theo giờ địa phương trên máy của con.
+      </p>
+      <AppsField
+        apps={draft.apps}
+        onChange={(apps) => onChange({ ...draft, apps })}
+        idPrefix="app-block"
+      />
+      <WeekdayWindowsEditor
+        draft={draft.windows}
+        onChange={(windows) => onChange({ ...draft, windows })}
+        idPrefix="app-window"
+        emptyDayText="Không có khung giờ nào — các ứng dụng trên bị chặn cả ngày này."
+      />
+    </div>
+  )
+}
+
+export function ForcedBreakForm({
+  draft,
+  onChange,
+}: {
+  draft: ForcedBreakDraft
+  onChange: (draft: ForcedBreakDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        Nghỉ bắt buộc được thi hành bằng cách khóa phiên làm việc khi con dùng máy liên tục đủ
+        số phút; máy sẽ khóa trong thời gian nghỉ.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="forced-break-work" className="mb-1 block text-sm font-medium text-slate-700">
+            Dùng liên tục (phút)
+          </label>
+          <input
+            id="forced-break-work"
+            type="number"
+            inputMode="numeric"
+            min={15}
+            max={180}
+            step={5}
+            value={draft.workMinutes}
+            onChange={(e) => onChange({ ...draft, workMinutes: e.target.value })}
+            className={inputClassName}
+          />
+          <p className="mt-1 text-xs text-slate-500">Từ 15 đến 180 phút.</p>
+        </div>
+        <div>
+          <label htmlFor="forced-break-break" className="mb-1 block text-sm font-medium text-slate-700">
+            Nghỉ (phút)
+          </label>
+          <input
+            id="forced-break-break"
+            type="number"
+            inputMode="numeric"
+            min={5}
+            max={60}
+            step={5}
+            value={draft.breakMinutes}
+            onChange={(e) => onChange({ ...draft, breakMinutes: e.target.value })}
+            className={inputClassName}
+          />
+          <p className="mt-1 text-xs text-slate-500">Từ 5 đến 60 phút.</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function FocusForm({
+  draft,
+  onChange,
+}: {
+  draft: FocusDraft
+  onChange: (draft: FocusDraft) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Trong giờ tập trung, chỉ các website và ứng dụng được phép mới mở được. Chặn tạm thời
+        vẫn thắng; cho phép tạm thời không mở được website ngoài danh sách trong giờ tập trung.
+        Giờ tính theo giờ địa phương trên máy của con.
+      </p>
+      <WeekdayWindowsEditor
+        draft={draft.windows}
+        onChange={(windows) => onChange({ ...draft, windows })}
+        idPrefix="focus-window"
+        emptyDayText="Không có khung giờ nào — ngày này không phải giờ học tập trung."
+      />
+      <DomainsField
+        id="focus-domains"
+        label="Website học tập được phép"
+        value={draft.allowedDomainsText}
+        onChange={(allowedDomainsText) => onChange({ ...draft, allowedDomainsText })}
+        hint="Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Trong giờ tập trung, mọi website ngoài danh sách này đều bị chặn."
+      />
+      <div>
+        <p className="mb-1 block text-sm font-medium text-slate-700">Ứng dụng được phép</p>
+        <AppsField
+          apps={draft.apps}
+          onChange={(apps) => onChange({ ...draft, apps })}
+          idPrefix="focus-app"
+        />
+        <p className="mt-1 text-xs text-slate-500">
+          Trong giờ tập trung, mọi ứng dụng ngoài danh sách này đều bị đóng — cần ít nhất một
+          ứng dụng được phép.
+        </p>
+      </div>
     </div>
   )
 }
