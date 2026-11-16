@@ -46,11 +46,11 @@ family_members (family_id, user_id, role: parent|child, ...)
 children (id, family_id, display_name, birth_year, avatar_url)
 devices (id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, status)
 device_tokens (device_id, token_hash, created_at, revoked_at) -- không lưu token thô
-rules (id, child_id, type: daily_limit|bedtime|app|website, config JSONB, enabled)
+rules (id, child_id, type: daily_limit|bedtime|time_window|app|website, config JSONB, enabled)
 app_usage (id, device_id, child_id, app_name, exe_path_hash, started_at, duration_sec)
 web_visits (id, device_id, child_id, domain, visited_at, blocked: bool) -- chỉ domain
 requests (id, child_id, type: extra_time|unblock_app, status, reason, decided_by, decided_at)
-commands (id, device_id, type: lock_now|unlock|refresh_rules|update, payload, status, created_at)
+commands (id, device_id, type: lock_now|unlock|refresh_rules|update|temporary_override, payload, status, created_at)
 audit_logs (id, family_id, actor, action, target, ip_hash, created_at)
 ```
 
@@ -71,9 +71,18 @@ audit_logs (id, family_id, actor, action, target, ip_hash, created_at)
 - Mỗi 15s: kiểm tra foreground app, cộng dồn thời gian, kiểm tra bedtime/limit.
 - Mỗi 15-30s (khi online): poll commands + gửi usage batch. Realtime là lớp tăng tốc, polling là dự phòng.
 - Khi hết giờ: Tray App hiện màn hình khóa, Service gọi LockWorkStation sau đếm ngược 60s để con kịp lưu bài.
+- Thứ tự đánh giá trong `RuleEngine` (Sprint 2 đợt 1): ghi đè tạm thời (khóa/mở) → giờ ngủ → khung giờ được dùng → giới hạn ngày; cảnh báo lấy ngưỡng gần nhất. Mọi giờ giấc theo giờ địa phương của máy con; quy ước thứ 0–6 khớp `DayOfWeek` (0 = Chủ nhật). Ngày vắng mặt trong `minutesByWeekday`/`bedtimeByWeekday` = không áp rule ngày đó; riêng `time_window`, ngày vắng mặt = không được dùng máy. Bedtime qua đêm (`end <= start`) khóa từ `start` hôm nay tới `end` hôm sau — engine kiểm tra cả khung hôm nay và đuôi qua đêm của hôm qua.
+- Ghi đè tạm thời (lệnh `temporary_override`): Agent lưu ghi đè đang hiệu lực vào bảng SQLite `active_override` (tối đa 1 hàng, lệnh mới thay lệnh cũ) và kiểm tra `expires_at` ở mỗi lần đánh giá, nên ghi đè hết hạn đúng giờ kể cả sau khi Service khởi động lại. Không suy ra lại từ server mỗi lần kiểm tra vì lệnh là một lần (pending → done) — sau khi nhận, hàng lệnh rời khỏi poll pending. Dashboard hiển thị ghi đè đang hiệu lực bằng cách đọc lệnh `temporary_override` mới nhất của máy từ bảng `commands`.
+- Khi quyết định chuyển từ khóa sang cho phép (hết giờ ngủ, ghi đè hết hạn...), Service gửi IPC `unlock` để Tray đóng màn hình khóa.
 
 ### 4.3. Lệnh từ xa
 Phụ huynh bấm Khóa ngay -> insert vào `commands` -> Realtime/polling -> Agent thi hành -> cập nhật status + audit log.
+
+### 4.4. Đồng hồ máy con và chống chỉnh giờ (TODO Sprint 2)
+
+Giờ giấc của rules thi hành theo đồng hồ địa phương của máy con, nên con có thể lách bằng cách chỉnh đồng hồ hệ thống (cần quyền Admin — tài khoản con là Standard User nên không chỉnh được giờ hệ thống trong mặc định Windows, nhưng vẫn cần lớp phát hiện).
+
+TODO (chưa triển khai — `SupabaseApiClient` vẫn là skeleton, engine vẫn làm việc hoàn toàn offline từ cache): trong vòng lặp heartbeat 60s, Worker so sánh giờ máy (`DateTimeOffset.Now`) với giờ server trả về; nếu lệch quá 5 phút thì ghi log cảnh báo và báo phụ huynh (qua bảng `audit_logs` / trạng thái thiết bị), để phụ huynh biết đồng hồ máy con không đáng tin. Không tự động sửa giờ máy. Khi heartbeat gọi thật, so sánh này chạy kèm mỗi lần heartbeat, không thêm vòng lặp riêng.
 
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 
