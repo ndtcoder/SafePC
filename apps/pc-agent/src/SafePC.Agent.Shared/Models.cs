@@ -135,3 +135,22 @@ public sealed class UsageRecord
     [JsonPropertyName("duration_sec")]
     public int DurationSec { get; set; }
 }
+
+/// <summary>
+/// Một lượt thăm web đã tổng hợp theo domain, khớp bảng <c>web_visits</c>
+/// (migration 1 + cột <c>duration_sec</c> ở migration 4).
+/// Chỉ lưu domain + thời điểm + thời lượng (giây) — KHÔNG lưu URL, path,
+/// query hay tiêu đề trang (docs/03-SECURITY.md mục 3). family_id/device_id/
+/// child_id do server suy ra từ device đã xác thực, không gửi kèm.
+/// </summary>
+public sealed class WebVisitRecord
+{
+    [JsonPropertyName("domain")]
+    public string Domain { get; set; } = string.Empty;
+
+    [JsonPropertyName("visited_at")]
+    public DateTimeOffset VisitedAt { get; set; }
+
+    [JsonPropertyName("duration_sec")]
+    public int DurationSec { get; set; }
+}
