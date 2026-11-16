@@ -193,11 +193,16 @@ public partial class App : System.Windows.Application
         _log?.Info("Tray: nhận IPC '" + message.Type + "' (bắt đầu xử lý).");
 
         // Message đến từ thread đọc pipe — chuyển về UI thread để mở cửa sổ WPF.
-        // Toàn bộ delegate chạy trong try/catch: một message xấu không được
-        // làm lỗi vòng nhận IPC (IpcPipeClient cũng bắt riêng từng message).
+        // Dùng BeginInvoke (BẤT ĐỒNG BỘ), không dùng Invoke: Invoke đồng bộ
+        // chặn thread đọc pipe cho tới khi UI thread chạy xong delegate, nên
+        // một UI thread bận/kẹt sẽ treo cả vòng nhận IPC (log sáng 17/11/2026:
+        // lệnh lock đã gửi tới nhưng Tray không bao giờ xử lý, không một dòng
+        // log IPC nào). BeginInvoke xếp delegate vào hàng đợi rồi trả về ngay,
+        // vòng đọc tiếp tục nhận message sau. Toàn bộ delegate vẫn chạy trong
+        // try/catch của chính nó.
         try
         {
-            Dispatcher.Invoke(() =>
+            Dispatcher.BeginInvoke(() =>
             {
                 try
                 {
@@ -298,7 +303,7 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            _log?.Error("Tray: Dispatcher.Invoke cho IPC '" + message.Type + "' lỗi.", ex);
+            _log?.Error("Tray: Dispatcher.BeginInvoke cho IPC '" + message.Type + "' lỗi.", ex);
         }
     }
 

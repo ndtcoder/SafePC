@@ -141,6 +141,14 @@ public sealed class TrayIconManager : IDisposable
             menu.UpdateLayout();
             PositionMenu(menu);
             menu.Activate();
+            // ĐƯA MENU LÊN FOREGROUND (mẫu Win32 chuẩn cho menu khay):
+            // chỉ Activate() của WPF là không đủ — log thật sáng 17/11/2026
+            // cho thấy menu mở ra rồi mất kích hoạt NGAY LẬP TỨC (Deactivated
+            // trong cùng giây, lặp lại mọi lần bấm) vì cửa sổ foreground lúc
+            // bấm chuột phải là shell/taskbar, Windows lấy lại kích hoạt ngay.
+            // SetForegroundWindow xin quyền foreground cho cửa sổ menu.
+            bool foreground = SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(menu).Handle);
+            _log.Info("Tray: SetForegroundWindow cho menu trả về " + foreground + ".");
             _log.Info("Tray: menu đã mở (xong).");
         }
         catch (Exception ex)
@@ -220,6 +228,9 @@ public sealed class TrayIconManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     private void CloseMenu()
     {

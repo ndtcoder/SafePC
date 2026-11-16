@@ -30,6 +30,16 @@ public partial class TrayMenuWindow : Window
     private readonly Action _showExtraTime;
     private readonly Action _requestExit;
 
+    /// <summary>
+    /// Thời điểm menu hiện lên (Loaded): các sự kiện Deactivated trong
+    /// 300ms đầu bị bỏ qua — log thật sáng 17/11/2026 cho thấy menu mất kích
+    /// hoạt ngay trong cùng giây vừa mở (Windows lấy lại kích hoạt cho
+    /// shell), khiến menu chớp rồi đóng và user không bao giờ thấy menu.
+    /// SetForegroundWindow (TrayIconManager) là sửa chính; khoảng ân hạn
+    /// này là lưới an toàn cho lần kích hoạt đầu chưa ổn định.
+    /// </summary>
+    private DateTimeOffset _shownAt;
+
     public TrayMenuWindow(LocalLogger log, Action showRemainingTime, Action showExtraTime, Action requestExit)
     {
         ArgumentNullException.ThrowIfNull(log);
@@ -44,8 +54,15 @@ public partial class TrayMenuWindow : Window
 
         InitializeComponent();
 
+        Loaded += (_, _) => _shownAt = DateTimeOffset.UtcNow;
         Deactivated += (_, _) =>
         {
+            if (DateTimeOffset.UtcNow - _shownAt < TimeSpan.FromMilliseconds(300))
+            {
+                _log.Info("Tray: menu mất kích hoạt trong 300ms đầu, bỏ qua (ân hạn).");
+                return;
+            }
+
             _log.Info("Tray: menu mất kích hoạt, đóng.");
             Close();
         };
