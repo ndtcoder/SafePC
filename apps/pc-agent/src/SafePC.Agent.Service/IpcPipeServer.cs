@@ -180,10 +180,18 @@ public sealed class IpcPipeServer : BackgroundService
                 server = CreatePipeServer();
                 await server.WaitForConnectionAsync(stoppingToken);
                 _log.Info("IPC: accept #" + iteration + " — Tray App đã kết nối.");
-                // Không await handler: giao kết nối cho task nền rồi quay
-                // lại tạo pipe instance mới ngay, để client khác nối được.
-                // Handler tự dispose stream khi xong (xem HandleClientAsync).
-                _ = HandleClientAsync(server, stoppingToken);
+                // Giao qua Task.Run — KHÔNG gọi trực tiếp: code của handler
+                // (kể cả phần đồng bộ trước await đầu tiên) không bao giờ
+                // được chạy trên thread của vòng accept. Log thật sáng
+                // 17/11/2026: vòng accept kẹt ngay sau "đã kết nối" (không
+                // có dòng "đã giao", không có accept #2, watchdog kêu) dù
+                // không có lỗi nào — vòng lặp chỉ an toàn khi handler chạy
+                // trên task riêng của nó. Handler tự dispose stream khi xong.
+                // Chụp stream vào biến cục bộ: lambda bắt BIẾN server, mà
+                // server bị gán null ngay sau đó — không chụp thì handler
+                // có thể nhận null.
+                NamedPipeServerStream connected = server;
+                _ = Task.Run(() => HandleClientAsync(connected, stoppingToken), stoppingToken);
                 server = null;
                 _log.Info("IPC: accept #" + iteration + " — đã giao kết nối cho handler, tạo instance mới.");
             }
@@ -335,7 +343,31 @@ public sealed class IpcPipeServer : BackgroundService
                 IpcMessage? message = IpcMessage.FromLine(line);
                 if (message is not null)
                 {
-                    await HandleMessageAsync(message, ct);
+                    // Xử lý message có giới hạn chờ 15 giây: một lần ghi DB
+                    // kẹt không được treo vòng đọc của handler mãi (vòng đọc
+                    // treo thì idle timeout không bao giờ tới và pipe instance
+                    // không bao giờ được giải phóng). Quá hạn thì bỏ chờ,
+                    // ghi log và đọc tiếp — tác vụ nền vẫn chạy, lỗi muộn
+                    // của nó vẫn được ghi log.
+                    Task handleTask = HandleMessageAsync(message, ct);
+                    Task finished = await Task.WhenAny(handleTask, Task.Delay(TimeSpan.FromSeconds(15)));
+                    if (ct.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    if (finished != handleTask)
+                    {
+                        _log.Warning("IPC: handler #" + handlerId + " xử lý message " + message.Type + " quá 15 giây, bỏ chờ và tiếp tục đọc.");
+                        _ = handleTask.ContinueWith(
+                            t => _log.Error("IPC: handler #" + handlerId + " xử lý message " + message.Type + " lỗi sau khi bỏ chờ.", t.Exception),
+                            TaskContinuationOptions.OnlyOnFaulted);
+                    }
+                    else
+                    {
+                        // Ném lại exception (nếu có) vào catch của handler.
+                        await handleTask;
+                    }
                 }
             }
         }
