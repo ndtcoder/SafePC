@@ -31,12 +31,12 @@ public partial class ExtraTimeWindow : Window
         string reason = ReasonBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(reason))
         {
-            _ = MessageBox.Show("Bạn hãy nhập lý do xin thêm giờ.", "SafePC", MessageBoxButton.OK, MessageBoxImage.Information);
+            _ = System.Windows.MessageBox.Show("Bạn hãy nhập lý do xin thêm giờ.", "SafePC", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         await _sendRequest(minutes, reason);
-        _ = MessageBox.Show(
+        _ = System.Windows.MessageBox.Show(
             "Đã gửi yêu cầu (bản skeleton — Sprint 2 mới gửi thật lên server để phụ huynh duyệt).",
             "SafePC",
             MessageBoxButton.OK,
