@@ -57,7 +57,11 @@ export default function LoginPage() {
         if (authError) throw authError
         navigate('/hom-nay', { replace: true })
       } else if (mode === 'signup') {
-        const { error: authError } = await supabase.auth.signUp({ email, password })
+        const { error: authError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: `${window.location.origin}/dang-nhap` },
+        })
         if (authError) throw authError
         setNotice(
           'Đã tạo tài khoản. Vui lòng kiểm tra hộp thư email để xác minh tài khoản trước khi đăng nhập.',

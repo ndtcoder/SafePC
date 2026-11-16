@@ -30,6 +30,40 @@ const STATUS_BADGE: Record<Device['status'], string> = {
 
 type LoadState = 'loading' | 'ready' | 'error'
 
+type PairingStatus = 'waiting' | 'paired' | 'expired'
+
+interface PairingSession {
+  code: string
+  childId: string
+  expiresAtMs: number
+  createdAtIso: string
+  status: PairingStatus
+  pairedDevice: Device | null
+}
+
+const PAIRING_CODE_TTL_MS = 10 * 60 * 1000
+
+/** Mã ghép nối 6 số (100000–999999) từ nguồn ngẫu nhiên của trình duyệt. */
+function generatePairingCode(): string {
+  const values = new Uint32Array(1)
+  crypto.getRandomValues(values)
+  return String(100000 + (values[0] % 900000))
+}
+
+/** SHA-256 hex CHỮ THƯỜNG của chuỗi mã — đúng quy ước Agent dùng để đổi mã. */
+async function sha256HexLower(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 export default function DevicesPage() {
   const { configured, user } = useAuth()
   const [state, setState] = useState<LoadState>('loading')
@@ -47,6 +81,15 @@ export default function DevicesPage() {
   const [childName, setChildName] = useState('')
   const [birthYear, setBirthYear] = useState('')
   const [savingChild, setSavingChild] = useState(false)
+
+  // Ghép nối máy mới: mã 6 số dùng một lần, hiệu lực 10 phút. Mã dạng
+  // plaintext chỉ hiển thị ở đây, một lần duy nhất; xuống database chỉ
+  // lưu SHA-256 hex của mã (xem handleCreatePairingCode).
+  const [pairChildId, setPairChildId] = useState('')
+  const [pairing, setPairing] = useState<PairingSession | null>(null)
+  const [pairError, setPairError] = useState<string | null>(null)
+  const [creatingCode, setCreatingCode] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const load = useCallback(async () => {
     if (!supabase || !user) {
@@ -82,6 +125,55 @@ export default function DevicesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Mặc định chọn con đầu tiên cho dropdown ghép nối (giống trang Quy tắc).
+  useEffect(() => {
+    if (!pairChildId && children.length > 0) setPairChildId(children[0].id)
+  }, [children, pairChildId])
+
+  // Đồng hồ đếm ngược khi đang chờ ghép nối; hết giờ thì đánh dấu hết hạn.
+  useEffect(() => {
+    if (pairing?.status !== 'waiting') return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [pairing?.status])
+
+  useEffect(() => {
+    if (pairing?.status === 'waiting' && nowMs >= pairing.expiresAtMs) {
+      setPairing((prev) => (prev && prev.status === 'waiting' ? { ...prev, status: 'expired' } : prev))
+    }
+  }, [nowMs, pairing])
+
+  // Poll thiết bị mới mỗi 5 giây trong lúc chờ ghép nối; dừng khi đã ghép
+  // nối, hết hạn hoặc unmount. Lỗi truy vấn thoáng qua thì bỏ qua, lần
+  // poll sau sẽ thử lại.
+  useEffect(() => {
+    if (!supabase || !family || !pairing || pairing.status !== 'waiting') return
+    const client = supabase
+    let cancelled = false
+    const checkForNewDevice = async () => {
+      const { data, error: queryError } = await client
+        .from('devices')
+        .select('id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, status, created_at')
+        .eq('family_id', family.id)
+        .gt('created_at', pairing.createdAtIso)
+        .order('created_at', { ascending: false })
+        .limit(1)
+      if (cancelled) return
+      if (queryError) return
+      const found = (data ?? [])[0] as Device | undefined
+      if (found) {
+        setPairing((prev) => (prev ? { ...prev, status: 'paired', pairedDevice: found } : prev))
+        await load()
+      }
+    }
+    void checkForNewDevice()
+    const timer = window.setInterval(() => void checkForNewDevice(), 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [family, pairing, load])
 
   const childNameById = new Map(children.map((c) => [c.id, c.display_name]))
 
@@ -155,6 +247,45 @@ export default function DevicesPage() {
     } finally {
       setSavingChild(false)
     }
+  }
+
+  const handleCreatePairingCode = async () => {
+    if (!supabase || !family || !pairChildId) return
+    setCreatingCode(true)
+    setPairError(null)
+    try {
+      const code = generatePairingCode()
+      const codeHash = await sha256HexLower(code)
+      const createdAt = new Date()
+      const expiresAt = new Date(createdAt.getTime() + PAIRING_CODE_TTL_MS)
+      const { error: insertError } = await supabase.from('pairing_codes').insert({
+        family_id: family.id,
+        child_id: pairChildId,
+        code_hash: codeHash,
+        expires_at: expiresAt.toISOString(),
+      })
+      if (insertError) throw insertError
+      // Trừ 30 giây khi poll theo created_at để tránh lệch đồng hồ giữa
+      // trình duyệt và database làm lỡ mất thiết bị vừa ghép nối.
+      setPairing({
+        code,
+        childId: pairChildId,
+        expiresAtMs: expiresAt.getTime(),
+        createdAtIso: new Date(createdAt.getTime() - 30_000).toISOString(),
+        status: 'waiting',
+        pairedDevice: null,
+      })
+      setNowMs(Date.now())
+    } catch (err) {
+      setPairError(toVietnameseError(err))
+    } finally {
+      setCreatingCode(false)
+    }
+  }
+
+  const handleCancelPairing = () => {
+    setPairing(null)
+    setPairError(null)
   }
 
   if (!configured) {
@@ -320,22 +451,91 @@ export default function DevicesPage() {
           )}
 
           <Card title="Ghép nối máy mới">
-            <ol className="list-decimal space-y-1.5 pl-5 text-sm text-slate-700">
-              <li>Tạo hồ sơ con (nút “Thêm hồ sơ con” ở trên) nếu chưa có.</li>
-              <li>Cài PC Agent lên máy Windows của con bằng tài khoản Admin.</li>
-              <li>Trên máy con, nhập mã ghép nối 6 số hiển thị trên Dashboard để liên kết máy với gia đình.</li>
-            </ol>
-            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              <p className="font-medium">Tính năng ghép nối đầy đủ thuộc Sprint 1.</p>
-              <p className="mt-1">
-                Mã ghép nối thật cần Edge Function phía Supabase (tạo mã, kiểm tra hết hạn 10 phút, đổi mã lấy
-                device token). Edge Function chưa được triển khai nên hiện tại chưa tạo được mã thật trên
-                Dashboard này — không hiển thị mã giả.
+            {children.length === 0 ? (
+              <p className="text-sm text-slate-700">
+                Cần tạo hồ sơ con trước khi ghép nối máy. Hãy bấm nút “Thêm hồ sơ con” ở trên.
               </p>
-            </div>
-            <button type="button" disabled className={`${primaryButtonClassName} mt-4`} title="Cần Edge Function ở Sprint 1">
-              Tạo mã ghép nối (Sprint 1)
-            </button>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Ghép nối máy cho con" htmlFor="pair-child">
+                    <select
+                      id="pair-child"
+                      value={pairChildId}
+                      onChange={(e) => setPairChildId(e.target.value)}
+                      disabled={pairing?.status === 'waiting'}
+                      className={inputClassName}
+                    >
+                      {children.map((child) => (
+                        <option key={child.id} value={child.id}>
+                          {child.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+
+                {pairError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+                    Không tạo được mã ghép nối: {pairError}
+                  </div>
+                )}
+
+                {pairing?.status === 'waiting' && (
+                  <div className="space-y-3">
+                    <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-center">
+                      <p className="text-sm text-indigo-800">Mã ghép nối (chỉ hiển thị một lần tại đây):</p>
+                      <p className="mt-1 font-mono text-4xl font-bold tracking-[0.3em] text-indigo-900">
+                        {pairing.code}
+                      </p>
+                      <p className="mt-2 text-sm font-medium text-indigo-800">
+                        Còn hiệu lực: {formatCountdown(Math.max(0, Math.floor((pairing.expiresAtMs - nowMs) / 1000)))}
+                      </p>
+                    </div>
+                    <ol className="list-decimal space-y-1.5 pl-5 text-sm text-slate-700">
+                      <li>Cài PC Agent lên máy Windows của con bằng tài khoản Admin (nếu chưa cài).</li>
+                      <li>
+                        Trên máy của con, mở PowerShell bằng quyền Administrator (chuột phải PowerShell → Run as
+                        administrator) rồi chạy lệnh sau:
+                      </li>
+                    </ol>
+                    <pre className="overflow-x-auto rounded-lg bg-slate-900 p-3 font-mono text-sm text-slate-100">
+                      {`& 'C:\\Program Files\\SafePC Agent\\Service\\SafePC.Agent.Service.exe' pair ${pairing.code}`}
+                    </pre>
+                    <p className="text-sm text-slate-600">
+                      Dashboard đang chờ máy con ghép nối và tự kiểm tra mỗi 5 giây. Mã hết hạn sau 10 phút.
+                    </p>
+                    <button type="button" onClick={handleCancelPairing} className={secondaryButtonClassName}>
+                      Huỷ mã này
+                    </button>
+                  </div>
+                )}
+
+                {pairing?.status === 'paired' && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+                    Đã ghép nối: {pairing.pairedDevice?.hostname ?? 'máy mới'}. Máy đã xuất hiện trong danh sách
+                    thiết bị ở trên.
+                  </div>
+                )}
+
+                {pairing?.status === 'expired' && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="status">
+                    Mã đã hết hạn, hãy tạo mã mới.
+                  </div>
+                )}
+
+                {pairing?.status !== 'waiting' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCreatePairingCode()}
+                    disabled={!pairChildId || creatingCode}
+                    className={primaryButtonClassName}
+                  >
+                    {creatingCode ? 'Đang tạo mã…' : pairing ? 'Tạo mã ghép nối mới' : 'Tạo mã ghép nối'}
+                  </button>
+                )}
+              </div>
+            )}
           </Card>
         </div>
       )}
