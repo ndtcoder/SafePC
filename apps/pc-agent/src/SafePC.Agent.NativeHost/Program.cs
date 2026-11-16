@@ -21,13 +21,18 @@ namespace SafePC.Agent.NativeHost;
 /// - {"type":"reportUsage","visits":[{"domain","startedAt","durationSec"}]}
 ///   -&gt; ghi thêm (append) các dòng JSONL vào web_usage.jsonl, trả
 ///   {"type":"ack","ok":true|false}.
+/// Mỗi message getRules/reportUsage (kể cả message lỗi) còn ghi đè timestamp
+/// UTC hiện tại vào extension_heartbeat.txt — dấu hiệu extension còn sống để
+/// Service đọc và báo lên server (Sprint 2 đợt 3). Ghi heartbeat không bao
+/// giờ làm lỗi message: lỗi thì chỉ log ra stderr.
 ///
 /// RANH GIỚI TIN CẬY (docs/03-SECURITY.md): host CHỈ đọc/ghi trong thư mục
 /// chia sẻ %ProgramData%\SafePC\shared\, KHÔNG bao giờ chạm tới file token
 /// (device_token.dat) hay database (agent.db) của Service, không gọi mạng,
 /// không chạy lệnh nào khác. Host chạy ở quyền user (do trình duyệt khởi
 /// động) nên chỉ đọc được domain_rules.json (ACL Users Read) và ghi được
-/// web_usage.jsonl. Input xấu không bao giờ làm crash host: lỗi thì log ra
+/// web_usage.jsonl + extension_heartbeat.txt (chỉ timestamp, không secret).
+/// Input xấu không bao giờ làm crash host: lỗi thì log ra
 /// stderr (Chrome ghi vào log của nó, không hiện cho user) và trả ack false.
 /// Không log domain hay dữ liệu thăm web — chỉ đếm.
 /// </summary>
@@ -59,6 +64,9 @@ internal static class NativeHostApp
 
     private static readonly string RulesFilePath = Path.Combine(SharedDirectory, "domain_rules.json");
     private static readonly string UsageFilePath = Path.Combine(SharedDirectory, "web_usage.jsonl");
+
+    /// <summary>File heartbeat của extension: chỉ chứa timestamp UTC ISO lúc extension liên hệ gần nhất. Service đọc để báo lên server.</summary>
+    private static readonly string HeartbeatFilePath = Path.Combine(SharedDirectory, "extension_heartbeat.txt");
 
     public static int Run()
     {
@@ -164,6 +172,13 @@ internal static class NativeHostApp
             }
 
             string? type = typeElement.GetString();
+            if (type is "getRules" or "reportUsage")
+            {
+                // Mọi lần extension liên hệ đều để lại dấu heartbeat — kể cả
+                // khi message sau đó xử lý lỗi. Ghi lỗi không ảnh hưởng message.
+                WriteExtensionHeartbeat();
+            }
+
             return type switch
             {
                 "getRules" => GetRulesJson(),
@@ -177,6 +192,28 @@ internal static class NativeHostApp
     {
         Console.Error.WriteLine("[SafePC NativeHost] Loại message không rõ, bỏ qua.");
         return AckJson(ok: false);
+    }
+
+    /// <summary>
+    /// Ghi đè timestamp UTC hiện tại (ISO-8601, định dạng "o") vào file
+    /// extension_heartbeat.txt. Best-effort: lỗi ghi chỉ log ra stderr,
+    /// không bao giờ làm lỗi message đang xử lý. FileShare.ReadWrite để
+    /// Service đọc được cùng lúc.
+    /// </summary>
+    private static void WriteExtensionHeartbeat()
+    {
+        try
+        {
+            Directory.CreateDirectory(SharedDirectory);
+            using FileStream stream = new(HeartbeatFilePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            writer.Write(DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            writer.Flush();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine("[SafePC NativeHost] Không ghi được extension_heartbeat.txt: " + ex.Message);
+        }
     }
 
     /// <summary>
