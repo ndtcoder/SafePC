@@ -160,7 +160,9 @@ var
 begin
   ExePath := ExpandConstant('{app}\NativeHost\SafePC.Agent.NativeHost.exe');
   // JSON yêu cầu backslash nhân đôi trong chuỗi đường dẫn Windows.
-  ExePath := StringChange(ExePath, '\', '\\');
+  // Lưu ý: Pascal Script của Inno Setup KHÔNG có hàm StringChange (dùng sẽ
+  // lỗi ISCC "Type mismatch" — CI run #80); API chuẩn là StringChangeEx.
+  ExePath := StringChangeEx(ExePath, '\', '\\', True);
   Manifest :=
     '{' + #13#10 +
     '  "name": "com.safepc.agent",' + #13#10 +
