@@ -44,14 +44,14 @@
 families (id, owner_id, name, created_at)
 family_members (family_id, user_id, role: parent|child, ...)
 children (id, family_id, display_name, birth_year, avatar_url)
-devices (id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, status)
+devices (id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, last_extension_seen_at, status)
 device_tokens (device_id, token_hash, created_at, revoked_at) -- không lưu token thô
 rules (id, child_id, type: daily_limit|bedtime|time_window|app|website, config JSONB, enabled)
 app_usage (id, device_id, child_id, app_name, exe_path_hash, started_at, duration_sec)
 web_visits (id, device_id, child_id, domain, visited_at, duration_sec, blocked: bool) -- chỉ domain + thời lượng, không path/query
 requests (id, child_id, type: extra_time|unblock_app, status, reason, decided_by, decided_at)
 commands (id, device_id, type: lock_now|unlock|refresh_rules|update|temporary_override, payload, status, created_at)
-audit_logs (id, family_id, actor, action, target, ip_hash, created_at)
+audit_logs (id, family_id, child_id, device_id, actor, action, target, ip_hash, details, created_at)
 ```
 
 - Tất cả bảng bật RLS: phụ huynh chỉ thấy dữ liệu của gia đình mình.
@@ -82,13 +82,29 @@ Phụ huynh bấm Khóa ngay -> insert vào `commands` -> Agent poll 15s, thi h�
 
 Giờ giấc của rules thi hành theo đồng hồ địa phương của máy con, nên con có thể lách bằng cách chỉnh đồng hồ hệ thống (cần quyền Admin — tài khoản con là Standard User nên không chỉnh được giờ hệ thống trong mặc định Windows, nhưng vẫn cần lớp phát hiện).
 
-Đã triển khai kiểm tra lệch giờ (16/11/2026): trong vòng lặp heartbeat 60s, Worker so sánh giờ máy với giờ server trả về; lệch quá 5 phút thì ghi log cảnh báo. Chưa triển khai: báo phụ huynh (qua `audit_logs` / trạng thái thiết bị) — TODO đợt 3. Không tự động sửa giờ máy.
+Đã triển khai kiểm tra lệch giờ (16/11/2026): trong vòng lặp heartbeat 60s, Worker so sánh giờ máy với giờ server trả về; lệch quá 5 phút thì ghi log cảnh báo. Từ Sprint 2 đợt 3, lệch giờ còn được báo phụ huynh bằng tamper event `clock_drift` (tối đa 1 lần/giờ, xem mục 4.7). Không tự động sửa giờ máy.
 
 ### 4.5. Lọc web qua extension (Sprint 2 đợt 2)
 
 Phụ huynh đặt rule `type = website` trên Dashboard → Agent đồng bộ về cache SQLite → `DomainRulesPublisher` (Service) xuất bản file `domain_rules.json` vào `%ProgramData%\SafePC\shared\` (chỉ ghi lại khi nội dung website thay đổi; khi đồng bộ rules, khi ghi đè áp dụng/hết hạn/hủy, và lúc khởi động nếu cache không rỗng) → NativeHost (`SafePC.Agent.NativeHost.exe`, giao thức native messaging stdio) đọc file và trả cho extension → extension dựng lại declarativeNetRequest dynamic rules mỗi phút: chặn domain, chặn theo giờ (đánh giá theo giờ địa phương, ranh giới có hiệu lực trong ~1 phút), chế độ allowlist, cho phép/chặn tạm thời, giới hạn thời gian theo domain (ngân sách tính theo ngày địa phương, hết thì chặn tới hôm sau), SafeSearch cho Google/Bing và Restricted Mode cho YouTube (redirect sang `restrict.youtube.com`). Ghi đè domain chỉ ảnh hưởng file này, không mở/khóa máy (`RuleEngine` bỏ qua chúng).
 
 Chiều ngược lại: extension đếm thời gian tab hiển thị theo domain (chỉ domain + giây, không URL/path/query) → gửi NativeHost mỗi phút → ghi thêm vào `shared\web_usage.jsonl` → Agent đọc trong chu kỳ flush 5 phút, đẩy qua RPC `safepc_push_web_visits` (migration 4) vào bảng `web_visits`; chỉ cắt file khi gửi thành công, gửi lỗi thì giữ lại chu kỳ sau. Extension không gọi Supabase, không có secret. Khi chưa nối được NativeHost, extension mở (fail-open) và popup báo chưa kết nối; bản unpacked có thể bị Standard User tắt — cứng hóa bằng store publishing + chính sách `ExtensionInstallForcelist` là việc sau (chưa triển khai). Manifest của NativeHost hiện dùng ID extension placeholder `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (xem `apps/browser-extension/README.md` mục 4).
+
+### 4.6. Thi hành theo app, giờ học tập trung và nghỉ bắt buộc (Sprint 2 đợt 3)
+
+Quy tắc theo app (`type = 'app'`, một rule một dòng, phân biệt bằng `config.mode`): `app_time_limit` (giới hạn phút/ngày cho từng app), `app_block_by_time` (khung giờ ĐƯỢC dùng theo thứ — ngoài khung thì đóng app), `forced_break` (nghỉ bắt buộc, xem dưới). Giờ học tập trung là rule `type = 'website'` với `mode = 'focus'` — ngoại lệ có chủ đích: phía đóng app do Agent đọc từ rule website (thi hành trong AgentWorker, không phải RuleEngine), phía domain do extension thi hành qua mục `focus` trong `domain_rules.json`.
+
+Luồng thi hành theo app: Tray lấy mẫu foreground mỗi 15s và gửi thêm message IPC `foreground-changed` khi app foreground đổi (tên file exe hoặc tên process khác lần trước) + heartbeat mỗi 60s → `IpcPipeServer` ghi vào `ForegroundState` (báo cáo mới nhất của mỗi session) → mỗi 15s, AgentWorker đọc báo cáo còn tươi (≤ 90s) và đếm thời gian dùng theo app hôm nay từ `usage_samples`, rồi cảnh báo (một lần/ngày/exe khi còn ≤ 5 phút) hoặc đóng app khi vượt giới hạn/ngoài khung giờ/ngoài danh sách focus. So khớp tên exe dùng chung một helper chuẩn hóa (`ExeNames`: bỏ một hậu tố `.exe`, không phân biệt hoa thường) vì `usage_samples.app_name` là tên process trần còn config ghi `game.exe`. Đóng app chỉ tác động tiến trình cùng tên trong đúng session đã báo cáo, không bao giờ chạm session 0, và bị chặn bởi denylist (tiến trình hệ thống + chính exe của SafePC). Không có báo cáo tươi thì không đóng gì (fail-open). Ghi đè mở máy tạm thời (unlock) tạm ngưng cả thi hành theo app, focus và nghỉ bắt buộc.
+
+Thứ tự ưu tiên phía domain (extension thi hành, cùng hợp đồng này): ghi đè chặn domain tạm thời (tempBlock) thắng allowlist của focus; ghi đè cho phép domain tạm thời (tempAllow) KHÔNG xuyên qua focus — trong giờ tập trung, domain ngoài danh sách focus vẫn bị chặn dù có tempAllow.
+
+Nghỉ bắt buộc (`forced_break`, VD: dùng liên tục 45 phút thì nghỉ 10 phút): chuỗi dùng liên tục tính từ `usage_samples` — khoảng trống > 3 phút thì chuỗi đứt, mẫu mới nhất cũ hơn 3 phút thì chuỗi = 0. Khi chuỗi đạt `workMinutes`, Service lưu thời điểm kết thúc giờ nghỉ vào `device_state` (`BreakEndsAt`, sống sót qua khởi động lại) và gửi IPC khóa — tái dùng đúng đường khóa hiện có (màn hình khóa đếm ngược 60s rồi `LockWorkStation`), không có UI khóa thứ hai. Trong giờ nghỉ, lệnh khóa được gửi lại mỗi 15s để đăng nhập lại sớm thì khóa lại ngay (Tray `ReassertLock`). Hết giờ nghỉ thì xóa `BreakEndsAt` và đặt `BreakStreakFloor` bằng thời điểm kết thúc, để mẫu trong giờ nghỉ không gây nghỉ lại ngay. Nói thành thật: giờ nghỉ chỉ khóa phiên trên máy này — không thể ép con nghỉ ngơi, chỉ ngăn con tiếp tục dùng máy này.
+
+### 4.7. Cảnh báo can thiệp (Sprint 2 đợt 3, migration 5)
+
+Bốn loại sự kiện (`audit_logs.action`, RPC `safepc_push_tamper_event` chỉ nhận đúng 4 giá trị này): `clock_drift` (đồng hồ lệch > 5 phút so với giờ server), `agent_restart` (Service khởi động lại), `extension_missing` và `service_stopped`. Agent chỉ tự đẩy 2 loại đầu (mỗi loại tối đa 1 lần/giờ, mốc lưu trong `device_state`); 2 loại sau Agent không bao giờ đẩy — máy đã dừng thì không đẩy được, còn extension vắng mặt thì Dashboard suy ra từ độ cũ của `devices.last_extension_seen_at`.
+
+Luồng heartbeat extension: mỗi message extension gửi qua NativeHost (`getRules`/`reportUsage`) khiến NativeHost ghi đè timestamp UTC vào `shared\extension_heartbeat.txt` (chỉ timestamp, không secret; ghi lỗi không làm lỗi message) → mỗi chu kỳ heartbeat 60s, sau khi heartbeat chính thành công, Service đọc file: timestamp mới (< 5 phút) thì báo lên server qua RPC `safepc_report_extension_heartbeat` (tối đa 1 lần/5 phút); file thiếu/hỏng/cũ hơn 15 phút thì chỉ ghi log cảnh báo (tối đa 1 lần/giờ). RPC ghi sự kiện vào `audit_logs` với `family_id`/`child_id`/`device_id` suy ra từ device đã xác thực, `details` cắt tối đa 2KB. Migration 5 chưa áp dụng lên Supabase (PENDING) — xem `backend/supabase/README.md`.
 
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 

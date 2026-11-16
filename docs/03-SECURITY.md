@@ -33,6 +33,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 | Tiêu đề cửa sổ | MVP: KHÔNG thu thập. Chỉ lấy tên process. Nếu giai đoạn 3 cần, phải có opt-in + lọc từ khóa tại chỗ, không gửi nguyên văn lên server. |
 | Ảnh chụp màn hình | Mặc định TẮT. Nếu bật: mã hóa, tự xóa sau 7 ngày, con thấy rõ khi nào bị chụp. |
 | IP | Chỉ lưu hash IP cho audit, không lưu IP thô quá 30 ngày. |
+| Heartbeat extension | File `extension_heartbeat.txt` chỉ chứa timestamp UTC lúc extension liên hệ gần nhất — không domain, không URL, không secret. |
 | Sao lưu | Backup DB mã hóa, kiểm tra khôi phục 1 lần/tháng. |
 
 ## 4. Checklist OWASP (chạy trước mỗi release)
@@ -60,6 +61,12 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - ACL file chia sẻ: thư mục `shared/` có SYSTEM toàn quyền + Users chỉ đọc (kế thừa), cộng quyền tạo file chỉ ở mức thư mục để NativeHost ghi `web_usage.jsonl`; bản thân `domain_rules.json` có ACL riêng ở cấp file (SYSTEM + Administrators toàn quyền, Users chỉ đọc, không kế thừa) nên tài khoản Standard không sửa/xóa được quy tắc. Đặt ACL là best-effort, thất bại thì log cảnh báo.
 - Thu thập tối thiểu: extension chỉ thu thập domain + thời lượng xem; không tiêu đề trang, không nội dung, không phím gõ, không mic/camera. Khi chưa nối được NativeHost thì fail-open và báo rõ trạng thái chưa kết nối.
 - [ ] Cứng hóa sau: đăng extension lên store + ép cài bằng chính sách `ExtensionInstallForcelist` (bản unpacked hiện có thể bị Standard User tắt — giới hạn đã ghi rõ trong README của extension).
+
+**Thi hành theo app / nghỉ bắt buộc / cảnh báo can thiệp (Sprint 2 đợt 3, đã triển khai):**
+- An toàn khi đóng app: chỉ đóng tiến trình cùng tên exe (chuẩn hóa chung, bỏ `.exe`, không phân biệt hoa thường) trong đúng session đã báo cáo foreground; không bao giờ chạm session 0; denylist chặn tiến trình hệ thống (`explorer`, `taskmgr`, `dwm`, `csrss`, `winlogon`, `services`, `lsass`, ...) và chính exe của SafePC (tự bảo vệ); mỗi tiến trình bắt lỗi riêng (best-effort), chỉ đóng đúng tiến trình đó, không đóng cây tiến trình con. Không có báo cáo foreground tươi (≤ 90s) thì không đóng gì (fail-open). Log chỉ ghi tên exe + lý do, không tiêu đề cửa sổ, không đường dẫn.
+- Nghỉ bắt buộc là khóa phiên, nói thành thật: Service khóa phiên làm việc của con trong thời gian nghỉ (`LockWorkStation` sau đếm ngược 60s, nhắc lại mỗi 15s); biện pháp này chỉ ngăn dùng máy này, không thể ép con nghỉ ngơi và không khóa được máy khác.
+- RPC cảnh báo can thiệp (migration 5): `safepc_push_tamper_event` xác thực bằng `safepc_auth_device` (cặp device_id + hash token), chỉ nhận 4 loại sự kiện, `family_id`/`child_id`/`device_id` suy ra từ device đã xác thực (không tin client), `details` cắt tối đa 2KB và fallback `{}` khi JSON hỏng; `safepc_report_extension_heartbeat` chỉ cập nhật đúng cột `last_extension_seen_at`, kẹp giờ tương lai về giờ server. Cả hai đều `SECURITY DEFINER` với `search_path` cố định, GRANT cho `anon`/`authenticated`/`service_role` như các RPC khác. Agent chỉ tự đẩy `clock_drift` và `agent_restart` (tối đa 1 lần/giờ mỗi loại); `service_stopped` và `extension_missing` không do Agent đẩy.
+- File heartbeat extension: NativeHost ghi đè timestamp UTC vào `shared\extension_heartbeat.txt` mỗi lần extension liên hệ; file chỉ chứa timestamp, không secret, Service đọc với `FileShare.ReadWrite` và không bao giờ tin timestamp tương lai (RPC kẹp về giờ server). Ghi heartbeat lỗi không làm lỗi message của extension.
 
 ## 5. Quyền riêng tư & tuân thủ
 
