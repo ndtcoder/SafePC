@@ -153,6 +153,24 @@ end;
 // đúng định dạng; ID thật lấy từ lúc đăng extension lên Chrome Web Store /
 // Edge Add-ons (hoặc key cố định khi đóng gói), rồi cập nhật cả chỗ này và
 // README của extension.
+// Nhân đôi backslash trong đường dẫn Windows để đưa vào JSON.
+// KHÔNG dùng StringChange/StringChangeEx: cả hai đều làm ISCC 6.7.1 báo
+// "Type mismatch" (CI run #80/#81). Vòng lặp thủ công chỉ dùng Length,
+// chỉ số chuỗi và nối chuỗi — không phụ thuộc hàm thư viện nào.
+function DoubleBackslashes(const S: String): String;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 1 to Length(S) do
+  begin
+    if S[I] = '\' then
+      Result := Result + '\\'
+    else
+      Result := Result + S[I];
+  end;
+end;
+
 procedure WriteNativeHostManifest();
 var
   ExePath: String;
@@ -160,9 +178,7 @@ var
 begin
   ExePath := ExpandConstant('{app}\NativeHost\SafePC.Agent.NativeHost.exe');
   // JSON yêu cầu backslash nhân đôi trong chuỗi đường dẫn Windows.
-  // Lưu ý: Pascal Script của Inno Setup KHÔNG có hàm StringChange (dùng sẽ
-  // lỗi ISCC "Type mismatch" — CI run #80); API chuẩn là StringChangeEx.
-  ExePath := StringChangeEx(ExePath, '\', '\\', True);
+  ExePath := DoubleBackslashes(ExePath);
   Manifest :=
     '{' + #13#10 +
     '  "name": "com.safepc.agent",' + #13#10 +
