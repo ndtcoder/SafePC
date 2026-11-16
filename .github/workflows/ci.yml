@@ -74,3 +74,25 @@ jobs:
         run: |
           dotnet restore apps/pc-agent/SafePC.Agent.sln
           dotnet build apps/pc-agent/SafePC.Agent.sln -c Release --no-restore
+      - name: Publish agent (self-contained win-x64)
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          dotnet publish apps/pc-agent/src/SafePC.Agent.Service/SafePC.Agent.Service.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/Service
+          dotnet publish apps/pc-agent/src/SafePC.Agent.Tray/SafePC.Agent.Tray.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/Tray
+      - name: Install Inno Setup
+        if: steps.check.outputs.exists == 'true'
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = 'ISCC.exe' }
+          & $iscc apps/pc-agent/installer/SafePCAgent.iss
+      - name: Upload installer artifact
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SafePCAgentSetup
+          path: apps/pc-agent/installer-output/SafePCAgentSetup-*.exe
+          if-no-files-found: error
