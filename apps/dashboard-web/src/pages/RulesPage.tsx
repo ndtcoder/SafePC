@@ -5,24 +5,48 @@ import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
 import type { Child, Command, Device, Family, Rule, TemporaryOverrideAction } from '../lib/types'
 import {
+  WEBSITE_MODE_OPTIONS,
   bedtimeConfigToDraft,
   bedtimeDraftToConfig,
+  buildAllowlistConfig,
+  buildBlockDomainsByTimeConfig,
+  buildBlockDomainsConfig,
+  buildDomainTimeLimitConfig,
+  buildSafeSearchConfig,
   dailyLimitConfigToDraft,
   dailyLimitDraftToConfig,
   emptyBedtimeDraft,
+  emptyBlockDomainsByTimeDraft,
   emptyDailyLimitDraft,
+  emptyDomainTimeLimitDraft,
+  emptySafeSearchDraft,
   emptyTimeWindowDraft,
+  emptyWebsiteDomainsDraft,
   parseBedtimeConfig,
   parseDailyLimitConfig,
+  parseDomainsInput,
   parseTimeWindowConfig,
+  parseWebsiteConfig,
   timeWindowConfigToDraft,
   timeWindowDraftToConfig,
   validateBedtimeDraft,
+  validateBlockDomainsByTimeDraft,
   validateDailyLimitDraft,
+  validateDomainTimeLimitDraft,
   validateTimeWindowDraft,
+  validateWebsiteDomainsText,
+  websiteConfigToBlockByTimeDraft,
+  websiteConfigToDomainsDraft,
+  websiteConfigToSafeSearchDraft,
+  websiteConfigToTimeLimitDraft,
   type BedtimeDraft,
+  type BlockDomainsByTimeDraft,
   type DailyLimitDraft,
+  type DomainTimeLimitDraft,
+  type SafeSearchDraft,
   type TimeWindowDraft,
+  type WebsiteDomainsDraft,
+  type WebsiteMode,
 } from '../lib/ruleConfig'
 import {
   describeRuleConfig,
@@ -33,7 +57,17 @@ import {
   ruleTypeLabel,
   toVietnameseError,
 } from '../lib/format'
-import { BedtimeForm, DailyLimitForm, TimeWindowForm } from '../components/RuleForms'
+import {
+  AllowlistForm,
+  BedtimeForm,
+  BlockDomainsByTimeForm,
+  BlockDomainsForm,
+  DailyLimitForm,
+  DomainTimeLimitForm,
+  DomainsField,
+  SafeSearchForm,
+  TimeWindowForm,
+} from '../components/RuleForms'
 import {
   Card,
   EmptyState,
@@ -49,8 +83,8 @@ import {
 
 type LoadState = 'loading' | 'ready' | 'error'
 
-/** Các loại quy tắc có form thêm/sửa trên trang này (đợt 1). */
-type EditableRuleType = 'daily_limit' | 'time_window' | 'bedtime'
+/** Các loại quy tắc có form thêm/sửa trên trang này (đợt 1: giờ giấc; đợt 2: website với 5 chế độ). */
+type EditableRuleType = 'daily_limit' | 'time_window' | 'bedtime' | 'website'
 
 type OverrideSendAction = Exclude<TemporaryOverrideAction, 'cancel'>
 
@@ -60,26 +94,40 @@ interface ActiveOverride {
   action: OverrideSendAction
   minutes: number
   expiresAt: Date
+  /** Chỉ có với ghi đè website (allow_domain/block_domain). */
+  domains?: string[]
 }
 
 /**
  * Suy ra ghi đè đang hiệu lực của một máy từ các lệnh temporary_override
- * mới nhất (mới nhất thắng; lệnh cancel hoặc lệnh đã hết hạn nghĩa là
- * không còn ghi đè nào hiệu lực). `commands` phải xếp mới nhất trước.
- * Đây là hiển thị tham khảo — Agent trên máy con mới là nơi thi hành
- * thật, dựa trên bản ghi đè nó đã lưu local và thời gian hết hạn.
+ * mới nhất (mới nhất thắng — kể cả khác loại: ghi đè website mới nhất sẽ
+ * thay thế ghi đè giờ giấc trước đó và ngược lại; lệnh cancel hoặc lệnh
+ * đã hết hạn nghĩa là không còn ghi đè nào hiệu lực). `commands` phải xếp
+ * mới nhất trước. Đây là hiển thị tham khảo — Agent trên máy con mới là
+ * nơi thi hành thật, dựa trên bản ghi đè nó đã lưu local và thời gian hết hạn.
  */
 function getActiveOverride(commands: Command[], deviceId: string, nowMs: number): ActiveOverride | null {
   for (const command of commands) {
     if (command.device_id !== deviceId) continue
     const action = command.payload['action']
     if (action === 'cancel') return null
-    if (action !== 'bonus_minutes' && action !== 'lock' && action !== 'unlock') continue
+    if (
+      action !== 'bonus_minutes' &&
+      action !== 'lock' &&
+      action !== 'unlock' &&
+      action !== 'allow_domain' &&
+      action !== 'block_domain'
+    )
+      continue
     const expiresRaw = command.payload['expires_at']
     const expiresAt = typeof expiresRaw === 'string' ? new Date(expiresRaw) : null
     if (!expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= nowMs) return null
     const minutes = typeof command.payload['minutes'] === 'number' ? command.payload['minutes'] : 0
-    return { action, minutes, expiresAt }
+    const rawDomains = command.payload['domains']
+    const domains = Array.isArray(rawDomains)
+      ? rawDomains.filter((d): d is string => typeof d === 'string')
+      : []
+    return { action, minutes, expiresAt, domains: domains.length > 0 ? domains : undefined }
   }
   return null
 }
@@ -98,14 +146,22 @@ export default function RulesPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null)
   const [creatingFamily, setCreatingFamily] = useState(false)
 
-  // Form thêm/sửa quy tắc (3 loại của đợt 1). Khi đang sửa, form giữ nguyên
-  // loại của rule; khi thêm mới, phụ huynh chọn loại.
+  // Form thêm/sửa quy tắc. Khi đang sửa, form giữ nguyên loại (và chế độ
+  // website) của rule; khi thêm mới, phụ huynh chọn loại và chế độ.
   const [editingRule, setEditingRule] = useState<Rule | null>(null)
   const [formChildId, setFormChildId] = useState('')
   const [formType, setFormType] = useState<EditableRuleType>('daily_limit')
   const [dailyDraft, setDailyDraft] = useState<DailyLimitDraft>(emptyDailyLimitDraft())
   const [windowDraft, setWindowDraft] = useState<TimeWindowDraft>(emptyTimeWindowDraft())
   const [bedtimeDraft, setBedtimeDraft] = useState<BedtimeDraft>(emptyBedtimeDraft())
+  // Quy tắc website (đợt 2): một dòng rule type='website' mang đúng 1 chế độ.
+  const [formMode, setFormMode] = useState<WebsiteMode>('block_domains')
+  const [websiteDomainsDraft, setWebsiteDomainsDraft] =
+    useState<WebsiteDomainsDraft>(emptyWebsiteDomainsDraft())
+  const [blockByTimeDraft, setBlockByTimeDraft] =
+    useState<BlockDomainsByTimeDraft>(emptyBlockDomainsByTimeDraft())
+  const [timeLimitDraft, setTimeLimitDraft] = useState<DomainTimeLimitDraft>(emptyDomainTimeLimitDraft())
+  const [safeSearchDraft, setSafeSearchDraft] = useState<SafeSearchDraft>(emptySafeSearchDraft())
   const [savingRule, setSavingRule] = useState(false)
 
   // Xoá quy tắc: bấm 2 lần (bấm "Xoá" rồi "Xác nhận xoá") để tránh xoá nhầm.
@@ -118,6 +174,13 @@ export default function RulesPage() {
   const [overrideMinutes, setOverrideMinutes] = useState(30)
   const [sendingOverride, setSendingOverride] = useState(false)
   const [cancellingOverride, setCancellingOverride] = useState(false)
+
+  // Ghi đè website tạm thời (cho phép/chặn domain, tự hết hạn). Dùng chung
+  // máy đã chọn (overrideDeviceId) và lệnh hủy (cancel) với ghi đè giờ giấc.
+  const [domainOverrideAction, setDomainOverrideAction] = useState<'allow_domain' | 'block_domain'>('allow_domain')
+  const [domainOverrideText, setDomainOverrideText] = useState('')
+  const [domainOverrideMinutes, setDomainOverrideMinutes] = useState(30)
+  const [sendingDomainOverride, setSendingDomainOverride] = useState(false)
 
   const load = useCallback(async () => {
     if (!supabase || !user) {
@@ -182,6 +245,10 @@ export default function RulesPage() {
     setDailyDraft(emptyDailyLimitDraft())
     setWindowDraft(emptyTimeWindowDraft())
     setBedtimeDraft(emptyBedtimeDraft())
+    setWebsiteDomainsDraft(emptyWebsiteDomainsDraft())
+    setBlockByTimeDraft(emptyBlockDomainsByTimeDraft())
+    setTimeLimitDraft(emptyDomainTimeLimitDraft())
+    setSafeSearchDraft(emptySafeSearchDraft())
   }
 
   const handleCreateFamily = async () => {
@@ -233,6 +300,14 @@ export default function RulesPage() {
     } else if (rule.type === 'bedtime') {
       setBedtimeDraft(bedtimeConfigToDraft(parseBedtimeConfig(rule.config)))
       setFormType('bedtime')
+    } else if (rule.type === 'website') {
+      const parsed = parseWebsiteConfig(rule.config)
+      setFormType('website')
+      setFormMode(parsed?.mode ?? 'block_domains')
+      setWebsiteDomainsDraft(websiteConfigToDomainsDraft(parsed))
+      setBlockByTimeDraft(websiteConfigToBlockByTimeDraft(parsed))
+      setTimeLimitDraft(websiteConfigToTimeLimitDraft(parsed))
+      setSafeSearchDraft(websiteConfigToSafeSearchDraft(parsed))
     } else {
       return
     }
@@ -267,13 +342,42 @@ export default function RulesPage() {
         return
       }
       config = timeWindowDraftToConfig(windowDraft)
-    } else {
+    } else if (formType === 'bedtime') {
       const validationError = validateBedtimeDraft(bedtimeDraft)
       if (validationError) {
         setActionError(validationError)
         return
       }
       config = bedtimeDraftToConfig(bedtimeDraft)
+    } else {
+      // Quy tắc website: một dòng rule mang đúng 1 chế độ (formMode).
+      if (formMode === 'block_domains' || formMode === 'allowlist') {
+        const validationError = validateWebsiteDomainsText(websiteDomainsDraft.domainsText)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config =
+          formMode === 'block_domains'
+            ? buildBlockDomainsConfig(websiteDomainsDraft.domainsText)
+            : buildAllowlistConfig(websiteDomainsDraft.domainsText)
+      } else if (formMode === 'block_domains_by_time') {
+        const validationError = validateBlockDomainsByTimeDraft(blockByTimeDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildBlockDomainsByTimeConfig(blockByTimeDraft)
+      } else if (formMode === 'domain_time_limit') {
+        const validationError = validateDomainTimeLimitDraft(timeLimitDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildDomainTimeLimitConfig(timeLimitDraft)
+      } else {
+        config = buildSafeSearchConfig(safeSearchDraft)
+      }
     }
 
     setSavingRule(true)
@@ -378,7 +482,7 @@ export default function RulesPage() {
         status: 'pending',
       })
       if (insertError) throw insertError
-      setActionMessage(`Đã gửi lệnh hủy ghi đè tới máy "${device.hostname}". Các quy tắc giờ giấc sẽ áp dụng lại như cũ.`)
+      setActionMessage(`Đã gửi lệnh hủy ghi đè tới máy "${device.hostname}". Các quy tắc bình thường sẽ áp dụng lại như cũ.`)
       await load()
     } catch (err) {
       setActionError(toVietnameseError(err))
@@ -387,9 +491,53 @@ export default function RulesPage() {
     }
   }
 
+  const handleSendDomainOverride = async () => {
+    if (!supabase || !family || !overrideDeviceId) return
+    const parsed = parseDomainsInput(domainOverrideText)
+    if (parsed.error) {
+      setActionError(parsed.error)
+      return
+    }
+    const device = devices.find((d) => d.id === overrideDeviceId)
+    if (!device) return
+    setSendingDomainOverride(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const expiresAt = new Date(Date.now() + domainOverrideMinutes * 60000)
+      const { error: insertError } = await supabase.from('commands').insert({
+        family_id: device.family_id,
+        device_id: device.id,
+        type: 'temporary_override',
+        payload: {
+          action: domainOverrideAction,
+          domains: parsed.domains,
+          minutes: domainOverrideMinutes,
+          expires_at: expiresAt.toISOString(),
+        },
+        status: 'pending',
+      })
+      if (insertError) throw insertError
+      setActionMessage(
+        `Đã gửi "${overrideActionLabel(domainOverrideAction)}" (${parsed.domains.join(', ')}) tới máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setSendingDomainOverride(false)
+    }
+  }
+
   const activeOverride = overrideDeviceId
     ? getActiveOverride(overrideCommands, overrideDeviceId, Date.now())
     : null
+
+  // Ghi đè website đang hiệu lực (nếu lệnh mới nhất là ghi đè domain).
+  const activeDomainOverride =
+    activeOverride && (activeOverride.action === 'allow_domain' || activeOverride.action === 'block_domain')
+      ? activeOverride
+      : null
 
   if (!configured) {
     return (
@@ -404,7 +552,7 @@ export default function RulesPage() {
     <>
       <PageHeader
         title="Quy tắc"
-        description="Giới hạn giờ dùng máy, khung giờ được dùng, giờ ngủ và ghi đè tạm thời cho từng con."
+        description="Giới hạn giờ dùng máy, khung giờ được dùng, giờ ngủ, quy tắc website và ghi đè tạm thời cho từng con."
       />
 
       {actionMessage && (
@@ -480,13 +628,50 @@ export default function RulesPage() {
                       <option value="daily_limit">Giới hạn giờ/ngày theo thứ</option>
                       <option value="time_window">Khung giờ được dùng máy</option>
                       <option value="bedtime">Giờ ngủ / giờ cấm</option>
+                      <option value="website">Quy tắc website</option>
                     </select>
                   </Field>
+                  {formType === 'website' && (
+                    <Field
+                      label="Chế độ website"
+                      htmlFor="rule-website-mode"
+                      hint={editingRule ? 'Không đổi được chế độ khi sửa.' : undefined}
+                    >
+                      <select
+                        id="rule-website-mode"
+                        value={formMode}
+                        disabled={editingRule !== null}
+                        onChange={(e) => setFormMode(e.target.value as WebsiteMode)}
+                        className={inputClassName}
+                      >
+                        {WEBSITE_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
                 </div>
 
                 {formType === 'daily_limit' && <DailyLimitForm draft={dailyDraft} onChange={setDailyDraft} />}
                 {formType === 'time_window' && <TimeWindowForm draft={windowDraft} onChange={setWindowDraft} />}
                 {formType === 'bedtime' && <BedtimeForm draft={bedtimeDraft} onChange={setBedtimeDraft} />}
+                {formType === 'website' && formMode === 'block_domains' && (
+                  <BlockDomainsForm draft={websiteDomainsDraft} onChange={setWebsiteDomainsDraft} />
+                )}
+                {formType === 'website' && formMode === 'block_domains_by_time' && (
+                  <BlockDomainsByTimeForm draft={blockByTimeDraft} onChange={setBlockByTimeDraft} />
+                )}
+                {formType === 'website' && formMode === 'allowlist' && (
+                  <AllowlistForm draft={websiteDomainsDraft} onChange={setWebsiteDomainsDraft} />
+                )}
+                {formType === 'website' && formMode === 'domain_time_limit' && (
+                  <DomainTimeLimitForm draft={timeLimitDraft} onChange={setTimeLimitDraft} />
+                )}
+                {formType === 'website' && formMode === 'safe_search' && (
+                  <SafeSearchForm draft={safeSearchDraft} onChange={setSafeSearchDraft} />
+                )}
 
                 <div className="flex flex-wrap gap-2">
                   <button type="submit" disabled={savingRule} className={primaryButtonClassName}>
@@ -576,6 +761,9 @@ export default function RulesPage() {
                     <p>
                       <span className="font-medium">Đang hiệu lực trên máy này: </span>
                       {overrideActionLabel(activeOverride.action)}
+                      {activeOverride.domains && activeOverride.domains.length > 0
+                        ? `: ${activeOverride.domains.join(', ')}`
+                        : ''}
                       {activeOverride.action === 'bonus_minutes'
                         ? ` (+${activeOverride.minutes} phút hôm nay)`
                         : ` (${activeOverride.minutes} phút)`}
@@ -605,16 +793,131 @@ export default function RulesPage() {
             )}
           </Card>
 
+          <Card title="Cho phép / chặn website tạm thời">
+            {devices.length === 0 ? (
+              <p className="text-sm text-slate-700">
+                Chưa có thiết bị nào được ghép nối. Ghi đè website tạm thời được gửi tới từng máy, nên cần ghép
+                nối máy của con trước (xem trang Thiết bị).
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Máy" htmlFor="domain-override-device">
+                    <select
+                      id="domain-override-device"
+                      value={overrideDeviceId}
+                      onChange={(e) => setOverrideDeviceId(e.target.value)}
+                      className={inputClassName}
+                    >
+                      {devices.map((device) => (
+                        <option key={device.id} value={device.id}>
+                          {device.hostname}
+                          {device.child_id ? ` — ${childNameById.get(device.child_id) ?? ''}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Hành động" htmlFor="domain-override-action">
+                    <select
+                      id="domain-override-action"
+                      value={domainOverrideAction}
+                      onChange={(e) =>
+                        setDomainOverrideAction(e.target.value as 'allow_domain' | 'block_domain')
+                      }
+                      className={inputClassName}
+                    >
+                      <option value="allow_domain">Cho phép tạm thời (bỏ chặn)</option>
+                      <option value="block_domain">Chặn tạm thời</option>
+                    </select>
+                  </Field>
+                </div>
+
+                <DomainsField
+                  id="domain-override-domains"
+                  label="Domain"
+                  value={domainOverrideText}
+                  onChange={setDomainOverrideText}
+                />
+
+                <div>
+                  <span className="mb-1 block text-sm font-medium text-slate-700">Hiệu lực trong</span>
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Thời lượng">
+                    {OVERRIDE_DURATIONS.map((minutes) => (
+                      <button
+                        key={minutes}
+                        type="button"
+                        onClick={() => setDomainOverrideMinutes(minutes)}
+                        aria-pressed={domainOverrideMinutes === minutes}
+                        className={`rounded-lg px-3 py-2 text-sm font-medium ${
+                          domainOverrideMinutes === minutes
+                            ? 'bg-indigo-600 text-white'
+                            : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {minutes} phút
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <p className="text-sm text-slate-600">
+                  {domainOverrideAction === 'allow_domain'
+                    ? 'Các domain trên sẽ được mở tạm thời (bỏ qua quy tắc chặn website) trong thời gian đã chọn, sau đó các quy tắc website bình thường áp dụng lại.'
+                    : 'Các domain trên sẽ bị chặn tạm thời trong thời gian đã chọn, sau đó các quy tắc website bình thường áp dụng lại.'}{' '}
+                  Ghi đè mới nhất sẽ thay thế ghi đè trước đó trên cùng một máy (kể cả ghi đè giờ giấc).
+                </p>
+
+                {activeDomainOverride && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    <p>
+                      <span className="font-medium">Đang hiệu lực trên máy này: </span>
+                      {overrideActionLabel(activeDomainOverride.action)}
+                      {activeDomainOverride.domains && activeDomainOverride.domains.length > 0
+                        ? `: ${activeDomainOverride.domains.join(', ')}`
+                        : ''}
+                      {` (${activeDomainOverride.minutes} phút)`}
+                      {' — '}hết hạn lúc {formatTimeVi(activeDomainOverride.expiresAt.toISOString())} (còn{' '}
+                      {formatDurationVi(
+                        Math.max(0, (activeDomainOverride.expiresAt.getTime() - Date.now()) / 1000),
+                      )}
+                      ).
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelOverride()}
+                      disabled={cancellingOverride}
+                      className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {cancellingOverride ? 'Đang gửi…' : 'Huỷ ghi đè này'}
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleSendDomainOverride()}
+                  disabled={sendingDomainOverride || !overrideDeviceId}
+                  className={primaryButtonClassName}
+                >
+                  {sendingDomainOverride ? 'Đang gửi…' : 'Gửi ghi đè website tạm thời'}
+                </button>
+              </div>
+            )}
+          </Card>
+
           {rules.length === 0 ? (
             <EmptyState
               title="Chưa có quy tắc nào"
-              description="Chưa có quy tắc nào cho gia đình của bạn. Thêm quy tắc ở trên để bắt đầu — các loại quy tắc khác (chặn ứng dụng/website) sẽ có ở đợt tiếp theo."
+              description="Chưa có quy tắc nào cho gia đình của bạn. Thêm quy tắc ở trên để bắt đầu — quy tắc chặn ứng dụng sẽ có ở đợt tiếp theo."
             />
           ) : (
             <div className="space-y-3">
               {rules.map((rule) => {
                 const editable =
-                  rule.type === 'daily_limit' || rule.type === 'time_window' || rule.type === 'bedtime'
+                  rule.type === 'daily_limit' ||
+                  rule.type === 'time_window' ||
+                  rule.type === 'bedtime' ||
+                  rule.type === 'website'
                 const confirmingDelete = confirmDeleteId === rule.id
                 return (
                   <Card key={rule.id}>
