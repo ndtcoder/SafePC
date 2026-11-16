@@ -46,6 +46,13 @@ public sealed class IpcPipeClient : IDisposable
             try
             {
                 await ConnectAndReadAsync(ct);
+                if (!ct.IsCancellationRequested && !_disposed)
+                {
+                    // ConnectAndReadAsync trả về mà không qua các đường đã
+                    // ghi log (timeout, server đóng, exception): ghi rõ để
+                    // lần rớt kết nối nào cũng hiện trong log, không im lặng.
+                    _log.Warning("IPC: phiên kết nối kết thúc, thử lại sau 5 giây.");
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

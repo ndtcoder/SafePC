@@ -16,6 +16,8 @@ namespace SafePC.Agent.Tray;
 /// Vì app không có cửa sổ chính, OnStartup tạo thêm một cửa sổ neo ẩn để
 /// làm Owner cho mọi cửa sổ và PlacementTarget cho menu chuột phải — nếu
 /// không, menu/cửa sổ rất dễ mất kích hoạt và kẹt (xem ghi chú ở OnStartup).
+///
+/// Chỉ một instance trong mỗi phiên đăng nhập (mutex Local\) — xem OnStartup.
 /// </summary>
 public partial class App : System.Windows.Application
 {
@@ -29,6 +31,8 @@ public partial class App : System.Windows.Application
     private RemainingTimeWindow? _remainingWindow;
     private ExtraTimeWindow? _extraTimeWindow;
     private System.Windows.Window? _anchor;
+    private Mutex? _singleInstanceMutex;
+    private bool _ownsSingleInstanceMutex;
     private bool _shutDown;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -39,7 +43,36 @@ public partial class App : System.Windows.Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "SafePC", "logs", "agent-tray.log");
         _log = new LocalLogger(logPath);
-        _log.Info("SafePC Tray khởi động.");
+        _log.Info("SafePC Tray khởi động (PID " + Environment.ProcessId + ").");
+
+        // Single-instance theo từng phiên đăng nhập: chỉ một Tray trong mỗi
+        // session. Mutex "Local\" là theo session — phiên của con và phiên
+        // của phụ huynh vẫn có Tray riêng. Bản không có khóa này cho chạy
+        // nhiều Tray cùng lúc (máy thật ngày 2026-11-16: 3 icon khay), các
+        // process ghi chung một file log khiến log lẫn nhau không đọc được.
+        // WaitOne(0) + AbandonedMutexException: nếu process cũ bị dừng đột
+        // ngột (Task Manager), mutex bị bỏ rơi và instance mới vẫn chiếm được.
+        _singleInstanceMutex = new Mutex(initiallyOwned: false, @"Local\SafePC.Agent.Tray");
+        bool acquired;
+        try
+        {
+            acquired = _singleInstanceMutex.WaitOne(TimeSpan.Zero);
+        }
+        catch (AbandonedMutexException)
+        {
+            acquired = true;
+        }
+
+        if (!acquired)
+        {
+            _log.Info("SafePC Tray đã chạy trong phiên này, thoát bản sao (PID " + Environment.ProcessId + ").");
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+            Shutdown();
+            return;
+        }
+
+        _ownsSingleInstanceMutex = true;
 
         _ipc = new IpcPipeClient(_log);
         _ipc.MessageReceived += OnIpcMessage;
@@ -218,6 +251,22 @@ public partial class App : System.Windows.Application
         catch
         {
             // Bỏ qua lỗi khi dọn dẹp lúc thoát.
+        }
+
+        if (_ownsSingleInstanceMutex && _singleInstanceMutex is not null)
+        {
+            try
+            {
+                _singleInstanceMutex.ReleaseMutex();
+            }
+            catch
+            {
+                // Bỏ qua lỗi khi dọn dẹp lúc thoát.
+            }
+
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+            _ownsSingleInstanceMutex = false;
         }
 
         _log?.Info("SafePC Tray đã thoát.");
