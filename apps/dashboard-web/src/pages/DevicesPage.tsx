@@ -7,6 +7,7 @@ import {
   deviceStatusLabel,
   formatDateTimeVi,
   formatRelativeVi,
+  formatTimeVi,
   toVietnameseError,
 } from '../lib/format'
 import {
@@ -64,6 +65,33 @@ function formatCountdown(totalSeconds: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
+/** Máy coi là mất kết nối khi chưa từng thấy hoặc đã quá 10 phút không thấy heartbeat. */
+function isDisconnected(device: Device, nowMs: number): boolean {
+  if (!device.last_seen_at) return true
+  const seenMs = new Date(device.last_seen_at).getTime()
+  if (Number.isNaN(seenMs)) return true
+  return nowMs - seenMs > 10 * 60 * 1000
+}
+
+/**
+ * Trạng thái extension trình duyệt từ `last_extension_seen_at` (cột do
+ * migration 5 thêm). `undefined` = chưa có dữ liệu (truy vấn cột thất bại
+ * vì migration 5 chưa áp dụng, hoặc máy chưa có trong kết quả); `null` =
+ * cột có nhưng chưa từng ghi nhận. Cả hai đều hiển thị "Chưa có dữ liệu".
+ */
+function extensionStatus(seenAt: string | null | undefined, nowMs: number): {
+  label: string
+  className: string
+} {
+  if (!seenAt) return { label: 'Chưa có dữ liệu', className: 'text-slate-500' }
+  const seenMs = new Date(seenAt).getTime()
+  if (Number.isNaN(seenMs)) return { label: 'Chưa có dữ liệu', className: 'text-slate-500' }
+  if (nowMs - seenMs < 15 * 60 * 1000) {
+    return { label: 'Đang hoạt động', className: 'font-medium text-emerald-700' }
+  }
+  return { label: `Không thấy từ ${formatTimeVi(seenAt)}`, className: 'font-medium text-amber-700' }
+}
+
 export default function DevicesPage() {
   const { configured, user } = useAuth()
   const [state, setState] = useState<LoadState>('loading')
@@ -71,6 +99,11 @@ export default function DevicesPage() {
   const [family, setFamily] = useState<Family | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
   const [children, setChildren] = useState<Child[]>([])
+  // Lần cuối thấy extension theo từng máy (truy vấn riêng, best-effort —
+  // xem load()). Map rỗng nghĩa là chưa biết gì về extension của máy nào.
+  const [extensionSeenByDevice, setExtensionSeenByDevice] = useState<Map<string, string | null>>(
+    new Map(),
+  )
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [lockingId, setLockingId] = useState<string | null>(null)
@@ -115,6 +148,25 @@ export default function DevicesPage() {
       setFamily(familyResult)
       setDevices((devicesResult.data ?? []) as Device[])
       setChildren((childrenResult.data ?? []) as Child[])
+      // Truy vấn RIÊNG, best-effort: cột last_extension_seen_at chỉ có sau
+      // migration 5. Truy vấn lỗi (cột chưa tồn tại) thì coi extension là
+      // chưa biết với mọi máy, KHÔNG làm hỏng cả trang.
+      try {
+        const extensionResult = await supabase
+          .from('devices')
+          .select('id, last_extension_seen_at')
+        if (extensionResult.error) {
+          setExtensionSeenByDevice(new Map())
+        } else {
+          const seen = new Map<string, string | null>()
+          for (const row of (extensionResult.data ?? []) as Array<{ id: string; last_extension_seen_at: string | null }>) {
+            seen.set(row.id, row.last_extension_seen_at)
+          }
+          setExtensionSeenByDevice(seen)
+        }
+      } catch {
+        setExtensionSeenByDevice(new Map())
+      }
       setState('ready')
     } catch (err) {
       setError(toVietnameseError(err))
@@ -397,7 +449,11 @@ export default function DevicesPage() {
             />
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
-              {devices.map((device) => (
+              {devices.map((device) => {
+                const extension = extensionStatus(extensionSeenByDevice.get(device.id), Date.now())
+                const disconnected = isDisconnected(device, Date.now())
+                const extensionSeenAt = extensionSeenByDevice.get(device.id)
+                return (
                 <Card key={device.id}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -406,11 +462,18 @@ export default function DevicesPage() {
                         {device.child_id ? (childNameById.get(device.child_id) ?? 'Chưa gán cho con nào') : 'Chưa gán cho con nào'}
                       </p>
                     </div>
-                    <span
-                      className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[device.status]}`}
-                    >
-                      {deviceStatusLabel(device.status)}
-                    </span>
+                    <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                      <span
+                        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[device.status]}`}
+                      >
+                        {deviceStatusLabel(device.status)}
+                      </span>
+                      {disconnected && (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
+                          Mất kết nối
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <dl className="mt-4 space-y-1.5 text-sm">
                     <div className="flex justify-between gap-4">
@@ -425,6 +488,15 @@ export default function DevicesPage() {
                       <dt className="text-slate-500">Hoạt động gần nhất</dt>
                       <dd className="text-slate-800" title={formatDateTimeVi(device.last_seen_at)}>
                         {formatRelativeVi(device.last_seen_at)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <dt className="text-slate-500">Extension trình duyệt</dt>
+                      <dd
+                        className={extension.className}
+                        title={extensionSeenAt ? formatDateTimeVi(extensionSeenAt) : undefined}
+                      >
+                        {extension.label}
                       </dd>
                     </div>
                     <div className="flex justify-between gap-4">
@@ -446,7 +518,8 @@ export default function DevicesPage() {
                     </p>
                   </div>
                 </Card>
-              ))}
+                )
+              })}
             </div>
           )}
 

@@ -5,23 +5,38 @@ import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
 import type { Child, Command, Device, Family, Rule, TemporaryOverrideAction } from '../lib/types'
 import {
+  APP_MODE_OPTIONS,
+  PRESET_OPTIONS,
   WEBSITE_MODE_OPTIONS,
+  appConfigToBlockByTimeDraft,
+  appConfigToForcedBreakDraft,
+  appConfigToTimeLimitDraft,
   bedtimeConfigToDraft,
   bedtimeDraftToConfig,
   buildAllowlistConfig,
+  buildAppBlockByTimeConfig,
+  buildAppTimeLimitConfig,
   buildBlockDomainsByTimeConfig,
   buildBlockDomainsConfig,
   buildDomainTimeLimitConfig,
+  buildFocusConfig,
+  buildForcedBreakConfig,
+  buildPresetRules,
   buildSafeSearchConfig,
   dailyLimitConfigToDraft,
   dailyLimitDraftToConfig,
+  emptyAppBlockByTimeDraft,
+  emptyAppTimeLimitDraft,
   emptyBedtimeDraft,
   emptyBlockDomainsByTimeDraft,
   emptyDailyLimitDraft,
   emptyDomainTimeLimitDraft,
+  emptyFocusDraft,
+  emptyForcedBreakDraft,
   emptySafeSearchDraft,
   emptyTimeWindowDraft,
   emptyWebsiteDomainsDraft,
+  parseAppConfig,
   parseBedtimeConfig,
   parseDailyLimitConfig,
   parseDomainsInput,
@@ -29,20 +44,31 @@ import {
   parseWebsiteConfig,
   timeWindowConfigToDraft,
   timeWindowDraftToConfig,
+  validateAppBlockByTimeDraft,
+  validateAppTimeLimitDraft,
   validateBedtimeDraft,
   validateBlockDomainsByTimeDraft,
   validateDailyLimitDraft,
   validateDomainTimeLimitDraft,
+  validateFocusDraft,
+  validateForcedBreakDraft,
   validateTimeWindowDraft,
   validateWebsiteDomainsText,
   websiteConfigToBlockByTimeDraft,
   websiteConfigToDomainsDraft,
+  websiteConfigToFocusDraft,
   websiteConfigToSafeSearchDraft,
   websiteConfigToTimeLimitDraft,
+  type AppBlockByTimeDraft,
+  type AppMode,
+  type AppTimeLimitDraft,
   type BedtimeDraft,
   type BlockDomainsByTimeDraft,
   type DailyLimitDraft,
   type DomainTimeLimitDraft,
+  type FocusDraft,
+  type ForcedBreakDraft,
+  type PresetId,
   type SafeSearchDraft,
   type TimeWindowDraft,
   type WebsiteDomainsDraft,
@@ -59,12 +85,16 @@ import {
 } from '../lib/format'
 import {
   AllowlistForm,
+  AppBlockByTimeForm,
+  AppTimeLimitForm,
   BedtimeForm,
   BlockDomainsByTimeForm,
   BlockDomainsForm,
   DailyLimitForm,
   DomainTimeLimitForm,
   DomainsField,
+  FocusForm,
+  ForcedBreakForm,
   SafeSearchForm,
   TimeWindowForm,
 } from '../components/RuleForms'
@@ -83,8 +113,8 @@ import {
 
 type LoadState = 'loading' | 'ready' | 'error'
 
-/** Các loại quy tắc có form thêm/sửa trên trang này (đợt 1: giờ giấc; đợt 2: website với 5 chế độ). */
-type EditableRuleType = 'daily_limit' | 'time_window' | 'bedtime' | 'website'
+/** Các loại quy tắc có form thêm/sửa trên trang này: cả 5 loại đều sửa được (đợt 3 thêm quy tắc ứng dụng). */
+type EditableRuleType = 'daily_limit' | 'time_window' | 'bedtime' | 'website' | 'app'
 
 type OverrideSendAction = Exclude<TemporaryOverrideAction, 'cancel'>
 
@@ -162,7 +192,20 @@ export default function RulesPage() {
     useState<BlockDomainsByTimeDraft>(emptyBlockDomainsByTimeDraft())
   const [timeLimitDraft, setTimeLimitDraft] = useState<DomainTimeLimitDraft>(emptyDomainTimeLimitDraft())
   const [safeSearchDraft, setSafeSearchDraft] = useState<SafeSearchDraft>(emptySafeSearchDraft())
+  const [focusDraft, setFocusDraft] = useState<FocusDraft>(emptyFocusDraft())
+  // Quy tắc ứng dụng (đợt 3): một dòng rule type='app' mang đúng 1 chế độ.
+  const [formAppMode, setFormAppMode] = useState<AppMode>('app_time_limit')
+  const [appTimeLimitDraft, setAppTimeLimitDraft] =
+    useState<AppTimeLimitDraft>(emptyAppTimeLimitDraft())
+  const [appBlockByTimeDraft, setAppBlockByTimeDraft] =
+    useState<AppBlockByTimeDraft>(emptyAppBlockByTimeDraft())
+  const [forcedBreakDraft, setForcedBreakDraft] = useState<ForcedBreakDraft>(emptyForcedBreakDraft())
   const [savingRule, setSavingRule] = useState(false)
+
+  // Mẫu sẵn một chạm: chọn con riêng, xác nhận 2 bước cho từng mẫu.
+  const [presetChildId, setPresetChildId] = useState('')
+  const [confirmPresetId, setConfirmPresetId] = useState<PresetId | null>(null)
+  const [applyingPreset, setApplyingPreset] = useState(false)
 
   // Xoá quy tắc: bấm 2 lần (bấm "Xoá" rồi "Xác nhận xoá") để tránh xoá nhầm.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
@@ -236,6 +279,10 @@ export default function RulesPage() {
   }, [children, formChildId])
 
   useEffect(() => {
+    if (!presetChildId && children.length > 0) setPresetChildId(children[0].id)
+  }, [children, presetChildId])
+
+  useEffect(() => {
     if (!overrideDeviceId && devices.length > 0) setOverrideDeviceId(devices[0].id)
   }, [devices, overrideDeviceId])
 
@@ -249,6 +296,10 @@ export default function RulesPage() {
     setBlockByTimeDraft(emptyBlockDomainsByTimeDraft())
     setTimeLimitDraft(emptyDomainTimeLimitDraft())
     setSafeSearchDraft(emptySafeSearchDraft())
+    setFocusDraft(emptyFocusDraft())
+    setAppTimeLimitDraft(emptyAppTimeLimitDraft())
+    setAppBlockByTimeDraft(emptyAppBlockByTimeDraft())
+    setForcedBreakDraft(emptyForcedBreakDraft())
   }
 
   const handleCreateFamily = async () => {
@@ -308,6 +359,14 @@ export default function RulesPage() {
       setBlockByTimeDraft(websiteConfigToBlockByTimeDraft(parsed))
       setTimeLimitDraft(websiteConfigToTimeLimitDraft(parsed))
       setSafeSearchDraft(websiteConfigToSafeSearchDraft(parsed))
+      setFocusDraft(websiteConfigToFocusDraft(parsed))
+    } else if (rule.type === 'app') {
+      const parsed = parseAppConfig(rule.config)
+      setFormType('app')
+      setFormAppMode(parsed?.mode ?? 'app_time_limit')
+      setAppTimeLimitDraft(appConfigToTimeLimitDraft(parsed))
+      setAppBlockByTimeDraft(appConfigToBlockByTimeDraft(parsed))
+      setForcedBreakDraft(appConfigToForcedBreakDraft(parsed))
     } else {
       return
     }
@@ -349,6 +408,30 @@ export default function RulesPage() {
         return
       }
       config = bedtimeDraftToConfig(bedtimeDraft)
+    } else if (formType === 'app') {
+      // Quy tắc ứng dụng: một dòng rule mang đúng 1 chế độ (formAppMode).
+      if (formAppMode === 'app_time_limit') {
+        const validationError = validateAppTimeLimitDraft(appTimeLimitDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildAppTimeLimitConfig(appTimeLimitDraft)
+      } else if (formAppMode === 'app_block_by_time') {
+        const validationError = validateAppBlockByTimeDraft(appBlockByTimeDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildAppBlockByTimeConfig(appBlockByTimeDraft)
+      } else {
+        const validationError = validateForcedBreakDraft(forcedBreakDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildForcedBreakConfig(forcedBreakDraft)
+      }
     } else {
       // Quy tắc website: một dòng rule mang đúng 1 chế độ (formMode).
       if (formMode === 'block_domains' || formMode === 'allowlist') {
@@ -375,6 +458,13 @@ export default function RulesPage() {
           return
         }
         config = buildDomainTimeLimitConfig(timeLimitDraft)
+      } else if (formMode === 'focus') {
+        const validationError = validateFocusDraft(focusDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildFocusConfig(focusDraft)
       } else {
         config = buildSafeSearchConfig(safeSearchDraft)
       }
@@ -429,6 +519,39 @@ export default function RulesPage() {
       setActionError(toVietnameseError(err))
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  // Mẫu sẵn chỉ THÊM quy tắc mới, không xóa hay sửa quy tắc hiện có.
+  // Chèn cả gói trong một lần gọi insert để không áp dụng dở dang.
+  const handleApplyPreset = async (presetId: PresetId) => {
+    if (!supabase || !family || !presetChildId) return
+    const preset = PRESET_OPTIONS.find((option) => option.id === presetId)
+    if (!preset) return
+    const bundle = buildPresetRules(presetId)
+    setApplyingPreset(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const { error: insertError } = await supabase.from('rules').insert(
+        bundle.map((presetRule) => ({
+          family_id: family.id,
+          child_id: presetChildId,
+          type: presetRule.type,
+          config: presetRule.config,
+          enabled: true,
+        })),
+      )
+      if (insertError) throw insertError
+      setConfirmPresetId(null)
+      setActionMessage(
+        `Đã áp dụng mẫu “${preset.label}” cho ${childNameById.get(presetChildId) ?? 'con'}: thêm ${bundle.length} quy tắc mới.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setApplyingPreset(false)
     }
   }
 
@@ -629,8 +752,30 @@ export default function RulesPage() {
                       <option value="time_window">Khung giờ được dùng máy</option>
                       <option value="bedtime">Giờ ngủ / giờ cấm</option>
                       <option value="website">Quy tắc website</option>
+                      <option value="app">Quy tắc ứng dụng</option>
                     </select>
                   </Field>
+                  {formType === 'app' && (
+                    <Field
+                      label="Chế độ ứng dụng"
+                      htmlFor="rule-app-mode"
+                      hint={editingRule ? 'Không đổi được chế độ khi sửa.' : undefined}
+                    >
+                      <select
+                        id="rule-app-mode"
+                        value={formAppMode}
+                        disabled={editingRule !== null}
+                        onChange={(e) => setFormAppMode(e.target.value as AppMode)}
+                        className={inputClassName}
+                      >
+                        {APP_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
                   {formType === 'website' && (
                     <Field
                       label="Chế độ website"
@@ -672,6 +817,18 @@ export default function RulesPage() {
                 {formType === 'website' && formMode === 'safe_search' && (
                   <SafeSearchForm draft={safeSearchDraft} onChange={setSafeSearchDraft} />
                 )}
+                {formType === 'website' && formMode === 'focus' && (
+                  <FocusForm draft={focusDraft} onChange={setFocusDraft} />
+                )}
+                {formType === 'app' && formAppMode === 'app_time_limit' && (
+                  <AppTimeLimitForm draft={appTimeLimitDraft} onChange={setAppTimeLimitDraft} />
+                )}
+                {formType === 'app' && formAppMode === 'app_block_by_time' && (
+                  <AppBlockByTimeForm draft={appBlockByTimeDraft} onChange={setAppBlockByTimeDraft} />
+                )}
+                {formType === 'app' && formAppMode === 'forced_break' && (
+                  <ForcedBreakForm draft={forcedBreakDraft} onChange={setForcedBreakDraft} />
+                )}
 
                 <div className="flex flex-wrap gap-2">
                   <button type="submit" disabled={savingRule} className={primaryButtonClassName}>
@@ -684,6 +841,86 @@ export default function RulesPage() {
                   )}
                 </div>
               </form>
+            )}
+          </Card>
+
+          <Card title="Mẫu sẵn">
+            {children.length === 0 ? (
+              <p className="text-sm text-slate-700">
+                Cần tạo hồ sơ con trước khi áp dụng mẫu sẵn. Hãy tạo hồ sơ con tại trang{' '}
+                <Link to="/thiet-bi" className="font-medium text-indigo-600 hover:underline">
+                  Thiết bị
+                </Link>{' '}
+                (nút “Thêm hồ sơ con”).
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Áp dụng mẫu cho con" htmlFor="preset-child">
+                    <select
+                      id="preset-child"
+                      value={presetChildId}
+                      onChange={(e) => setPresetChildId(e.target.value)}
+                      className={inputClassName}
+                    >
+                      {children.map((child) => (
+                        <option key={child.id} value={child.id}>
+                          {child.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <p className="text-sm text-slate-600">
+                  Mẫu sẵn chỉ THÊM quy tắc mới, không xóa hay sửa quy tắc hiện có — bạn có thể
+                  tắt/xóa từng quy tắc trong danh sách bên dưới.
+                </p>
+                <div className="grid gap-4 md:grid-cols-3">
+                  {PRESET_OPTIONS.map((preset) => {
+                    const confirming = confirmPresetId === preset.id
+                    return (
+                      <div key={preset.id} className="rounded-lg border border-slate-200 p-4">
+                        <h3 className="text-sm font-semibold text-slate-900">{preset.label}</h3>
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
+                          {preset.summary.map((line) => (
+                            <li key={line}>{line}</li>
+                          ))}
+                        </ul>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {confirming ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void handleApplyPreset(preset.id)}
+                                disabled={applyingPreset}
+                                className={primaryButtonClassName}
+                              >
+                                {applyingPreset ? 'Đang áp dụng…' : 'Xác nhận áp dụng'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmPresetId(null)}
+                                disabled={applyingPreset}
+                                className={secondaryButtonClassName}
+                              >
+                                Huỷ
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmPresetId(preset.id)}
+                              className={secondaryButtonClassName}
+                            >
+                              Áp dụng
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
             )}
           </Card>
 
@@ -908,16 +1145,11 @@ export default function RulesPage() {
           {rules.length === 0 ? (
             <EmptyState
               title="Chưa có quy tắc nào"
-              description="Chưa có quy tắc nào cho gia đình của bạn. Thêm quy tắc ở trên để bắt đầu — quy tắc chặn ứng dụng sẽ có ở đợt tiếp theo."
+              description="Chưa có quy tắc nào cho gia đình của bạn. Thêm quy tắc ở trên hoặc áp dụng một mẫu sẵn để bắt đầu."
             />
           ) : (
             <div className="space-y-3">
               {rules.map((rule) => {
-                const editable =
-                  rule.type === 'daily_limit' ||
-                  rule.type === 'time_window' ||
-                  rule.type === 'bedtime' ||
-                  rule.type === 'website'
                 const confirmingDelete = confirmDeleteId === rule.id
                 return (
                   <Card key={rule.id}>
@@ -934,11 +1166,6 @@ export default function RulesPage() {
                         <p className="mt-2 text-xs text-slate-500">
                           Tạo lúc {formatDateTimeVi(rule.created_at)}
                         </p>
-                        {!editable && (
-                          <p className="mt-1 text-xs text-slate-500">
-                            Sửa quy tắc này sẽ có ở đợt tiếp theo; hiện tại bạn có thể bật/tắt hoặc xoá.
-                          </p>
-                        )}
                         <details className="mt-2 text-xs">
                           <summary className="cursor-pointer text-indigo-600 hover:underline">
                             Xem cấu hình JSON gốc
@@ -967,15 +1194,13 @@ export default function RulesPage() {
                           />
                           {rule.enabled ? 'Đang bật' : 'Đang tắt'}
                         </button>
-                        {editable && (
-                          <button
-                            type="button"
-                            onClick={() => startEdit(rule)}
-                            className={secondaryButtonClassName}
-                          >
-                            Sửa
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => startEdit(rule)}
+                          className={secondaryButtonClassName}
+                        >
+                          Sửa
+                        </button>
                         {confirmingDelete ? (
                           <>
                             <button

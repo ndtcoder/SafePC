@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
-import type { AppUsage, Child, Device } from '../lib/types'
+import type { AppUsage, AuditLog, Child, Device } from '../lib/types'
 import {
+  formatDateTimeVi,
   formatDurationVi,
   formatRelativeVi,
   formatTimeVi,
   startOfTodayIso,
+  tamperEventLabel,
   toVietnameseError,
 } from '../lib/format'
 import {
@@ -34,6 +36,10 @@ export default function TodayPage() {
   const [usage, setUsage] = useState<AppUsage[]>([])
   const [children, setChildren] = useState<Child[]>([])
   const [devices, setDevices] = useState<Device[]>([])
+  // Cảnh báo can thiệp (audit_logs): tải độc lập, lỗi thì chỉ thẻ cảnh báo
+  // báo lỗi, không làm hỏng phần còn lại của trang.
+  const [alerts, setAlerts] = useState<AuditLog[]>([])
+  const [alertsFailed, setAlertsFailed] = useState(false)
 
   const load = useCallback(async () => {
     if (!supabase || !user) {
@@ -63,6 +69,23 @@ export default function TodayPage() {
       setUsage((usageResult.data ?? []) as AppUsage[])
       setChildren((childrenResult.data ?? []) as Child[])
       setDevices((devicesResult.data ?? []) as Device[])
+      // Chỉ chọn các cột của migration 1 (migration 5 chưa áp dụng thì các
+      // cột child_id/device_id/details chưa tồn tại). Loại sự kiện nằm ở
+      // cột `action`, `target` giữ id thiết bị dạng text.
+      try {
+        const alertsResult = await supabase
+          .from('audit_logs')
+          .select('id, family_id, action, target, created_at')
+          .in('action', ['clock_drift', 'agent_restart', 'extension_missing', 'service_stopped'])
+          .order('created_at', { ascending: false })
+          .limit(20)
+        if (alertsResult.error) throw alertsResult.error
+        setAlerts((alertsResult.data ?? []) as AuditLog[])
+        setAlertsFailed(false)
+      } catch {
+        setAlerts([])
+        setAlertsFailed(true)
+      }
       setState('ready')
     } catch (err) {
       setError(toVietnameseError(err))
@@ -82,6 +105,7 @@ export default function TodayPage() {
     () => new Map(devices.map((d) => [d.id, d.hostname])),
     [devices],
   )
+  const deviceById = useMemo(() => new Map(devices.map((d) => [d.id, d])), [devices])
 
   const totalSec = useMemo(
     () => usage.reduce((sum, row) => sum + (row.duration_sec ?? 0), 0),
@@ -131,15 +155,15 @@ export default function TodayPage() {
       {state === 'loading' && <LoadingState label="Đang tải dữ liệu hôm nay…" />}
       {state === 'error' && <ErrorState message={error} onRetry={() => void load()} />}
 
-      {state === 'ready' && usage.length === 0 && (
-        <EmptyState
-          title="Chưa có dữ liệu hôm nay"
-          description="Agent chưa gửi dữ liệu sử dụng nào cho ngày hôm nay. Có thể máy con chưa được dùng, chưa ghép nối, hoặc Agent chưa đồng bộ dữ liệu lên."
-        />
-      )}
-
-      {state === 'ready' && usage.length > 0 && (
+      {state === 'ready' && (
         <div className="space-y-6">
+          {usage.length === 0 ? (
+            <EmptyState
+              title="Chưa có dữ liệu hôm nay"
+              description="Agent chưa gửi dữ liệu sử dụng nào cho ngày hôm nay. Có thể máy con chưa được dùng, chưa ghép nối, hoặc Agent chưa đồng bộ dữ liệu lên."
+            />
+          ) : (
+            <>
           <div className="grid gap-4 sm:grid-cols-3">
             <Card>
               <p className="text-sm text-slate-500">Tổng thời gian hôm nay</p>
@@ -215,6 +239,43 @@ export default function TodayPage() {
               <p className="mt-3 text-xs text-slate-500">
                 Đang hiển thị 20 hoạt động mới nhất trong tổng số {usage.length} phiên hôm nay.
               </p>
+            )}
+          </Card>
+            </>
+          )}
+
+          <Card title="Cảnh báo gần đây">
+            {alertsFailed ? (
+              <p className="text-sm text-slate-600">Không tải được cảnh báo.</p>
+            ) : alerts.length === 0 ? (
+              <p className="text-sm text-slate-600">Chưa có cảnh báo nào.</p>
+            ) : (
+              <ul className="space-y-3">
+                {alerts.map((alert) => {
+                  const device = alert.target ? deviceById.get(alert.target) : undefined
+                  const childName =
+                    device?.child_id ? (childNameById.get(device.child_id) ?? '—') : '—'
+                  return (
+                    <li
+                      key={alert.id}
+                      className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-100 pb-3 last:border-0 last:pb-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-800">{tamperEventLabel(alert.action)}</p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          Máy: {device?.hostname ?? '—'} · Con: {childName}
+                        </p>
+                      </div>
+                      <span
+                        className="shrink-0 text-sm text-slate-600"
+                        title={formatDateTimeVi(alert.created_at)}
+                      >
+                        {formatRelativeVi(alert.created_at)}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
             )}
           </Card>
         </div>
