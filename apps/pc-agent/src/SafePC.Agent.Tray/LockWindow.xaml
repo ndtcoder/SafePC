@@ -1,0 +1,15 @@
+<Window x:Class="SafePC.Agent.Tray.LockWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SafePC — Hết giờ" WindowState="Maximized" WindowStyle="None"
+        Topmost="True" ResizeMode="NoResize" ShowInTaskbar="False" Background="#1F2937">
+    <Grid>
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="560">
+            <TextBlock Text="Đã hết thời gian dùng máy" FontSize="32" FontWeight="Bold" Foreground="White" TextAlignment="Center" TextWrapping="Wrap" />
+            <TextBlock x:Name="ReasonText" Margin="0,16,0,0" FontSize="18" Foreground="#E5E7EB" TextAlignment="Center" TextWrapping="Wrap" />
+            <Button x:Name="ExtraTimeButton" Content="Xin thêm giờ" Width="200" Height="44" Margin="0,32,0,0" FontSize="16" Click="ExtraTimeButton_Click" />
+            <TextBlock Margin="0,20,0,0" FontSize="13" Foreground="#9CA3AF" TextAlignment="Center" TextWrapping="Wrap"
+                       Text="Hãy lưu bài làm của bạn. Máy sẽ khóa phiên làm việc sau đếm ngược (TODO Sprint 2)." />
+        </StackPanel>
+    </Grid>
+</Window>

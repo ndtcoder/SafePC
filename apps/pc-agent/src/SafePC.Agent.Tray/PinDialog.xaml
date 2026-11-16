@@ -1,0 +1,15 @@
+<Window x:Class="SafePC.Agent.Tray.PinDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SafePC — Nhập mã PIN" Width="320" Height="210"
+        WindowStartupLocation="CenterScreen" Topmost="True" ResizeMode="NoResize" ShowInTaskbar="False">
+    <StackPanel Margin="20">
+        <TextBlock Text="Nhập mã PIN của phụ huynh để thoát SafePC." TextWrapping="Wrap" />
+        <PasswordBox x:Name="PinBox" Margin="0,12,0,0" MaxLength="6" />
+        <TextBlock x:Name="ErrorText" Margin="0,8,0,0" Foreground="Red" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Hủy" Width="80" Margin="0,0,8,0" Click="CancelButton_Click" />
+            <Button Content="Xác nhận" Width="90" IsDefault="True" Click="OkButton_Click" />
+        </StackPanel>
+    </StackPanel>
+</Window>
