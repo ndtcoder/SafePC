@@ -13,7 +13,7 @@ public sealed class ForegroundSampler : IDisposable
 {
     private readonly IpcPipeClient _ipc;
     private readonly LocalLogger _log;
-    private Timer? _timer;
+    private System.Threading.Timer? _timer;
 
     public ForegroundSampler(IpcPipeClient ipc, LocalLogger log)
     {
@@ -23,7 +23,7 @@ public sealed class ForegroundSampler : IDisposable
 
     public void Start()
     {
-        _timer = new Timer(
+        _timer = new System.Threading.Timer(
             _ => _ = SampleAsync(),
             state: null,
             dueTime: TimeSpan.Zero,

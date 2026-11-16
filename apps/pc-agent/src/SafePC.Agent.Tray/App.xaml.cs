@@ -13,7 +13,7 @@ namespace SafePC.Agent.Tray;
 /// Tray App cũng là nơi lấy mẫu app foreground (Service ở session 0 không
 /// nhìn thấy cửa sổ user) rồi gửi về Service qua IPC Named Pipe.
 /// </summary>
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
     private readonly CancellationTokenSource _cts = new();
 
