@@ -13,7 +13,8 @@ và Dashboard phụ huynh (xem `docs/02-ARCHITECTURE.md` mục 4.5).
 Extension làm:
 
 - Chặn domain trong danh sách chặn, chặn theo khung giờ, chỉ cho phép danh
-  sách domain (chế độ allowlist), chặn tạm thời / cho phép tạm thời.
+  sách domain (chế độ allowlist), chỉ cho phép danh sách domain theo khung
+  giờ (chế độ allowlist theo giờ), chặn tạm thời / cho phép tạm thời.
 - Giờ học tập trung: trong khung giờ học, chỉ các website học tập được phép
   mới mở được (xem mục 7).
 - Giới hạn thời gian xem theo domain (ví dụ: YouTube 30 phút/ngày), tính
@@ -178,6 +179,46 @@ vi trở lại như cũ. Khi `rules.focus` thiếu, `null`, sai hình dạng ho�
 sách cho phép rỗng, extension coi như không có focus (fail-open, không chặn
 thêm gì vì focus). Trang chặn của chính extension không bị ảnh hưởng vì rule
 chặn-tất-cả chỉ khớp URL http/https.
+
+**Danh sách cho phép theo giờ (allowlist theo giờ):** phụ huynh đặt rule
+website chế độ `allowlist_by_time` trên Dashboard (danh sách domain + khung
+giờ theo thứ). Agent xuất các rule này thành
+`rules.allowlistByTime = [{"domains": [...], "windowsByWeekday": {...}}, ...]`
+trong `domain_rules.json`. Trong khung giờ (giờ địa phương, đánh giá lại mỗi
+~1 phút cùng chu kỳ alarm), extension chỉ cho phép các domain trong danh
+sách — mọi website còn lại chuyển tới `blocked.html` với lý do "allowlist"
+(dùng chung thông báo với chế độ allowlist thường). Ngoài khung giờ, rule
+không giới hạn website nào. Khi allowlist theo giờ đang hiệu lực, nó THAY
+cho allowlist thường (chỉ domain trong danh sách theo giờ mới mở được); khi
+hết khung giờ, allowlist thường (nếu có) áp dụng lại. Giờ học tập trung vẫn
+áp đảo allowlist theo giờ (xem thang ưu tiên bên dưới). Khi
+`rules.allowlistByTime` thiếu, sai hình dạng, khung giờ không hợp lệ hoặc
+không còn domain nào sau khi chuẩn hóa, extension coi như không có
+allowlist theo giờ (fail-open, không chặn thêm gì).
+
+**Thang ưu tiên DNR (đã khóa — số lớn thắng):** số ưu tiên trong
+`background.js` (`PRIORITY`) khớp đúng thang này; Dashboard/PC Agent dùng
+cùng thang khi nói về thứ tự thi hành.
+
+| Ưu tiên | Bộ rule | Ghi chú |
+|---|---|---|
+| 100 | Chặn tạm thời | Luôn áp dụng, kể cả trong giờ tập trung. |
+| 65 | Redirect SafeSearch / YouTube Restricted | Chỉ thêm tham số an toàn; URL sau redirect được đánh giá lại nên rule chặn vẫn chặn được. |
+| 60 | Giờ tập trung: domain được phép | |
+| 59 / 58 | Giờ tập trung: chặn tất cả còn lại | Cao hơn cho phép tạm thời (57) nên cho phép tạm thời không chọc thủng giờ tập trung. |
+| 57 | Cho phép tạm thời | Chọc thủng chặn/chặn theo giờ/allowlist/allowlist theo giờ/hết ngân sách, nhưng không chọc thủng giờ tập trung. |
+| 55 | Allowlist theo giờ: domain được phép | Đang hiệu lực thì thay cho allowlist thường. |
+| 50 | Allowlist: domain được phép | |
+| 40 | Chặn theo giờ | |
+| 30 | Chặn | |
+| 20 | Hết ngân sách theo domain | |
+| 15 / 14 | Allowlist / allowlist theo giờ: chặn tất cả còn lại | Thấp hơn mọi mức chặn cụ thể để domain bị chặn/hết ngân sách hiện đúng lý do của nó. |
+
+Trong giờ tập trung, extension không dựng các bộ rule thường (chặn, chặn
+theo giờ, hết ngân sách, allowlist, allowlist theo giờ) và không dựng rule
+cho phép tạm thời — focus áp đảo bằng cấu trúc, không chỉ bằng số ưu tiên.
+Chặn tạm thời là ngoại lệ duy nhất: luôn được dựng. Trang chặn của chính
+extension không bị ảnh hưởng vì rule chặn-tất-cả chỉ khớp URL http/https.
 
 **Báo cáo:** usage gửi mỗi phút qua NativeHost; gửi lỗi thì giữ lại trong
 hàng đợi (tối đa 1000 domain, bỏ cũ nhất), không hiện lỗi cho user.

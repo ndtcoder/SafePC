@@ -55,22 +55,49 @@ const SUB_RESOURCE_TYPES = [
   "other",
 ];
 
-// Thứ tự ưu tiên DNR (số lớn thắng, khác nhau hoàn toàn để không phụ thuộc
-// luật hòa của trình duyệt): chặn tạm thời > cho phép tạm thời > chặn vĩnh
-// viễn > chặn theo giờ > hết ngân sách > SafeSearch/YouTube > allowlist >
-// chặn tất cả (chế độ allowlist). Giờ học tập trung dùng chung 2 mức của
-// allowlist (allow cho danh sách được phép, blockAll cho chặn tất cả còn
-// lại) vì trong giờ tập trung, danh sách focus THAY cho allowlist thường.
+// Thứ tự ưu tiên DNR (số lớn thắng) — THANG ƯU TIÊN ĐÃ KHÓA, khớp hợp
+// đồng với Dashboard/PC Agent:
+//   chặn tạm thời 100 > focus 60 > allowlist theo giờ 55 > allowlist 50
+//   > chặn theo giờ 40 > chặn 30 > hết ngân sách 20.
+// Các mức phụ (không nằm trong thang đã khóa nhưng bắt buộc để thang hoạt
+// động đúng):
+//   - redirect SafeSearch/YouTube 65: cao hơn mọi mức allow (60/55/50) để
+//     tham số an toàn vẫn được thêm cho domain được phép, nhưng thấp hơn
+//     chặn tạm thời (100). Redirect không mở thêm website nào: URL sau
+//     redirect được đánh giá lại, và rule chặn (khớp hậu tố ||domain^,
+//     kể cả host restrict.youtube.com — nó là tên miền con của youtube.com)
+//     vẫn chặn được nó.
+//   - cho phép tạm thời 57: chọc thủng chặn/chặn theo giờ/allowlist/
+//     allowlist theo giờ/hết ngân sách (mọi mức <= 55 và cặp chặn-tất-cả
+//     15/14), nhưng KHÔNG chọc thủng focus (cặp chặn-tất-cả của focus ở
+//     59/58, cao hơn 57).
+//   - cặp chặn-tất-cả của focus 59/58: dưới mức allow của focus (60) để
+//     domain học tập vẫn mở được, trên cho phép tạm thời (57) để cho phép
+//     tạm thời không chọc thủng giờ tập trung.
+//   - cặp chặn-tất-cả của allowlist/allowlist theo giờ 15/14: dưới mọi
+//     mức chặn cụ thể (40/30/20) để domain bị chặn/hết ngân sách hiện
+//     đúng lý do của nó thay vì lý do "allowlist".
+// Chặn tạm thời (100) luôn dựng, kể cả trong giờ tập trung. Khi focus
+// đang hiệu lực, các bộ rule thường (chặn, chặn theo giờ, hết ngân sách,
+// allowlist, allowlist theo giờ) và cho phép tạm thời đều KHÔNG dựng —
+// focus áp đảo bằng cấu trúc, không chỉ bằng số ưu tiên. Tương tự, khi
+// allowlist theo giờ đang hiệu lực, nó THAY cho allowlist thường (mức
+// 55 > 50): chỉ domain trong danh sách theo giờ mới mở được.
+// Mọi mức khác nhau hoàn toàn để không phụ thuộc luật hòa của trình duyệt.
 const PRIORITY = {
   tempBlock: 100,
-  tempAllow: 95,
-  blocked: 90,
-  time: 80,
-  limit: 70,
   redirect: 65,
-  allow: 60,
-  blockAllRedirect: 40,
-  blockAll: 30,
+  focusAllow: 60,
+  focusBlockAllRedirect: 59,
+  focusBlockAll: 58,
+  tempAllow: 57,
+  allowlistByTimeAllow: 55,
+  allowlistAllow: 50,
+  time: 40,
+  blocked: 30,
+  limit: 20,
+  blockAllRedirect: 15,
+  blockAll: 14,
 };
 
 let currentRules = null;
@@ -350,6 +377,26 @@ function buildDnrRules(rules, usageSeconds, now) {
 
   const exhausted = computeExhaustedDomains(rules, usageSeconds);
 
+  // Danh sách cho phép theo giờ: DomainRulesPublisher xuất
+  // rules.allowlistByTime = [{"domains": [...], "windowsByWeekday": {...}},
+  // ...] (mỗi phần tử là một rule allowlist_by_time). Chỉ các phần tử
+  // đang trong khung giờ (giờ địa phương, cùng helper isWindowActiveNow
+  // với blockedByTime, đánh giá lại mỗi phút theo chu kỳ alarm) mới góp
+  // domain; hợp các danh sách đang hiệu lực lại. Dữ liệu thiếu/sai hình
+  // dạng, khung giờ không hợp lệ, hoặc không còn domain nào sau khi chuẩn
+  // hóa đều nghĩa là "không hiệu lực" (fail-open, không bao giờ throw):
+  // danh sách cho phép rỗng mà vẫn chặn tất cả thì sẽ khóa cả trình
+  // duyệt — cùng nguyên tắc với focus.
+  const allowlistByTimeAllowed = new Set();
+  const allowlistByTimeEntries = Array.isArray(rules.allowlistByTime)
+    ? rules.allowlistByTime
+    : [];
+  for (const entry of allowlistByTimeEntries) {
+    if (!entry || !isWindowActiveNow(entry.windowsByWeekday, now)) continue;
+    for (const domain of normalizeDomainSet(entry.domains)) allowlistByTimeAllowed.add(domain);
+  }
+  const allowlistByTimeActive = allowlistByTimeAllowed.size > 0;
+
   const addPair = (domains, priority, reason) => {
     for (const domain of domains) {
       rulesOut.push(redirectRule(nextId++, priority, domain, reason));
@@ -357,10 +404,33 @@ function buildDnrRules(rules, usageSeconds, now) {
     }
   };
 
-  // Chặn tạm thời LUÔN áp dụng (ưu tiên 100 > 60 nên thắng cả danh sách
-  // cho phép của focus). Khi focus đang hiệu lực, các bộ rule thường
-  // (chặn, chặn theo giờ, hết ngân sách, allowlist) và cho phép tạm thời
-  // đều BỎ QUA: cho phép tạm thời không được chọc thủng giờ tập trung.
+  // Cặp chặn-tất-cả của một chế độ allowlist: mọi request http/https còn
+  // lại (không khớp rule allow nào ở mức cao hơn) đều chuyển tới trang
+  // chặn. Trang chặn của chính extension (chrome-extension://...) không
+  // bị ảnh hưởng vì regex chỉ khớp http/https.
+  const addBlockAll = (reason, redirectPriority, blockPriority) => {
+    rulesOut.push({
+      id: nextId++,
+      priority: redirectPriority,
+      action: {
+        type: "redirect",
+        redirect: { url: chrome.runtime.getURL("blocked.html?reason=" + reason) },
+      },
+      condition: { regexFilter: "^https?://", resourceTypes: ["main_frame"] },
+    });
+    rulesOut.push({
+      id: nextId++,
+      priority: blockPriority,
+      action: { type: "block" },
+      condition: { regexFilter: "^https?://", resourceTypes: SUB_RESOURCE_TYPES },
+    });
+  };
+
+  // Chặn tạm thời LUÔN áp dụng (ưu tiên 100, thắng cả danh sách cho phép
+  // của focus). Khi focus đang hiệu lực, các bộ rule thường (chặn, chặn
+  // theo giờ, hết ngân sách, allowlist, allowlist theo giờ) và cho phép
+  // tạm thời đều BỎ QUA: cho phép tạm thời không được chọc thủng giờ tập
+  // trung (xem thang ưu tiên ở PRIORITY).
   addPair(tempBlock, PRIORITY.tempBlock, "tempblock");
   if (!focusActive) {
     for (const domain of tempAllow) rulesOut.push(allowRule(nextId++, PRIORITY.tempAllow, domain));
@@ -382,44 +452,24 @@ function buildDnrRules(rules, usageSeconds, now) {
 
   if (focusActive) {
     // Giờ tập trung: chỉ các domain học tập được phép mới mở được; mọi
-    // website còn lại chuyển tới trang chặn (lý do "focus"). Cặp rule
-    // blockAll có cùng hình dạng với cặp của chế độ allowlist. Trang chặn
-    // của chính extension (chrome-extension://...) không bị ảnh hưởng vì
-    // regex blockAll chỉ khớp http/https.
-    for (const domain of focusAllowed) rulesOut.push(allowRule(nextId++, PRIORITY.allow, domain));
-    rulesOut.push({
-      id: nextId++,
-      priority: PRIORITY.blockAllRedirect,
-      action: {
-        type: "redirect",
-        redirect: { url: chrome.runtime.getURL("blocked.html?reason=focus") },
-      },
-      condition: { regexFilter: "^https?://", resourceTypes: ["main_frame"] },
-    });
-    rulesOut.push({
-      id: nextId++,
-      priority: PRIORITY.blockAll,
-      action: { type: "block" },
-      condition: { regexFilter: "^https?://", resourceTypes: SUB_RESOURCE_TYPES },
-    });
+    // website còn lại chuyển tới trang chặn (lý do "focus").
+    for (const domain of focusAllowed) rulesOut.push(allowRule(nextId++, PRIORITY.focusAllow, domain));
+    addBlockAll("focus", PRIORITY.focusBlockAllRedirect, PRIORITY.focusBlockAll);
+  } else if (allowlistByTimeActive) {
+    // Allowlist theo giờ đang hiệu lực: THAY cho allowlist thường (mức
+    // 55 > 50) — chỉ các domain trong danh sách theo giờ mới mở được;
+    // mọi website còn lại chuyển tới trang chặn với lý do "allowlist"
+    // (dùng chung mục REASONS.allowlist trong blocked.js, không thêm
+    // chuỗi lý do mới). Ngoài khung giờ, nhánh này không dựng nên hành
+    // vi trở lại như cũ (allowlist thường nếu có).
+    for (const domain of allowlistByTimeAllowed) {
+      rulesOut.push(allowRule(nextId++, PRIORITY.allowlistByTimeAllow, domain));
+    }
+    addBlockAll("allowlist", PRIORITY.blockAllRedirect, PRIORITY.blockAll);
   } else if (allowlist !== null) {
     // Chế độ allowlist: chỉ các domain trong danh sách mới mở được.
-    for (const domain of allowlist) rulesOut.push(allowRule(nextId++, PRIORITY.allow, domain));
-    rulesOut.push({
-      id: nextId++,
-      priority: PRIORITY.blockAllRedirect,
-      action: {
-        type: "redirect",
-        redirect: { url: chrome.runtime.getURL("blocked.html?reason=allowlist") },
-      },
-      condition: { regexFilter: "^https?://", resourceTypes: ["main_frame"] },
-    });
-    rulesOut.push({
-      id: nextId++,
-      priority: PRIORITY.blockAll,
-      action: { type: "block" },
-      condition: { regexFilter: "^https?://", resourceTypes: SUB_RESOURCE_TYPES },
-    });
+    for (const domain of allowlist) rulesOut.push(allowRule(nextId++, PRIORITY.allowlistAllow, domain));
+    addBlockAll("allowlist", PRIORITY.blockAllRedirect, PRIORITY.blockAll);
   }
 
   if (rulesOut.length > MAX_DNR_RULES) {
