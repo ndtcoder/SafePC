@@ -326,3 +326,376 @@ export function formatWeekdayGroup(days: WeekdayNumber[]): string {
   const endLabel = last === 0 ? 'Chủ nhật' : String(last + 1)
   return `${labelOf(first)}–${endLabel}`
 }
+
+// ---------------------------------------------------------------------------
+// Quy tắc website (đợt 2): một dòng rule type='website' mang đúng 1 chế độ
+// (mode), lưu trong config JSONB dạng {"mode": ..., ...}. Các hình dạng
+// config dưới đây dùng `type` (không dùng `interface`) để gán được trực
+// tiếp vào `Record<string, unknown>` khi ghi xuống DB (xem RulesPage).
+// ---------------------------------------------------------------------------
+
+export type WebsiteMode =
+  | 'block_domains'
+  | 'block_domains_by_time'
+  | 'allowlist'
+  | 'domain_time_limit'
+  | 'safe_search'
+
+export interface WebsiteModeOption {
+  value: WebsiteMode
+  label: string
+}
+
+export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
+  { value: 'block_domains', label: 'Chặn website' },
+  { value: 'block_domains_by_time', label: 'Chặn website theo giờ' },
+  { value: 'allowlist', label: 'Chỉ cho phép một số website' },
+  { value: 'domain_time_limit', label: 'Giới hạn thời gian theo website' },
+  { value: 'safe_search', label: 'Tìm kiếm an toàn (SafeSearch / YouTube)' },
+]
+
+/** Chặn các domain trong danh sách (kể cả tên miền con). */
+export type BlockDomainsConfig = {
+  mode: 'block_domains'
+  domains: string[]
+}
+
+/** Chặn các domain trong danh sách, chỉ trong các khung giờ theo thứ. */
+export type BlockDomainsByTimeConfig = {
+  mode: 'block_domains_by_time'
+  domains: string[]
+  windowsByWeekday: WindowsByWeekday
+}
+
+/** Chỉ cho phép các domain trong danh sách; mọi website khác đều bị chặn. */
+export type AllowlistConfig = {
+  mode: 'allowlist'
+  domains: string[]
+}
+
+/** Tổng số phút mỗi ngày cho tất cả các domain trong danh sách cộng lại. */
+export type DomainTimeLimitConfig = {
+  mode: 'domain_time_limit'
+  domains: string[]
+  minutes_per_day: number
+}
+
+/** Ép SafeSearch / chế độ hạn chế của YouTube. Cả hai đều mặc định bật khi rule tồn tại. */
+export type SafeSearchConfig = {
+  mode: 'safe_search'
+  searchProviders: boolean
+  youtubeRestricted: boolean
+}
+
+export type WebsiteConfig =
+  | BlockDomainsConfig
+  | BlockDomainsByTimeConfig
+  | AllowlistConfig
+  | DomainTimeLimitConfig
+  | SafeSearchConfig
+
+// ---------------------------------------------------------------------------
+// Domain: chuẩn hoá + kiểm tra hợp lệ.
+// ---------------------------------------------------------------------------
+
+/**
+ * Chuẩn hoá một mục nhập thành hostname: chữ thường, bỏ scheme (http://,
+ * https://), chỉ lấy hostname khi người dùng dán cả URL (bỏ path/query/
+ * fragment và userinfo), bỏ dấu chấm ở đầu/cuối. Hàm này không kiểm tra
+ * tính hợp lệ — xem `domainError`.
+ */
+export function normalizeDomain(raw: string): string {
+  let host = raw.trim()
+  const schemeIndex = host.indexOf('://')
+  if (schemeIndex >= 0) host = host.slice(schemeIndex + 3)
+  else if (host.startsWith('//')) host = host.slice(2)
+  const cutAt = host.search(/[/?#]/)
+  if (cutAt >= 0) host = host.slice(0, cutAt)
+  const atIndex = host.lastIndexOf('@')
+  if (atIndex >= 0) host = host.slice(atIndex + 1)
+  if (host.startsWith('.')) host = host.slice(1)
+  if (host.endsWith('.')) host = host.slice(0, -1)
+  return host.toLowerCase()
+}
+
+const DOMAIN_LABEL_PATTERN = /^[a-z0-9-]+$/
+
+/**
+ * Kiểm tra một hostname ĐÃ chuẩn hoá bằng `normalizeDomain`. Trả về null
+ * khi hợp lệ, ngược lại trả về thông báo lỗi tiếng Việt (không kèm tên
+ * domain — nơi gọi sẽ gắn tên mục nhập vào).
+ *
+ * QUYẾT ĐỊNH: địa chỉ IP (vd 192.168.1.1) bị từ chối — quy tắc website
+ * hoạt động theo hostname (extension so khớp tên miền, kể cả tên miền
+ * con); chặn theo IP vừa dễ bị vượt qua (IP của một trang có thể đổi)
+ * vừa không khớp với thứ phụ huynh nhìn thấy trên trình duyệt.
+ * Tên miền 1 nhãn (không có dấu chấm, vd "youtube") cũng bị từ chối vì
+ * gần như luôn là nhập thiếu — phụ huynh cần gõ đủ tên miền.
+ */
+export function domainError(domain: string): string | null {
+  if (domain === '') return 'Domain không được để trống.'
+  if (/\s/.test(domain)) return 'Domain không được chứa khoảng trắng.'
+  if (domain.includes('*')) {
+    return 'Domain không được chứa ký tự đại diện (*). Hãy gõ tên miền đầy đủ, ví dụ youtube.com.'
+  }
+  if (domain.includes(':')) {
+    return 'Domain không được chứa cổng (ví dụ :8080). Chỉ nhập tên miền, ví dụ youtube.com.'
+  }
+  if (/[^a-z0-9.-]/.test(domain)) {
+    return 'Domain chỉ gồm chữ cái, chữ số, dấu gạch ngang (-) và dấu chấm (.).'
+  }
+  if (domain.length > 253) return 'Domain quá dài (tối đa 253 ký tự).'
+  if (!domain.includes('.')) return 'Domain phải có ít nhất một dấu chấm, ví dụ youtube.com.'
+  const labels = domain.split('.')
+  if (labels.every((label) => /^\d+$/.test(label))) {
+    return 'Đây là địa chỉ IP, không phải tên miền. Quy tắc website chỉ áp dụng cho tên miền (ví dụ youtube.com).'
+  }
+  for (const label of labels) {
+    if (label === '') return 'Domain không được chứa dấu chấm liên tiếp.'
+    if (label.length > 63) return 'Mỗi phần của domain (giữa các dấu chấm) tối đa 63 ký tự.'
+    if (!DOMAIN_LABEL_PATTERN.test(label) || label.startsWith('-') || label.endsWith('-')) {
+      return 'Mỗi phần của domain chỉ gồm chữ cái, chữ số và dấu gạch ngang, không bắt đầu hoặc kết thúc bằng dấu gạch ngang.'
+    }
+  }
+  return null
+}
+
+export interface ParsedDomains {
+  domains: string[]
+  error: string | null
+}
+
+/**
+ * Tách chuỗi nhập thành danh sách domain đã chuẩn hoá, loại trùng (giữ
+ * thứ tự nhập). Định dạng chính thức là mỗi dòng một domain; dấu phẩy
+ * cũng được chấp nhận để tiện dán danh sách. Gặp mục nhập không hợp lệ
+ * thì dừng và trả về lỗi kèm đúng mục đó; danh sách rỗng cũng là lỗi.
+ */
+export function parseDomainsInput(text: string): ParsedDomains {
+  const seen = new Set<string>()
+  const domains: string[] = []
+  for (const rawEntry of text.split(/[\r\n,]+/)) {
+    const raw = rawEntry.trim()
+    if (raw === '') continue
+    const normalized = normalizeDomain(raw)
+    const error = domainError(normalized)
+    if (error) return { domains: [], error: `“${raw}”: ${error}` }
+    if (!seen.has(normalized)) {
+      seen.add(normalized)
+      domains.push(normalized)
+    }
+  }
+  if (domains.length === 0) return { domains: [], error: 'Hãy nhập ít nhất một domain.' }
+  return { domains, error: null }
+}
+
+export function validateWebsiteDomainsText(text: string): string | null {
+  return parseDomainsInput(text).error
+}
+
+// ---------------------------------------------------------------------------
+// Đọc config website đã lưu (kèm tương thích hình dạng cũ) -> dạng chuẩn.
+// Trả về null khi không nhận dạng được (mode lạ và không có domain nào).
+// ---------------------------------------------------------------------------
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+/**
+ * Đọc danh sách domain từ config đã lưu, chỉ giữ các domain hợp lệ (đọc
+ * khoan dung để phần mô tả/sửa không vỡ khi gặp dữ liệu cũ hoặc lạ).
+ * Hình dạng cũ `{"domain": "..."}` (1 domain) được hiểu như danh sách
+ * 1 phần tử; khóa `domain` chỉ dùng khi không có mảng `domains`.
+ */
+function readStoredDomains(config: Record<string, unknown>): string[] {
+  const rawEntries = asStringArray(config['domains'])
+  if (rawEntries.length === 0) {
+    for (const key of ['domain', 'website', 'url', 'host']) {
+      const single = config[key]
+      if (typeof single === 'string') rawEntries.push(single)
+    }
+  }
+  const seen = new Set<string>()
+  const domains: string[] = []
+  for (const raw of rawEntries) {
+    const normalized = normalizeDomain(raw)
+    if (domainError(normalized) === null && !seen.has(normalized)) {
+      seen.add(normalized)
+      domains.push(normalized)
+    }
+  }
+  return domains
+}
+
+function asBooleanOr(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+const WEBSITE_MODES: WebsiteMode[] = [
+  'block_domains',
+  'block_domains_by_time',
+  'allowlist',
+  'domain_time_limit',
+  'safe_search',
+]
+
+export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConfig | null {
+  const modeRaw = config['mode']
+  const domains = readStoredDomains(config)
+  if (typeof modeRaw === 'string') {
+    if (!WEBSITE_MODES.includes(modeRaw as WebsiteMode)) return null
+    const mode = modeRaw as WebsiteMode
+    switch (mode) {
+      case 'block_domains':
+        return { mode, domains }
+      case 'block_domains_by_time':
+        return { mode, domains, windowsByWeekday: parseTimeWindowConfig(config) }
+      case 'allowlist':
+        return { mode, domains }
+      case 'domain_time_limit': {
+        const minutes =
+          asNonNegativeInt(config['minutes_per_day']) ?? asNonNegativeInt(config['minutes']) ?? 0
+        return { mode, domains, minutes_per_day: minutes }
+      }
+      case 'safe_search':
+        return {
+          mode,
+          searchProviders: asBooleanOr(config['searchProviders'], true),
+          youtubeRestricted: asBooleanOr(config['youtubeRestricted'], true),
+        }
+    }
+  }
+  // Không có mode: hình dạng cũ (1 domain + action) hoặc mảng domains trần.
+  // `action: "allow"` cũ được hiểu như allowlist 1 domain; còn lại là chặn.
+  if (domains.length === 0) return null
+  if (config['action'] === 'allow') return { mode: 'allowlist', domains }
+  return { mode: 'block_domains', domains }
+}
+
+// ---------------------------------------------------------------------------
+// Trạng thái form (draft) cho quy tắc website.
+// ---------------------------------------------------------------------------
+
+export interface WebsiteDomainsDraft {
+  domainsText: string
+}
+
+export interface BlockDomainsByTimeDraft {
+  domainsText: string
+  windows: TimeWindowDraft
+}
+
+export interface DomainTimeLimitDraft {
+  domainsText: string
+  minutes: string
+}
+
+export interface SafeSearchDraft {
+  searchProviders: boolean
+  youtubeRestricted: boolean
+}
+
+export function emptyWebsiteDomainsDraft(): WebsiteDomainsDraft {
+  return { domainsText: '' }
+}
+
+export function emptyBlockDomainsByTimeDraft(): BlockDomainsByTimeDraft {
+  return { domainsText: '', windows: emptyTimeWindowDraft() }
+}
+
+export function emptyDomainTimeLimitDraft(): DomainTimeLimitDraft {
+  return { domainsText: '', minutes: '30' }
+}
+
+export function emptySafeSearchDraft(): SafeSearchDraft {
+  return { searchProviders: true, youtubeRestricted: true }
+}
+
+export function websiteConfigToDomainsDraft(config: WebsiteConfig | null): WebsiteDomainsDraft {
+  if (!config || config.mode === 'safe_search') return emptyWebsiteDomainsDraft()
+  return { domainsText: config.domains.join('\n') }
+}
+
+export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): BlockDomainsByTimeDraft {
+  const draft = emptyBlockDomainsByTimeDraft()
+  if (!config || config.mode === 'safe_search') return draft
+  draft.domainsText = config.domains.join('\n')
+  if (config.mode === 'block_domains_by_time') {
+    draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
+  }
+  return draft
+}
+
+export function websiteConfigToTimeLimitDraft(config: WebsiteConfig | null): DomainTimeLimitDraft {
+  const draft = emptyDomainTimeLimitDraft()
+  if (!config || config.mode === 'safe_search') return draft
+  draft.domainsText = config.domains.join('\n')
+  if (config.mode === 'domain_time_limit' && config.minutes_per_day > 0) {
+    draft.minutes = String(config.minutes_per_day)
+  }
+  return draft
+}
+
+export function websiteConfigToSafeSearchDraft(config: WebsiteConfig | null): SafeSearchDraft {
+  if (config?.mode === 'safe_search') {
+    return { searchProviders: config.searchProviders, youtubeRestricted: config.youtubeRestricted }
+  }
+  return emptySafeSearchDraft()
+}
+
+// ---------------------------------------------------------------------------
+// Kiểm tra hợp lệ + chuyển draft -> config JSONB để ghi vào DB.
+// Các hàm build* giả định draft đã qua kiểm tra (quy ước như đợt 1).
+// ---------------------------------------------------------------------------
+
+export function buildBlockDomainsConfig(domainsText: string): BlockDomainsConfig {
+  return { mode: 'block_domains', domains: parseDomainsInput(domainsText).domains }
+}
+
+export function buildAllowlistConfig(domainsText: string): AllowlistConfig {
+  return { mode: 'allowlist', domains: parseDomainsInput(domainsText).domains }
+}
+
+export function validateBlockDomainsByTimeDraft(draft: BlockDomainsByTimeDraft): string | null {
+  const domainsError = validateWebsiteDomainsText(draft.domainsText)
+  if (domainsError) return domainsError
+  return validateTimeWindowDraft(draft.windows)
+}
+
+export function buildBlockDomainsByTimeConfig(draft: BlockDomainsByTimeDraft): BlockDomainsByTimeConfig {
+  return {
+    mode: 'block_domains_by_time',
+    domains: parseDomainsInput(draft.domainsText).domains,
+    windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
+  }
+}
+
+export function validateDomainTimeLimitDraft(draft: DomainTimeLimitDraft): string | null {
+  const domainsError = validateWebsiteDomainsText(draft.domainsText)
+  if (domainsError) return domainsError
+  const text = draft.minutes.trim()
+  if (text === '') return 'Hãy nhập số phút giới hạn mỗi ngày.'
+  const minutes = Number(text)
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+    return 'Số phút phải là số nguyên từ 1 đến 1440 (24 giờ).'
+  }
+  return null
+}
+
+export function buildDomainTimeLimitConfig(draft: DomainTimeLimitDraft): DomainTimeLimitConfig {
+  return {
+    mode: 'domain_time_limit',
+    domains: parseDomainsInput(draft.domainsText).domains,
+    minutes_per_day: Number(draft.minutes.trim()),
+  }
+}
+
+export function buildSafeSearchConfig(draft: SafeSearchDraft): SafeSearchConfig {
+  return {
+    mode: 'safe_search',
+    searchProviders: draft.searchProviders,
+    youtubeRestricted: draft.youtubeRestricted,
+  }
+}

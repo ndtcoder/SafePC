@@ -8,7 +8,8 @@ export type RequestType = 'extra_time' | 'unblock_app'
 export type RequestStatus = 'pending' | 'approved' | 'denied'
 export type CommandType = 'lock_now' | 'unlock' | 'refresh_rules' | 'update' | 'temporary_override'
 export type CommandStatus = 'pending' | 'sent' | 'done' | 'failed'
-export type TemporaryOverrideAction = 'bonus_minutes' | 'lock' | 'unlock' | 'cancel'
+/** Hành động của lệnh temporary_override; allow_domain/block_domain mang thêm `domains` trong payload. */
+export type TemporaryOverrideAction = 'bonus_minutes' | 'lock' | 'unlock' | 'allow_domain' | 'block_domain' | 'cancel'
 
 export interface Family {
   id: string

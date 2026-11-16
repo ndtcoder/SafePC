@@ -6,9 +6,11 @@ import {
   parseBedtimeConfig,
   parseDailyLimitConfig,
   parseTimeWindowConfig,
+  parseWebsiteConfig,
   type BedtimeByWeekday,
   type MinutesByWeekday,
   type TimeRangeValue,
+  type WebsiteConfig,
   type WeekdayNumber,
   type WindowsByWeekday,
 } from './ruleConfig'
@@ -103,6 +105,10 @@ export function overrideActionLabel(action: TemporaryOverrideAction): string {
       return 'Khóa máy tạm thời'
     case 'unlock':
       return 'Tạm mở máy (ngưng quy tắc giờ giấc)'
+    case 'allow_domain':
+      return 'Cho phép website tạm thời'
+    case 'block_domain':
+      return 'Chặn website tạm thời'
     case 'cancel':
       return 'Hủy ghi đè tạm thời'
   }
@@ -187,6 +193,57 @@ function describeTimeWindow(parsed: WindowsByWeekday): string[] {
   })
 }
 
+/** Liệt kê domain gọn: tối đa 8 domain, còn lại gộp thành "và N domain khác". */
+function formatDomainList(domains: string[]): string {
+  if (domains.length <= 8) return domains.join(', ')
+  return `${domains.slice(0, 8).join(', ')} và ${domains.length - 8} domain khác`
+}
+
+/**
+ * Mô tả quy tắc website theo chế độ (mode). Không bao giờ throw: config
+ * thiếu/khuyết (vd chưa có domain nào) được mô tả bằng câu chung chung.
+ */
+function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
+  switch (parsed.mode) {
+    case 'block_domains':
+      if (parsed.domains.length === 0) return ['Chặn website (chưa có domain nào).']
+      return [`Chặn: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`]
+    case 'allowlist':
+      if (parsed.domains.length === 0) return ['Chỉ cho phép một số website (chưa có domain nào).']
+      return [`Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con) — mọi website khác đều bị chặn`]
+    case 'domain_time_limit': {
+      if (parsed.domains.length === 0) return ['Giới hạn thời gian theo website (chưa có domain nào).']
+      if (parsed.minutes_per_day <= 0) {
+        return [`Giới hạn ${formatDomainList(parsed.domains)}: chưa đặt số phút.`]
+      }
+      return [
+        `Giới hạn ${formatDomainList(parsed.domains)}: ${formatDurationVi(parsed.minutes_per_day * 60)} mỗi ngày (tổng cộng các domain)`,
+      ]
+    }
+    case 'safe_search': {
+      const parts: string[] = []
+      if (parsed.searchProviders) parts.push('bật SafeSearch cho công cụ tìm kiếm')
+      if (parsed.youtubeRestricted) parts.push('bật chế độ hạn chế của YouTube')
+      if (parts.length === 0) return ['Tìm kiếm an toàn: cả hai tùy chọn đều đang tắt.']
+      return [`Tìm kiếm an toàn: ${parts.join(', ')}`]
+    }
+    case 'block_domains_by_time': {
+      const lines: string[] = []
+      if (parsed.domains.length === 0) lines.push('Chặn website theo giờ (chưa có domain nào).')
+      else lines.push(`Chặn: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+      const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
+      for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
+        if (group.value === null) lines.push(`${formatWeekdayGroup(group.days)}: không chặn`)
+        else {
+          const ranges = group.value.map((r) => `${r.start}–${r.end}`).join(', ')
+          lines.push(`${formatWeekdayGroup(group.days)}: chặn ${ranges}`)
+        }
+      }
+      return lines
+    }
+  }
+}
+
 /**
  * Trình bày config JSONB của rule thành các dòng dễ đọc.
  * Ưu tiên các key quen thuộc theo từng loại rule; các key còn lại hiển thị
@@ -221,10 +278,18 @@ export function describeRuleConfig(rule: Rule): string[] {
   }
 
   if (rule.type === 'website') {
-    const domain = configValue(config, ['domain', 'website', 'url', 'host'])
-    if (domain !== undefined) lines.push(`Website: ${asText(domain)}`)
-    const action = configValue(config, ['action'])
-    if (action !== undefined) lines.push(`Hành động: ${asText(action)}`)
+    const parsed = parseWebsiteConfig(config)
+    if (parsed) {
+      lines.push(...describeWebsiteConfig(parsed))
+    } else {
+      // Hình dạng lạ/không nhận dạng được: hiển thị các key quen thuộc
+      // (nếu có) rồi câu chung chung — không bao giờ throw.
+      const domain = configValue(config, ['domain', 'website', 'url', 'host'])
+      if (domain !== undefined) lines.push(`Website: ${asText(domain)}`)
+      const action = configValue(config, ['action'])
+      if (action !== undefined) lines.push(`Hành động: ${asText(action)}`)
+      if (lines.length === 0) lines.push('Quy tắc website (cấu hình chưa nhận dạng được).')
+    }
   }
 
   // Các key chưa được trình bày ở trên: liệt kê nốt để không giấu thông tin.
@@ -235,6 +300,7 @@ export function describeRuleConfig(rule: Rule): string[] {
     'end_time', 'end', 'bedtime_end', 'to',
     'app_name', 'app', 'name', 'process_name', 'action',
     'domain', 'website', 'url', 'host',
+    'mode', 'domains', 'searchProviders', 'youtubeRestricted',
   ])
   for (const [key, value] of Object.entries(config)) {
     if (!shown.has(key)) lines.push(`${key}: ${asText(value)}`)
