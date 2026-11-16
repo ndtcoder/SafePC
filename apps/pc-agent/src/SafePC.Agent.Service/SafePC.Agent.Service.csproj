@@ -12,8 +12,8 @@
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
     <!-- Hàng đợi offline SQLite: outbox + cache rules (docs/02-ARCHITECTURE.md mục 4.2). -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
-    <!-- ACL cho Named Pipe IPC (docs/03-SECURITY.md mục 4). -->
-    <PackageReference Include="System.Security.AccessControl" Version="8.0.0" />
+    <!-- ACL cho Named Pipe IPC (docs/03-SECURITY.md mục 4). Package này không có bản 8.x — bản ổn định mới nhất là 6.0.0. -->
+    <PackageReference Include="System.Security.AccessControl" Version="6.0.0" />
   </ItemGroup>
 
   <ItemGroup>
