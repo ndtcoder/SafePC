@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import {
   WEEKDAY_OPTIONS,
+  type AllowlistByTimeDraft,
+  type AppAllowlistByTimeDraft,
   type AppBlockByTimeDraft,
+  type AppListDraft,
   type AppTimeLimitDraft,
   type BedtimeDraft,
   type BlockDomainsByTimeDraft,
@@ -9,13 +12,20 @@ import {
   type DomainTimeLimitDraft,
   type FocusDraft,
   type ForcedBreakDraft,
+  type ListKind,
   type SafeSearchDraft,
+  type TimeKind,
   type TimeRangeValue,
   type TimeWindowDraft,
   type WebsiteDomainsDraft,
   type WeekdayNumber,
 } from '../lib/ruleConfig'
-import { dangerOutlineButtonClassName, inputClassName, secondaryButtonClassName } from './ui'
+import {
+  chipClassName,
+  dangerOutlineButtonClassName,
+  inputClassName,
+  secondaryButtonClassName,
+} from './ui'
 
 // Các form nhập quy tắc theo từng loại. Component chỉ quản lý hiển thị;
 // dữ liệu (draft) do trang cha giữ, kiểm tra hợp lệ ở lib/ruleConfig.ts.
@@ -287,6 +297,110 @@ export function BedtimeForm({
 }
 
 // ---------------------------------------------------------------------------
+// Form danh sách (chặn/cho phép × luôn luôn/theo giờ/tạm thời). Phụ huynh
+// chọn LOẠI DANH SÁCH trước, rồi chọn THỜI GIAN; trang cha ánh xạ lựa
+// chọn thành mode của rule (hoặc lệnh ghi đè tạm thời khi chọn "Tạm
+// thời"). Mọi form danh sách đều mang gợi ý "đến khi bật/tắt": quy tắc
+// có hiệu lực cho đến khi phụ huynh tắt bằng công tắc trong danh sách.
+// ---------------------------------------------------------------------------
+
+/** Gợi ý chuẩn cho mọi form danh sách: quy tắc áp dụng đến khi tắt bằng công tắc. */
+export function UntilToggledOffHint() {
+  return (
+    <p className="text-xs text-slate-500">
+      Quy tắc có hiệu lực cho đến khi bạn tắt hoặc xóa nó trong danh sách quy tắc bên dưới.
+    </p>
+  )
+}
+
+export function ListKindPicker({
+  value,
+  onChange,
+  disabled = false,
+  hint,
+}: {
+  value: ListKind
+  onChange: (value: ListKind) => void
+  disabled?: boolean
+  hint?: string
+}) {
+  return (
+    <div>
+      <span className="mb-1 block text-sm font-medium text-slate-700">Loại danh sách</span>
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Loại danh sách">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange('block')}
+          aria-pressed={value === 'block'}
+          className={`${chipClassName(value === 'block')} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          Danh sách chặn
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange('allow')}
+          aria-pressed={value === 'allow'}
+          className={`${chipClassName(value === 'allow')} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          Danh sách cho phép
+        </button>
+      </div>
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
+  )
+}
+
+export function TimeKindPicker({
+  value,
+  onChange,
+  disabled = false,
+  hint,
+}: {
+  value: TimeKind
+  onChange: (value: TimeKind) => void
+  disabled?: boolean
+  hint?: string
+}) {
+  return (
+    <div>
+      <span className="mb-1 block text-sm font-medium text-slate-700">Thời gian áp dụng</span>
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Thời gian áp dụng">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange('always')}
+          aria-pressed={value === 'always'}
+          className={`${chipClassName(value === 'always')} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          Luôn luôn
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange('by_time')}
+          aria-pressed={value === 'by_time'}
+          className={`${chipClassName(value === 'by_time')} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          Theo giờ
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange('temporary')}
+          aria-pressed={value === 'temporary'}
+          className={`${chipClassName(value === 'temporary')} disabled:cursor-not-allowed disabled:opacity-50`}
+        >
+          Tạm thời — đếm ngược
+        </button>
+      </div>
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Quy tắc website (đợt 2). Các form dùng chung DomainsField; kiểm tra hợp
 // lệ ở lib/ruleConfig.ts (parseDomainsInput).
 // ---------------------------------------------------------------------------
@@ -349,6 +463,7 @@ export function BlockDomainsForm({
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
+      <UntilToggledOffHint />
     </div>
   )
 }
@@ -379,6 +494,7 @@ export function BlockDomainsByTimeForm({
         idPrefix="domain-window"
         emptyDayText="Không có khung giờ nào — các domain trên không bị chặn ngày này."
       />
+      <UntilToggledOffHint />
     </div>
   )
 }
@@ -403,6 +519,38 @@ export function AllowlistForm({
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
+      <UntilToggledOffHint />
+    </div>
+  )
+}
+
+export function AllowlistByTimeForm({
+  draft,
+  onChange,
+}: {
+  draft: AllowlistByTimeDraft
+  onChange: (draft: AllowlistByTimeDraft) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Trong các khung giờ dưới đây, <strong>chỉ</strong> các website trong danh sách được mở; ngoài khung
+        giờ, mọi website đều mở được. <strong>Ngày nào không có khung giờ nào thì ngày đó không giới
+        hạn.</strong> Giờ tính theo giờ địa phương trên máy của con. Quy tắc áp dụng cả cho tên miền con.
+      </p>
+      <DomainsField
+        id="website-domains"
+        label="Domain được phép theo giờ"
+        value={draft.domainsText}
+        onChange={(domainsText) => onChange({ ...draft, domainsText })}
+      />
+      <WeekdayWindowsEditor
+        draft={draft.windows}
+        onChange={(windows) => onChange({ ...draft, windows })}
+        idPrefix="allowlist-window"
+        emptyDayText="Không có khung giờ nào — các website không bị giới hạn ngày này."
+      />
+      <UntilToggledOffHint />
     </div>
   )
 }
@@ -629,6 +777,51 @@ export function AppTimeLimitForm({
   )
 }
 
+export function AppBlockForm({
+  draft,
+  onChange,
+}: {
+  draft: AppListDraft
+  onChange: (draft: AppListDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        Các ứng dụng dưới đây sẽ bị đóng mọi lúc, cho đến khi bạn tắt quy tắc.
+      </p>
+      <AppsField
+        apps={draft.apps}
+        onChange={(apps) => onChange({ ...draft, apps })}
+        idPrefix="app-block-list"
+      />
+      <UntilToggledOffHint />
+    </div>
+  )
+}
+
+export function AppAllowlistForm({
+  draft,
+  onChange,
+}: {
+  draft: AppListDraft
+  onChange: (draft: AppListDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        <strong>Chỉ</strong> các ứng dụng dưới đây được mở; mọi ứng dụng khác đều bị đóng (trừ các
+        tiến trình hệ thống). Hãy chắc chắn đã liệt kê đủ các ứng dụng con cần dùng.
+      </p>
+      <AppsField
+        apps={draft.apps}
+        onChange={(apps) => onChange({ ...draft, apps })}
+        idPrefix="app-allowlist"
+      />
+      <UntilToggledOffHint />
+    </div>
+  )
+}
+
 export function AppBlockByTimeForm({
   draft,
   onChange,
@@ -654,6 +847,37 @@ export function AppBlockByTimeForm({
         idPrefix="app-window"
         emptyDayText="Không có khung giờ nào — các ứng dụng trên bị chặn cả ngày này."
       />
+      <UntilToggledOffHint />
+    </div>
+  )
+}
+
+export function AppAllowlistByTimeForm({
+  draft,
+  onChange,
+}: {
+  draft: AppAllowlistByTimeDraft
+  onChange: (draft: AppAllowlistByTimeDraft) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Trong các khung giờ dưới đây, <strong>chỉ</strong> các ứng dụng trong danh sách được mở; ngoài
+        khung giờ, quy tắc không đóng ứng dụng nào. <strong>Ngày nào không có khung giờ nào thì ngày đó
+        không giới hạn.</strong> Giờ tính theo giờ địa phương trên máy của con.
+      </p>
+      <AppsField
+        apps={draft.apps}
+        onChange={(apps) => onChange({ ...draft, apps })}
+        idPrefix="app-allowlist-time"
+      />
+      <WeekdayWindowsEditor
+        draft={draft.windows}
+        onChange={(windows) => onChange({ ...draft, windows })}
+        idPrefix="app-allowlist-window"
+        emptyDayText="Không có khung giờ nào — ngày này không giới hạn ứng dụng."
+      />
+      <UntilToggledOffHint />
     </div>
   )
 }
