@@ -5,7 +5,9 @@
 **Trạng thái (16/11/2026): project Supabase SafePC ĐÃ tạo (gói Free, region
 Singapore).** Migration 1 (schema + RLS) và migration 2 (loại rule Sprint 2)
 ĐÃ áp dụng và kiểm chứng. Migration 3 (RPC cho Agent) chờ áp dụng theo các
-bước dưới đây. Edge Function pair-device KHÔNG deploy (đã thay bằng RPC).
+bước dưới đây. Migration 4 (RPC đẩy web visits + cột `duration_sec` cho
+`web_visits`, Sprint 2 đợt 2) đã viết xong, chờ áp dụng. Edge Function
+pair-device KHÔNG deploy (đã thay bằng RPC).
 
 Tài liệu liên quan: `../../docs/02-ARCHITECTURE.md` (mục 3: mô hình dữ liệu,
 mục 4.1: pairing) và `../../docs/03-SECURITY.md` (RLS theo `family_id`, chỉ lưu
@@ -19,6 +21,7 @@ backend/supabase/
     20261116102900_init_safepc.sql   # Schema + RLS (12 bảng, 14 policy)
     20261116120000_sprint2_rule_types.sql  # Sprint 2 đợt 1: thêm type time_window + temporary_override
     20261116170000_device_rpc.sql  # RPC cho Agent: pairing, heartbeat, rules, commands, usage
+    20261116180000_web_usage_rpc.sql  # Sprint 2 đợt 2: thêm cột duration_sec cho web_visits + RPC safepc_push_web_visits (chờ áp dụng)
   functions/
     pair-device/index.ts             # Edge Function stub — ĐÃ THAY BẰNG RPC, không deploy
   README.md                          # File này
