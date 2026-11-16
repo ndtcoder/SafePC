@@ -49,4 +49,19 @@ public static class StateKeys
 
     /// <summary>Watermark đẩy usage: thời điểm mẫu mới nhất đã gửi lên server.</summary>
     public const string UsagePushedUntil = "usage_pushed_until";
+
+    /// <summary>Giờ nghỉ bắt buộc: thời điểm kết thúc giờ nghỉ (ISO-8601 UTC), tồn tại tới khi hết giờ nghỉ.</summary>
+    public const string BreakEndsAt = "break_ends_at";
+
+    /// <summary>Sàn streak nghỉ bắt buộc: chỉ mẫu sau thời điểm này mới tính vào chuỗi dùng liên tục (đặt bằng thời điểm kết thúc giờ nghỉ vừa hết, để mẫu trong giờ nghỉ không gây nghỉ lại ngay).</summary>
+    public const string BreakStreakFloor = "break_streak_floor";
+
+    /// <summary>Lần cuối đã gửi sự kiện can thiệp clock_drift lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ.</summary>
+    public const string TamperClockDriftLastSent = "tamper_clock_drift_last_sent";
+
+    /// <summary>Lần cuối đã gửi sự kiện can thiệp agent_restart lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ.</summary>
+    public const string TamperRestartLastSent = "tamper_restart_last_sent";
+
+    /// <summary>Lần cuối đã báo heartbeat của extension lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/5 phút.</summary>
+    public const string ExtensionHeartbeatLastReported = "extension_heartbeat_last_reported";
 }

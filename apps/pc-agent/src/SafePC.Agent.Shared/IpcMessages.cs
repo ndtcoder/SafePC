@@ -8,6 +8,9 @@ public static class IpcMessageTypes
     /// <summary>Tray -> Service: một mẫu app foreground (tên process + hash exe).</summary>
     public const string UsageSample = "usage-sample";
 
+    /// <summary>Tray -> Service: app foreground đã đổi (hoặc heartbeat 60s), để Service thi hành quy tắc theo app.</summary>
+    public const string ForegroundChanged = "foreground-changed";
+
     /// <summary>Service -> Tray: cảnh báo sắp hết giờ.</summary>
     public const string Warning = "warning";
 
@@ -62,6 +65,14 @@ public sealed record IpcMessage(string Type, string PayloadJson)
 
 /// <summary>Payload của <see cref="IpcMessageTypes.UsageSample"/>: chỉ metadata, không đường dẫn thô.</summary>
 public sealed record UsageSamplePayload(string AppName, string? ExePathHash, DateTimeOffset SampledAt);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.ForegroundChanged"/>: app đang ở
+/// foreground tại một session. <c>ExeName</c> chỉ là TÊN FILE exe (không
+/// đường dẫn), null khi không xác định được. <c>SessionId</c> để Service chỉ
+/// tác động đúng session đã báo cáo (không bao giờ chạm session 0).
+/// </summary>
+public sealed record ForegroundChangedPayload(string AppName, string? ExeName, string? ExePathHash, int SessionId, DateTimeOffset ReportedAt);
 
 /// <summary>Payload của <see cref="IpcMessageTypes.Warning"/>.</summary>
 public sealed record WarningPayload(int MinutesLeft, string Reason);

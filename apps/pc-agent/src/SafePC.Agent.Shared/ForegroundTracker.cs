@@ -5,10 +5,11 @@ using System.Text;
 namespace SafePC.Agent.Shared;
 
 /// <summary>
-/// Kết quả một lần lấy mẫu app foreground: CHỈ tên process + hash đường dẫn exe.
-/// Không chứa đường dẫn thô, không chứa tiêu đề cửa sổ, không chứa nội dung.
+/// Kết quả một lần lấy mẫu app foreground: CHỈ tên process + hash đường dẫn exe
+/// + tên file exe (không đường dẫn). Không chứa đường dẫn thô, không chứa
+/// tiêu đề cửa sổ, không chứa nội dung.
 /// </summary>
-public sealed record ForegroundApp(string ProcessName, string? ExePathHash, DateTimeOffset SampledAt);
+public sealed record ForegroundApp(string ProcessName, string? ExePathHash, DateTimeOffset SampledAt, string? ExeFileName);
 
 /// <summary>
 /// Theo dõi app đang ở foreground bằng Win32 API.
@@ -65,8 +66,16 @@ public static class ForegroundTracker
             string? exePath = GetExePath(processId);
             string processName = GetProcessName(processId);
 
+            // Chỉ lấy TÊN FILE exe (để khớp quy tắc theo app) — đường dẫn
+            // đầy đủ không rời khỏi hàm này, chỉ hash của nó được giữ lại.
+            string? exeFileName = exePath is null ? null : Path.GetFileName(exePath);
+            if (string.IsNullOrEmpty(exeFileName))
+            {
+                exeFileName = null;
+            }
+
             // Hash ngay tại chỗ: đường dẫn thô không rời khỏi hàm này.
-            app = new ForegroundApp(processName, Hashing.HashExePath(exePath), DateTimeOffset.UtcNow);
+            app = new ForegroundApp(processName, Hashing.HashExePath(exePath), DateTimeOffset.UtcNow, exeFileName);
             return true;
         }
         catch
