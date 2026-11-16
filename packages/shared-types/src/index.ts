@@ -78,8 +78,33 @@ export interface Device {
   last_seen_at: string | null;
   /** Lần cuối Agent thấy extension trình duyệt (thêm ở migration 5). */
   last_extension_seen_at: string | null;
+  /** Ảnh chụp thi hành mới nhất do Agent ghi (thêm ở migration 6). */
+  enforcement_json?: EnforcementSnapshot | Record<string, unknown> | string | null;
+  /** Thời điểm Agent ghi enforcement_json gần nhất (thêm ở migration 6). */
+  enforcement_updated_at?: string | null;
   status: DeviceStatus;
   created_at: string;
+}
+
+/**
+ * Ảnh chụp quyết định thi hành của Agent trên máy con (devices.
+ * enforcement_json, migration 6). Agent ghi sau mỗi lần đánh giá rules;
+ * Dashboard chỉ đọc để hiển thị. `reasons` là các chuỗi loại rule
+ * (vd "daily_limit", "website"); `ruleIds` là id các rule đang thi hành.
+ */
+export type EnforcementDecision = "allow" | "warn" | "lock";
+export type EnforcementLockedBy = "forced" | "rule" | "override" | "break";
+
+export interface EnforcementSnapshot {
+  v: number;
+  at: string;
+  decision: EnforcementDecision;
+  lockedBy: EnforcementLockedBy | null;
+  reasons: string[];
+  ruleIds: string[];
+  appBlocks: string[];
+  domainRulesActive: boolean;
+  focusActive: boolean;
 }
 
 /**
@@ -161,7 +186,13 @@ export interface TimeWindowRuleConfig {
  * trim, không chứa dấu phân tách đường dẫn hay ký tự cấm của tên file
  * Windows); `name` chỉ để hiển thị, trống thì lấy theo tên exe.
  */
-export type AppMode = "app_time_limit" | "app_block_by_time" | "forced_break";
+export type AppMode =
+  | "app_time_limit"
+  | "app_block"
+  | "app_block_by_time"
+  | "app_allowlist"
+  | "app_allowlist_by_time"
+  | "forced_break";
 
 /** Một ứng dụng, nhận dạng bằng tên file .exe; `name` chỉ để hiển thị. */
 export interface AppEntry {
@@ -193,6 +224,33 @@ export interface AppBlockByTimeConfig {
   windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
 }
 
+/** Chặn các ứng dụng trong danh sách mọi lúc (cho đến khi tắt quy tắc). */
+export interface AppBlockConfig {
+  mode: "app_block";
+  apps: AppEntry[];
+}
+
+/**
+ * Chỉ cho phép các ứng dụng trong danh sách; mọi ứng dụng khác đều bị
+ * đóng (trừ các tiến trình hệ thống trong denylist của Agent).
+ */
+export interface AppAllowlistConfig {
+  mode: "app_allowlist";
+  apps: AppEntry[];
+}
+
+/**
+ * Chỉ cho phép các ứng dụng trong danh sách, chỉ trong các khung giờ theo
+ * thứ (khung giờ = thời gian danh sách cho phép có hiệu lực, giờ địa
+ * phương của máy con). Ngoài khung giờ, quy tắc không đóng ứng dụng nào.
+ * Ngày nào không có khung giờ nào thì ngày đó không giới hạn.
+ */
+export interface AppAllowlistByTimeConfig {
+  mode: "app_allowlist_by_time";
+  apps: AppEntry[];
+  windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
+}
+
 /**
  * Dùng máy liên tục đủ `workMinutes` (15..180) thì khóa máy trong
  * `breakMinutes` (5..60).
@@ -203,7 +261,13 @@ export interface ForcedBreakConfig {
   breakMinutes: number;
 }
 
-export type AppRuleConfig = AppTimeLimitConfig | AppBlockByTimeConfig | ForcedBreakConfig;
+export type AppRuleConfig =
+  | AppTimeLimitConfig
+  | AppBlockConfig
+  | AppBlockByTimeConfig
+  | AppAllowlistConfig
+  | AppAllowlistByTimeConfig
+  | ForcedBreakConfig;
 
 /**
  * Quy tắc website (Sprint 2 đợt 2): một dòng rule type='website' mang đúng
@@ -216,6 +280,7 @@ export type WebsiteMode =
   | "block_domains"
   | "block_domains_by_time"
   | "allowlist"
+  | "allowlist_by_time"
   | "domain_time_limit"
   | "safe_search"
   | "focus";
@@ -237,6 +302,19 @@ export interface BlockDomainsByTimeConfig {
 export interface AllowlistConfig {
   mode: "allowlist";
   domains: string[];
+}
+
+/**
+ * Chỉ cho phép các domain trong danh sách, chỉ trong các khung giờ theo
+ * thứ (khung giờ = thời gian danh sách cho phép có hiệu lực, giờ địa
+ * phương của máy con). Ngoài khung giờ, quy tắc không giới hạn website
+ * nào. Ngày nào không có khung giờ nào thì ngày đó không giới hạn.
+ * Extension thi hành qua `allowlistByTime` trong domain_rules.json.
+ */
+export interface AllowlistByTimeConfig {
+  mode: "allowlist_by_time";
+  domains: string[];
+  windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
 }
 
 /** Tổng số phút mỗi ngày cho tất cả các domain trong danh sách cộng lại. */
@@ -271,6 +349,7 @@ export type WebsiteRuleConfig =
   | BlockDomainsConfig
   | BlockDomainsByTimeConfig
   | AllowlistConfig
+  | AllowlistByTimeConfig
   | DomainTimeLimitConfig
   | SafeSearchConfig
   | FocusConfig;
@@ -364,6 +443,8 @@ export type CommandStatus = "pending" | "sent" | "done" | "failed";
  * - `bonus_minutes`: cộng thêm `minutes` vào hạn mức hôm nay.
  * - `lock`: khóa máy tới `expires_at`.
  * - `unlock`: tạm ngưng các quy tắc giờ giấc tới `expires_at`.
+ * - `allow_domain` / `block_domain`: cho phép/chặn `domains` tới `expires_at`.
+ * - `allow_app` / `block_app`: cho phép/chặn `apps` (tên exe) tới `expires_at`.
  * - `cancel`: hủy ghi đè đang hiệu lực (không cần `minutes`/`expires_at`).
  * Agent lưu ghi đè đang hiệu lực vào SQLite local và kiểm tra `expires_at`
  * ở mỗi lần đánh giá rules, nên ghi đè vẫn hết hạn đúng giờ kể cả khi
@@ -375,6 +456,8 @@ export type TemporaryOverrideAction =
   | "unlock"
   | "allow_domain"
   | "block_domain"
+  | "block_app"
+  | "allow_app"
   | "cancel";
 
 /**
@@ -385,6 +468,8 @@ export type TemporaryOverrideAction =
  *   `TemporaryOverrideAction`); `expires_at` là ISO 8601 có múi giờ.
  * - `domains`: lệnh `temporary_override` với action `allow_domain` /
  *   `block_domain` (ghi đè website tạm thời, Sprint 2 đợt 2).
+ * - `apps`: lệnh `temporary_override` với action `allow_app` / `block_app`
+ *   (ghi đè ứng dụng tạm thời: danh sách tên file .exe).
  * Kiểu để mở (index signature) để Dashboard/Agent bổ sung trường mà không vỡ
  * contract; siết chặt dần khi 2 bên chốt hình dạng payload từng loại lệnh.
  */
@@ -395,6 +480,7 @@ export interface CommandPayload {
   minutes?: number;
   expires_at?: string;
   domains?: string[];
+  apps?: string[];
   [key: string]: unknown;
 }
 
