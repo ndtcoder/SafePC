@@ -466,6 +466,77 @@ public sealed class OutboxStore
         return TimeSpan.FromSeconds(count * AgentConstants.ForegroundSampleInterval.TotalSeconds);
     }
 
+    /// <summary>
+    /// Thời gian đã dùng "hôm nay" (ngày địa phương, cùng ranh giới như
+    /// <see cref="GetUsageTodayAsync"/>) theo từng app: số mẫu x 15 giây/mẫu,
+    /// khóa theo <c>app_name</c> (tên process trần, không có ".exe"). Nơi gọi
+    /// chuẩn hóa cả hai phía bằng <see cref="ExeNames"/> khi so khớp với
+    /// config quy tắc (config ghi "game.exe").
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayAsync(CancellationToken ct)
+    {
+        DateTimeOffset localNow = DateTimeOffset.Now;
+        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
+        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+
+        var usage = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT app_name, COUNT(*) FROM usage_samples
+            WHERE sampled_at >= $from AND sampled_at < $to
+            GROUP BY app_name;
+            """;
+        command.Parameters.AddWithValue("$from", from);
+        command.Parameters.AddWithValue("$to", to);
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string appName = reader.GetString(0);
+            long count = reader.GetInt64(1);
+            usage[appName] = TimeSpan.FromSeconds(count * AgentConstants.ForegroundSampleInterval.TotalSeconds);
+        }
+
+        return usage;
+    }
+
+    /// <summary>
+    /// Các thời điểm lấy mẫu mới hơn <paramref name="since"/>, theo thứ tự
+    /// tăng dần — dùng tính chuỗi dùng liên tục cho nghỉ bắt buộc. Chuỗi
+    /// thời gian hỏng thì bỏ qua mẫu đó (giống <see cref="GetUsageSummaryAsync"/>).
+    /// </summary>
+    public async Task<IReadOnlyList<DateTimeOffset>> GetSampleTimesSinceAsync(DateTimeOffset since, CancellationToken ct)
+    {
+        var times = new List<DateTimeOffset>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT sampled_at FROM usage_samples
+            WHERE sampled_at > $since
+            ORDER BY sampled_at ASC;
+            """;
+        command.Parameters.AddWithValue("$since", since.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (DateTimeOffset.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset sampledAt))
+            {
+                times.Add(sampledAt);
+            }
+        }
+
+        return times;
+    }
+
     /// <summary>Đọc một giá trị trạng thái bền vững của Service. Null khi chưa có.</summary>
     public async Task<string?> GetStateAsync(string key, CancellationToken ct)
     {

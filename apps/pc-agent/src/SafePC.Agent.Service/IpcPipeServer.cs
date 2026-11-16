@@ -28,14 +28,16 @@ public sealed class IpcPipeServer : BackgroundService
 {
     private readonly OutboxStore _outbox;
     private readonly LocalLogger _log;
+    private readonly ForegroundState _foregroundState;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
     private readonly System.Collections.Generic.HashSet<StreamWriter> _clientWriters = new();
     private readonly object _writersLock = new();
 
-    public IpcPipeServer(OutboxStore outbox, LocalLogger log)
+    public IpcPipeServer(OutboxStore outbox, LocalLogger log, ForegroundState foregroundState)
     {
         _outbox = outbox;
         _log = log;
+        _foregroundState = foregroundState;
     }
 
     /// <summary>
@@ -233,6 +235,14 @@ public sealed class IpcPipeServer : BackgroundService
                 if (sample is not null)
                 {
                     await _outbox.RecordUsageSampleAsync(sample, ct);
+                }
+                break;
+
+            case IpcMessageTypes.ForegroundChanged:
+                ForegroundChangedPayload? foreground = message.GetPayload<ForegroundChangedPayload>();
+                if (foreground is not null)
+                {
+                    _foregroundState.Report(foreground);
                 }
                 break;
 

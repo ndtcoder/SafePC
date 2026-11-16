@@ -18,6 +18,8 @@ namespace SafePC.Agent.Service;
 /// <c>%ProgramData%\SafePC\shared\</c> -&gt; NativeHost đọc file này và trả
 /// cho extension qua giao thức native messaging. Extension KHÔNG bao giờ nói
 /// chuyện trực tiếp với Supabase và không đọc được database/token của Agent.
+/// Từ Sprint 2 đợt 3, file còn mang thêm mục <c>focus</c> (giờ học tập trung,
+/// hợp từ mọi rule focus) — trường cộng thêm, Version vẫn là 1.
 ///
 /// File chỉ ghi lại khi nội dung (trừ <c>updated_at</c>) thay đổi, để vòng
 /// lặp đồng bộ mỗi phút không chạm đĩa vô ích. Ghi nguyên tử: ghi file tạm
@@ -44,6 +46,9 @@ public sealed class DomainRulesPublisher
 
     /// <summary>File JSONL NativeHost ghi lượt thăm web vào, Service đọc lên server.</summary>
     public static string WebUsageFilePath => Path.Combine(SharedDirectory, "web_usage.jsonl");
+
+    /// <summary>File NativeHost ghi đè mỗi khi extension liên hệ (chỉ chứa timestamp UTC ISO), Service đọc để báo extension còn sống.</summary>
+    public static string ExtensionHeartbeatFilePath => Path.Combine(SharedDirectory, "extension_heartbeat.txt");
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -113,7 +118,8 @@ public sealed class DomainRulesPublisher
                 + file.BlockedByTime.Count + " chặn theo giờ, "
                 + (file.Allowlist is null ? "không có allowlist" : file.Allowlist.Count + " domain cho phép") + ", "
                 + file.DomainLimits.Count + " giới hạn theo domain, "
-                + "tempAllow " + file.TempAllow.Count + ", tempBlock " + file.TempBlock.Count + ".");
+                + "tempAllow " + file.TempAllow.Count + ", tempBlock " + file.TempBlock.Count + ", "
+                + (file.Focus is null ? "không có focus" : "focus " + file.Focus.AllowedDomains.Count + " domain cho phép") + ".");
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -139,6 +145,13 @@ public sealed class DomainRulesPublisher
         HashSet<string>? allowlist = null;
         bool safeSearch = false;
         bool youtubeRestricted = false;
+
+        // Giờ học tập trung (Sprint 2 đợt 3): hợp (union) mọi rule focus
+        // đang bật — gộp khung giờ theo từng thứ, hợp các domain cho phép.
+        // Phía app (đóng app ngoài danh sách) do AgentWorker thi hành trực
+        // tiếp từ cache rules; file này chỉ mang phía domain cho extension.
+        var focusWindows = new Dictionary<string, List<TimeRangeEntry>>(StringComparer.Ordinal);
+        var focusDomains = new HashSet<string>(StringComparer.Ordinal);
 
         IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
         foreach (Rule rule in rules)
@@ -218,6 +231,30 @@ public sealed class DomainRulesPublisher
                     youtubeRestricted |= TryGetBoolOrDefault(config, "youtubeRestricted", defaultValue: true);
                     break;
 
+                case "focus":
+                {
+                    Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
+                    if (windows is null)
+                    {
+                        _log.Warning("Rule focus thiếu khung giờ hợp lệ, bỏ qua.");
+                        break;
+                    }
+
+                    foreach (KeyValuePair<string, List<TimeRangeEntry>> day in windows)
+                    {
+                        if (!focusWindows.TryGetValue(day.Key, out List<TimeRangeEntry>? ranges))
+                        {
+                            ranges = new List<TimeRangeEntry>();
+                            focusWindows[day.Key] = ranges;
+                        }
+
+                        ranges.AddRange(day.Value);
+                    }
+
+                    AddAllowedDomains(focusDomains, config);
+                    break;
+                }
+
                 default:
                     _log.Warning("Rule website không rõ mode, bỏ qua: " + (mode ?? "(trống)") + ".");
                     break;
@@ -230,6 +267,19 @@ public sealed class DomainRulesPublisher
             : allowlist.OrderBy(d => d, StringComparer.Ordinal).ToList();
         file.SafeSearch = safeSearch;
         file.YoutubeRestricted = youtubeRestricted;
+
+        // Focus: null khi không có rule focus hợp lệ nào (không có khung giờ
+        // hợp lệ). Danh sách domain cho phép có thể rỗng — nghĩa là trong giờ
+        // tập trung không domain nào được phép (chỉ app trong danh sách cho
+        // phép mới mở được, do AgentWorker thi hành).
+        if (focusWindows.Count > 0)
+        {
+            file.Focus = new FocusEntry
+            {
+                WindowsByWeekday = FinalizeFocusWindows(focusWindows),
+                AllowedDomains = focusDomains.OrderBy(d => d, StringComparer.Ordinal).ToList(),
+            };
+        }
 
         // Ghi đè domain (tối đa 1 hàng, lệnh mới nhất thắng): chỉ sinh temp
         // entry khi còn hạn (GetActiveOverrideAsync đã lọc hết hạn) và còn
@@ -301,6 +351,58 @@ public sealed class DomainRulesPublisher
 
             target.Add(normalized);
         }
+    }
+
+    /// <summary>Đọc mảng <c>allowedDomains</c> trong config rule focus, chuẩn hóa và thêm vào tập đích.</summary>
+    private void AddAllowedDomains(HashSet<string> target, JsonElement config)
+    {
+        if (!config.TryGetProperty("allowedDomains", out JsonElement array) || array.ValueKind != JsonValueKind.Array)
+        {
+            _log.Warning("Rule focus thiếu mảng allowedDomains, coi như không có domain nào được phép.");
+            return;
+        }
+
+        foreach (JsonElement element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                _log.Warning("Mục allowedDomains không phải chuỗi trong rule focus, đã bỏ qua.");
+                continue;
+            }
+
+            string? raw = element.GetString();
+            string? normalized = NormalizeDomain(raw);
+            if (normalized is null)
+            {
+                _log.Warning("Domain không hợp lệ trong rule focus, đã bỏ qua: " + TruncateForLog(ToCandidate(raw)));
+                continue;
+            }
+
+            target.Add(normalized);
+        }
+    }
+
+    /// <summary>
+    /// Chốt khung giờ focus đã hợp từ nhiều rule: khử trùng lặp từng thứ,
+    /// sắp xếp theo giờ bắt đầu, sắp xếp các thứ theo số — để chuỗi JSON so
+    /// sánh ổn định giữa các lần xuất bản.
+    /// </summary>
+    private static Dictionary<string, List<TimeRangeEntry>> FinalizeFocusWindows(
+        Dictionary<string, List<TimeRangeEntry>> merged)
+    {
+        var result = new Dictionary<string, List<TimeRangeEntry>>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, List<TimeRangeEntry>> day in merged
+            .OrderBy(pair => int.Parse(pair.Key, CultureInfo.InvariantCulture)))
+        {
+            result[day.Key] = day.Value
+                .GroupBy(range => range.Start + "|" + range.End, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .OrderBy(range => range.Start, StringComparer.Ordinal)
+                .ThenBy(range => range.End, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -635,6 +737,14 @@ internal sealed class DomainRulesFile
 
     [JsonPropertyName("tempBlock")]
     public List<TempEntry> TempBlock { get; set; } = new();
+
+    /// <summary>
+    /// Giờ học tập trung (Sprint 2 đợt 3, cộng thêm — Version vẫn là 1):
+    /// null = không có rule focus hợp lệ nào. Khi có, extension chỉ cho phép
+    /// các domain trong danh sách trong khung giờ tập trung.
+    /// </summary>
+    [JsonPropertyName("focus")]
+    public FocusEntry? Focus { get; set; }
 }
 
 /// <summary>Một mục chặn theo giờ: các domain + khung giờ theo thứ (0 = Chủ nhật..6 = Thứ 7).</summary>
@@ -675,4 +785,14 @@ internal sealed class TimeRangeEntry
 
     [JsonPropertyName("end")]
     public string End { get; set; } = string.Empty;
+}
+
+/// <summary>Giờ học tập trung đã hợp từ mọi rule focus: khung giờ theo thứ + domain được phép trong giờ đó.</summary>
+internal sealed class FocusEntry
+{
+    [JsonPropertyName("windowsByWeekday")]
+    public Dictionary<string, List<TimeRangeEntry>> WindowsByWeekday { get; set; } = new();
+
+    [JsonPropertyName("allowedDomains")]
+    public List<string> AllowedDomains { get; set; } = new();
 }

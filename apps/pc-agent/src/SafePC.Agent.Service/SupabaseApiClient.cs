@@ -303,6 +303,62 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Báo một sự kiện can thiệp lên server (migration 5, ghi vào bảng
+    /// <c>audit_logs</c>). <paramref name="eventType"/> phải là một trong 4
+    /// giá trị RPC chấp nhận (clock_drift, agent_restart, extension_missing,
+    /// service_stopped) — Agent chỉ tự đẩy 2 loại đầu (xem AgentWorker).
+    /// Trả về true chỉ khi server trả về id hàng đã ghi.
+    /// </summary>
+    public async Task<bool> PushTamperEventAsync(string eventType, JsonElement details, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(eventType);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Gửi tamper event bỏ qua: " + reason + ".");
+            return false;
+        }
+
+        string? id = await PostRpcAsync<string>(
+            "safepc_push_tamper_event",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_event_type = eventType,
+                p_details = details,
+            },
+            ct);
+        return id is not null;
+    }
+
+    /// <summary>
+    /// Báo server biết extension trình duyệt còn sống: cập nhật cột
+    /// <c>devices.last_extension_seen_at</c> (migration 5). RPC trả về void
+    /// nên PostgREST trả 204/không có body — dùng
+    /// <see cref="PostRpcNoResultAsync"/> thay vì <c>PostRpcAsync&lt;T&gt;</c>
+    /// (đọc JSON từ body rỗng sẽ luôn báo lỗi). Trả về true khi HTTP 2xx.
+    /// </summary>
+    public async Task<bool> ReportExtensionHeartbeatAsync(DateTimeOffset seenAt, CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Báo extension heartbeat bỏ qua: " + reason + ".");
+            return false;
+        }
+
+        return await PostRpcNoResultAsync(
+            "safepc_report_extension_heartbeat",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_seen_at = seenAt,
+            },
+            ct);
+    }
+
+    /// <summary>
     /// Kiểm tra đã sẵn sàng gọi server chưa: có URL cấu hình, có khóa
     /// publishable (header đã gắn ở constructor), và đã pairing (có token).
     /// Đọc token ở mỗi lần gọi để Service đang chạy tự nhận ghép nối mới.
@@ -379,6 +435,43 @@ public sealed class SupabaseApiClient
                 LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
                 return default;
             }
+        }
+    }
+
+    /// <summary>
+    /// Gọi một RPC trả về void (PostgREST trả 204/không có body). Chỉ kiểm
+    /// tra mã HTTP 2xx, không đọc/parse body. CHỈ dùng cho RPC void.
+    /// </summary>
+    private async Task<bool> PostRpcNoResultAsync(string function, object args, CancellationToken ct)
+    {
+        string url = _baseUrl + "/rest/v1/rpc/" + function;
+        string json = JsonSerializer.Serialize(args);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogThrottled(function, "Không nối được tới server (" + function + ").", ex);
+            return false;
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                string detail = await TryReadErrorMessageAsync(response, ct);
+                LogThrottled(function, "Server từ chối " + function + " (HTTP " + (int)response.StatusCode + ")" + detail + ".");
+                return false;
+            }
+
+            return true;
         }
     }
 

@@ -43,6 +43,7 @@ builder.ConfigureServices((context, services) =>
     services.AddSingleton(new OutboxStore(Path.Combine(programData, "agent.db")));
     services.AddSingleton<RuleEngine>();
     services.AddSingleton<DomainRulesPublisher>();
+    services.AddSingleton<ForegroundState>();
     services.AddHttpClient<SupabaseApiClient>();
 
     // IpcPipeServer vừa là singleton (để AgentWorker gửi message xuống Tray)
