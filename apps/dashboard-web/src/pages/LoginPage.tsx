@@ -91,7 +91,7 @@ export default function LoginPage() {
         <p className="text-sm text-slate-600">Dashboard phụ huynh — quản lý máy tính của con</p>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <h1 className="text-lg font-semibold text-slate-900">{copy.title}</h1>
         <p className="mt-1 text-sm text-slate-600">{copy.description}</p>
 
@@ -160,17 +160,17 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-5 space-y-2 border-t border-slate-100 pt-4 text-center text-sm">
+        <div className="mt-5 space-y-1 border-t border-slate-100 pt-4 text-center text-sm">
           {mode === 'login' && (
             <>
               <p>
-                <button type="button" onClick={() => switchMode('forgot')} className="font-medium text-indigo-600 hover:underline">
+                <button type="button" onClick={() => switchMode('forgot')} className="inline-flex min-h-[44px] items-center px-2 font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded-lg">
                   Quên mật khẩu?
                 </button>
               </p>
               <p className="text-slate-600">
                 Chưa có tài khoản?{' '}
-                <button type="button" onClick={() => switchMode('signup')} className="font-medium text-indigo-600 hover:underline">
+                <button type="button" onClick={() => switchMode('signup')} className="inline-flex min-h-[44px] items-center px-2 font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded-lg">
                   Đăng ký tài khoản phụ huynh
                 </button>
               </p>
@@ -178,7 +178,7 @@ export default function LoginPage() {
           )}
           {mode !== 'login' && (
             <p className="text-slate-600">
-              <button type="button" onClick={() => switchMode('login')} className="font-medium text-indigo-600 hover:underline">
+              <button type="button" onClick={() => switchMode('login')} className="inline-flex min-h-[44px] items-center px-2 font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded-lg">
                 Quay lại đăng nhập
               </button>
             </p>
@@ -187,7 +187,7 @@ export default function LoginPage() {
       </div>
 
       <p className="mt-6 text-center text-xs text-slate-500">
-        <Link to="/hom-nay" className="hover:underline">
+        <Link to="/hom-nay" className="inline-block rounded-lg px-2 py-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
           Xem trang tổng quan (chỉ hiển thị hướng dẫn khi chưa cấu hình)
         </Link>
       </p>

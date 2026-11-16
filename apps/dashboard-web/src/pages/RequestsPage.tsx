@@ -16,7 +16,9 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  dangerButtonClassName,
   secondaryButtonClassName,
+  successButtonClassName,
 } from '../components/ui'
 
 const STATUS_BADGE: Record<AppRequest['status'], string> = {
@@ -193,7 +195,7 @@ export default function RequestsPage() {
                     type="button"
                     onClick={() => void handleDecide(request, 'approved')}
                     disabled={decidingId === request.id}
-                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={successButtonClassName}
                   >
                     Duyệt
                   </button>
@@ -201,7 +203,7 @@ export default function RequestsPage() {
                     type="button"
                     onClick={() => void handleDecide(request, 'denied')}
                     disabled={decidingId === request.id}
-                    className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className={dangerButtonClassName}
                   >
                     Từ chối
                   </button>

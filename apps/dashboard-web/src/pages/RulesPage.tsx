@@ -106,6 +106,9 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  chipClassName,
+  dangerButtonClassName,
+  dangerOutlineButtonClassName,
   inputClassName,
   primaryButtonClassName,
   secondaryButtonClassName,
@@ -709,7 +712,7 @@ export default function RulesPage() {
       )}
 
       {state === 'ready' && family && (
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           <Card title={editingRule ? 'Sửa quy tắc' : 'Thêm quy tắc'}>
             {children.length === 0 ? (
               <p className="text-sm text-slate-700">
@@ -875,7 +878,7 @@ export default function RulesPage() {
                   Mẫu sẵn chỉ THÊM quy tắc mới, không xóa hay sửa quy tắc hiện có — bạn có thể
                   tắt/xóa từng quy tắc trong danh sách bên dưới.
                 </p>
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
                   {PRESET_OPTIONS.map((preset) => {
                     const confirming = confirmPresetId === preset.id
                     return (
@@ -971,11 +974,7 @@ export default function RulesPage() {
                           type="button"
                           onClick={() => setOverrideMinutes(minutes)}
                           aria-pressed={overrideMinutes === minutes}
-                          className={`rounded-lg px-3 py-2 text-sm font-medium ${
-                            overrideMinutes === minutes
-                              ? 'bg-indigo-600 text-white'
-                              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                          }`}
+                          className={chipClassName(overrideMinutes === minutes)}
                         >
                           {minutes} phút
                         </button>
@@ -1011,7 +1010,7 @@ export default function RulesPage() {
                       type="button"
                       onClick={() => void handleCancelOverride()}
                       disabled={cancellingOverride}
-                      className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="mt-2 inline-flex min-h-[44px] items-center rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
                     >
                       {cancellingOverride ? 'Đang gửi…' : 'Huỷ ghi đè này'}
                     </button>
@@ -1085,11 +1084,7 @@ export default function RulesPage() {
                         type="button"
                         onClick={() => setDomainOverrideMinutes(minutes)}
                         aria-pressed={domainOverrideMinutes === minutes}
-                        className={`rounded-lg px-3 py-2 text-sm font-medium ${
-                          domainOverrideMinutes === minutes
-                            ? 'bg-indigo-600 text-white'
-                            : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                        }`}
+                        className={chipClassName(domainOverrideMinutes === minutes)}
                       >
                         {minutes} phút
                       </button>
@@ -1123,7 +1118,7 @@ export default function RulesPage() {
                       type="button"
                       onClick={() => void handleCancelOverride()}
                       disabled={cancellingOverride}
-                      className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="mt-2 inline-flex min-h-[44px] items-center rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
                     >
                       {cancellingOverride ? 'Đang gửi…' : 'Huỷ ghi đè này'}
                     </button>
@@ -1167,7 +1162,7 @@ export default function RulesPage() {
                           Tạo lúc {formatDateTimeVi(rule.created_at)}
                         </p>
                         <details className="mt-2 text-xs">
-                          <summary className="cursor-pointer text-indigo-600 hover:underline">
+                          <summary className="cursor-pointer py-3 text-indigo-600 hover:underline">
                             Xem cấu hình JSON gốc
                           </summary>
                           <pre className="mt-1 overflow-x-auto rounded-lg bg-slate-50 p-3 font-mono text-xs text-slate-700">
@@ -1175,7 +1170,7 @@ export default function RulesPage() {
                           </pre>
                         </details>
                       </div>
-                      <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">
                         <button
                           type="button"
                           role="switch"
@@ -1183,7 +1178,7 @@ export default function RulesPage() {
                           aria-label={`${rule.enabled ? 'Tắt' : 'Bật'} quy tắc ${ruleTypeLabel(rule.type)}`}
                           onClick={() => void handleToggle(rule)}
                           disabled={togglingId === rule.id}
-                          className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${
+                          className={`flex min-h-[44px] items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
                             rule.enabled
                               ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
                               : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
@@ -1207,7 +1202,7 @@ export default function RulesPage() {
                               type="button"
                               onClick={() => void handleDeleteRule(rule)}
                               disabled={deletingId === rule.id}
-                              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              className={dangerButtonClassName}
                             >
                               {deletingId === rule.id ? 'Đang xoá…' : 'Xác nhận xoá'}
                             </button>
@@ -1223,7 +1218,7 @@ export default function RulesPage() {
                           <button
                             type="button"
                             onClick={() => setConfirmDeleteId(rule.id)}
-                            className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                            className={dangerOutlineButtonClassName}
                           >
                             Xoá
                           </button>

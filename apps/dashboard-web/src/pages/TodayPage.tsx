@@ -156,7 +156,7 @@ export default function TodayPage() {
       {state === 'error' && <ErrorState message={error} onRetry={() => void load()} />}
 
       {state === 'ready' && (
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           {usage.length === 0 ? (
             <EmptyState
               title="Chưa có dữ liệu hôm nay"
@@ -164,7 +164,7 @@ export default function TodayPage() {
             />
           ) : (
             <>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-3 sm:gap-4">
             <Card>
               <p className="text-sm text-slate-500">Tổng thời gian hôm nay</p>
               <p className="mt-1 text-2xl font-bold text-slate-900">{formatDurationVi(totalSec)}</p>

@@ -18,6 +18,7 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  dangerButtonClassName,
   inputClassName,
   primaryButtonClassName,
   secondaryButtonClassName,
@@ -401,7 +402,7 @@ export default function DevicesPage() {
       )}
 
       {state === 'ready' && family && (
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           {showChildForm && (
             <Card title="Thêm hồ sơ con">
               <form onSubmit={(e) => void handleCreateChild(e)} className="grid gap-4 sm:grid-cols-2">
@@ -430,7 +431,7 @@ export default function DevicesPage() {
                     className={inputClassName}
                   />
                 </Field>
-                <div className="flex gap-2 sm:col-span-2">
+                <div className="flex flex-wrap gap-2 sm:col-span-2">
                   <button type="submit" disabled={savingChild} className={primaryButtonClassName}>
                     {savingChild ? 'Đang lưu…' : 'Lưu hồ sơ con'}
                   </button>
@@ -448,7 +449,7 @@ export default function DevicesPage() {
               description="Chưa có máy tính nào được ghép nối với gia đình của bạn. Sau khi cài PC Agent lên máy của con và ghép nối thành công, máy sẽ xuất hiện tại đây."
             />
           ) : (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-3 sm:gap-4 md:grid-cols-2">
               {devices.map((device) => {
                 const extension = extensionStatus(extensionSeenByDevice.get(device.id), Date.now())
                 const disconnected = isDisconnected(device, Date.now())
@@ -477,31 +478,31 @@ export default function DevicesPage() {
                   </div>
                   <dl className="mt-4 space-y-1.5 text-sm">
                     <div className="flex justify-between gap-4">
-                      <dt className="text-slate-500">Hệ điều hành</dt>
-                      <dd className="text-slate-800">{device.os_version ?? '—'}</dd>
+                      <dt className="shrink-0 text-slate-500">Hệ điều hành</dt>
+                      <dd className="min-w-0 break-words text-right text-slate-800">{device.os_version ?? '—'}</dd>
                     </div>
                     <div className="flex justify-between gap-4">
-                      <dt className="text-slate-500">Phiên bản Agent</dt>
-                      <dd className="text-slate-800">{device.agent_version ?? '—'}</dd>
+                      <dt className="shrink-0 text-slate-500">Phiên bản Agent</dt>
+                      <dd className="min-w-0 break-words text-right text-slate-800">{device.agent_version ?? '—'}</dd>
                     </div>
                     <div className="flex justify-between gap-4">
-                      <dt className="text-slate-500">Hoạt động gần nhất</dt>
-                      <dd className="text-slate-800" title={formatDateTimeVi(device.last_seen_at)}>
+                      <dt className="shrink-0 text-slate-500">Hoạt động gần nhất</dt>
+                      <dd className="min-w-0 break-words text-right text-slate-800" title={formatDateTimeVi(device.last_seen_at)}>
                         {formatRelativeVi(device.last_seen_at)}
                       </dd>
                     </div>
                     <div className="flex justify-between gap-4">
-                      <dt className="text-slate-500">Extension trình duyệt</dt>
+                      <dt className="shrink-0 text-slate-500">Extension trình duyệt</dt>
                       <dd
-                        className={extension.className}
+                        className={`min-w-0 break-words text-right ${extension.className}`}
                         title={extensionSeenAt ? formatDateTimeVi(extensionSeenAt) : undefined}
                       >
                         {extension.label}
                       </dd>
                     </div>
                     <div className="flex justify-between gap-4">
-                      <dt className="text-slate-500">Ngày thêm</dt>
-                      <dd className="text-slate-800">{formatDateTimeVi(device.created_at)}</dd>
+                      <dt className="shrink-0 text-slate-500">Ngày thêm</dt>
+                      <dd className="min-w-0 break-words text-right text-slate-800">{formatDateTimeVi(device.created_at)}</dd>
                     </div>
                   </dl>
                   <div className="mt-4 border-t border-slate-100 pt-4">
@@ -509,7 +510,7 @@ export default function DevicesPage() {
                       type="button"
                       onClick={() => void handleLockNow(device)}
                       disabled={lockingId === device.id}
-                      className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      className={dangerButtonClassName}
                     >
                       {lockingId === device.id ? 'Đang gửi lệnh…' : 'Khóa ngay'}
                     </button>
