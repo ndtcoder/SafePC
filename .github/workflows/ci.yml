@@ -79,6 +79,12 @@ jobs:
         run: |
           dotnet publish apps/pc-agent/src/SafePC.Agent.Service/SafePC.Agent.Service.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/Service
           dotnet publish apps/pc-agent/src/SafePC.Agent.Tray/SafePC.Agent.Tray.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/Tray
+      - name: List Tray publish contents (diagnostic)
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          Get-ChildItem apps/pc-agent/publish/Tray -File | Select-Object -ExpandProperty Name | Sort-Object
+          if (Test-Path apps/pc-agent/publish/Tray/UIAutomationTypes.dll) { Write-Host 'UIAutomationTypes.dll: PRESENT' } else { Write-Host 'UIAutomationTypes.dll: MISSING' }
       - name: Install Inno Setup
         if: steps.check.outputs.exists == 'true'
         run: choco install innosetup -y --no-progress
