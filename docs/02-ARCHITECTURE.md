@@ -61,28 +61,28 @@ audit_logs (id, family_id, actor, action, target, ip_hash, created_at)
 ## 4. Luồng chính
 
 ### 4.1. Pairing thiết bị
-1. Phụ huynh bấm "Thêm máy" trên Dashboard -> Backend tạo pairing_code 6 số, hết hạn 10 phút.
-2. Người cài Agent trên máy con nhập code (cần quyền Admin lúc cài).
-3. Agent gọi Edge Function đổi code -> device_token + device_id. Token lưu bằng DPAPI (máy con) + hash lưu DB.
+1. Phụ huynh bấm "Ghép nối máy mới" trên Dashboard, chọn con -> Dashboard tạo pairing_code 6 số (chỉ lưu hash SHA-256), hết hạn 10 phút.
+2. Trên máy con, chạy lệnh `SafePC.Agent.Service.exe pair <mã>` bằng quyền Admin (PowerShell/Terminal).
+3. Agent gọi RPC `safepc_redeem_pairing_code` qua PostgREST đổi code -> device_token + device_id (một transaction: đánh dấu mã đã dùng + tạo device + tạo token). Token lưu bằng DPAPI (máy con) + hash lưu DB. Edge Function pair-device đã thay bằng RPC (migration 3).
 4. Agent tải rules lần đầu, bắt đầu heartbeat 60s.
 
 ### 4.2. Thi hành quy tắc (offline-first)
 - Agent cache rules + giới hạn còn lại trong SQLite. Mất mạng vẫn thi hành đúng theo cache.
 - Mỗi 15s: kiểm tra foreground app, cộng dồn thời gian, kiểm tra bedtime/limit.
 - Mỗi 15-30s (khi online): poll commands + gửi usage batch. Realtime là lớp tăng tốc, polling là dự phòng.
-- Khi hết giờ: Tray App hiện màn hình khóa, Service gọi LockWorkStation sau đếm ngược 60s để con kịp lưu bài.
-- Thứ tự đánh giá trong `RuleEngine` (Sprint 2 đợt 1): ghi đè tạm thời (khóa/mở) → giờ ngủ → khung giờ được dùng → giới hạn ngày; cảnh báo lấy ngưỡng gần nhất. Mọi giờ giấc theo giờ địa phương của máy con; quy ước thứ 0–6 khớp `DayOfWeek` (0 = Chủ nhật). Ngày vắng mặt trong `minutesByWeekday`/`bedtimeByWeekday` = không áp rule ngày đó; riêng `time_window`, ngày vắng mặt = không được dùng máy. Bedtime qua đêm (`end <= start`) khóa từ `start` hôm nay tới `end` hôm sau — engine kiểm tra cả khung hôm nay và đuôi qua đêm của hôm qua.
+- Khi hết giờ: Tray App hiện màn hình khóa, đếm ngược 60s để con kịp lưu bài rồi gọi LockWorkStation khóa phiên.
+- Thứ tự đánh giá trong `RuleEngine` (Sprint 2 đợt 1 + đồng bộ): khóa cưỡng chế của phụ huynh (lệnh lock_now, tới khi có lệnh unlock) → ghi đè tạm thời (khóa/mở) → giờ ngủ → khung giờ được dùng → giới hạn ngày; cảnh báo lấy ngưỡng gần nhất. Mọi giờ giấc theo giờ địa phương của máy con; quy ước thứ 0–6 khớp `DayOfWeek` (0 = Chủ nhật). Ngày vắng mặt trong `minutesByWeekday`/`bedtimeByWeekday` = không áp rule ngày đó; riêng `time_window`, ngày vắng mặt = không được dùng máy. Bedtime qua đêm (`end <= start`) khóa từ `start` hôm nay tới `end` hôm sau — engine kiểm tra cả khung hôm nay và đuôi qua đêm của hôm qua.
 - Ghi đè tạm thời (lệnh `temporary_override`): Agent lưu ghi đè đang hiệu lực vào bảng SQLite `active_override` (tối đa 1 hàng, lệnh mới thay lệnh cũ) và kiểm tra `expires_at` ở mỗi lần đánh giá, nên ghi đè hết hạn đúng giờ kể cả sau khi Service khởi động lại. Không suy ra lại từ server mỗi lần kiểm tra vì lệnh là một lần (pending → done) — sau khi nhận, hàng lệnh rời khỏi poll pending. Dashboard hiển thị ghi đè đang hiệu lực bằng cách đọc lệnh `temporary_override` mới nhất của máy từ bảng `commands`.
 - Khi quyết định chuyển từ khóa sang cho phép (hết giờ ngủ, ghi đè hết hạn...), Service gửi IPC `unlock` để Tray đóng màn hình khóa.
 
 ### 4.3. Lệnh từ xa
-Phụ huynh bấm Khóa ngay -> insert vào `commands` -> Realtime/polling -> Agent thi hành -> cập nhật status + audit log.
+Phụ huynh bấm Khóa ngay -> insert vào `commands` -> Agent poll 15s, thi hành, ack status (done/failed) về server. Lệnh lock_now được lưu bền vững trên máy (bảng `device_state`) nên sống sót qua khởi động lại Service, tới khi có lệnh unlock. Ghi audit log cho lệnh từ xa là TODO.
 
-### 4.4. Đồng hồ máy con và chống chỉnh giờ (TODO Sprint 2)
+### 4.4. Đồng hồ máy con và chống chỉnh giờ
 
 Giờ giấc của rules thi hành theo đồng hồ địa phương của máy con, nên con có thể lách bằng cách chỉnh đồng hồ hệ thống (cần quyền Admin — tài khoản con là Standard User nên không chỉnh được giờ hệ thống trong mặc định Windows, nhưng vẫn cần lớp phát hiện).
 
-TODO (chưa triển khai — `SupabaseApiClient` vẫn là skeleton, engine vẫn làm việc hoàn toàn offline từ cache): trong vòng lặp heartbeat 60s, Worker so sánh giờ máy (`DateTimeOffset.Now`) với giờ server trả về; nếu lệch quá 5 phút thì ghi log cảnh báo và báo phụ huynh (qua bảng `audit_logs` / trạng thái thiết bị), để phụ huynh biết đồng hồ máy con không đáng tin. Không tự động sửa giờ máy. Khi heartbeat gọi thật, so sánh này chạy kèm mỗi lần heartbeat, không thêm vòng lặp riêng.
+Đã triển khai kiểm tra lệch giờ (16/11/2026): trong vòng lặp heartbeat 60s, Worker so sánh giờ máy với giờ server trả về; lệch quá 5 phút thì ghi log cảnh báo. Chưa triển khai: báo phụ huynh (qua `audit_logs` / trạng thái thiết bị) — TODO đợt 3. Không tự động sửa giờ máy.
 
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 

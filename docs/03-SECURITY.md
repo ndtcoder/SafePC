@@ -18,6 +18,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - [ ] RLS trên mọi bảng: `family_id` là ranh giới. Kiểm thử RLS bằng test: user gia đình A không đọc được dữ liệu gia đình B.
 - [ ] Device token: chuỗi ngẫu nhiên 256-bit, chỉ gửi 1 lần lúc pairing, lưu hash (SHA-256) ở DB, lưu bản gốc bằng DPAPI trên máy con. Thu hồi được từ Dashboard ("Xóa máy").
 - [ ] Pairing code: 6 số, hết hạn 10 phút, tối đa 5 lần thử, dùng 1 lần.
+- Agent gọi server qua RPC SECURITY DEFINER (`safepc_*`, migration 3), xác thực bằng cặp (device_id, SHA-256 của device token); PostgREST xác thực bằng khóa publishable (AnonKey) trong `appsettings.json` của Service — khóa này được thiết kế để lộ ra phía client. Khóa quản trị (bypass RLS) không bao giờ vào Agent, Dashboard hay repo.
 - [ ] Mã PIN gỡ Agent: 6 số, do phụ huynh đặt riêng, lưu hash bcrypt/argon2, nhập sai 5 lần khóa 30 phút.
 - [ ] Mọi hành động quan trọng ghi audit log: đổi quy tắc, khóa/mở, duyệt yêu cầu, thêm/xóa máy, đăng nhập lạ.
 
