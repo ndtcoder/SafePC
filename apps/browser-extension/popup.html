@@ -8,7 +8,7 @@
     body {
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       margin: 0;
-      min-width: 240px;
+      min-width: 260px;
       padding: 16px;
       color: #1f2937;
       background: #ffffff;
@@ -20,21 +20,68 @@
     }
     .status {
       font-size: 13px;
+      margin: 0;
+    }
+    .status.ok {
+      color: #047857;
+    }
+    .status.off {
+      color: #b45309;
+    }
+    .section {
+      font-size: 12px;
+      font-weight: 700;
+      color: #6b7280;
+      margin: 14px 0 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      font-size: 13px;
+    }
+    li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 4px 0;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    li:last-child {
+      border-bottom: none;
+    }
+    .domain {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .minutes {
+      color: #6b7280;
+      white-space: nowrap;
+    }
+    .empty {
+      font-size: 13px;
       color: #6b7280;
       margin: 0;
     }
     .note {
       font-size: 12px;
       color: #9ca3af;
-      margin: 12px 0 0;
+      margin: 14px 0 0;
     }
   </style>
 </head>
 <body>
-  <!-- STUB Sprint 3: popup tĩnh, chưa có logic thật, không gọi API, không đọc tab. -->
-  <p class="title">SafePC đang bảo vệ</p>
-  <p class="status">Chưa kết nối — Sprint 3</p>
-  <p class="note">Khung stub Sprint 3 — chưa có logic chặn/báo cáo thật.</p>
+  <p class="title">SafePC</p>
+  <p id="status" class="status">Đang kiểm tra…</p>
+  <p class="section">Thời gian hôm nay (trang bị giới hạn)</p>
+  <ul id="limits"></ul>
+  <p id="empty" class="empty" hidden>Không có trang nào bị giới hạn thời gian.</p>
+  <p id="sync" class="note"></p>
+  <p class="note">Quy tắc do phụ huynh đặt trên Dashboard SafePC.</p>
+  <script src="domainUtils.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
