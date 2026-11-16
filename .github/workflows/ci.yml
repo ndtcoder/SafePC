@@ -1,0 +1,25 @@
+name: SafePC CI (Sprint 0)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required docs exist
+        run: |
+          test -f README.md
+          test -f docs/01-PRD.md
+          test -f docs/02-ARCHITECTURE.md
+          test -f docs/03-SECURITY.md
+          test -f docs/04-ROADMAP.md
+          echo "Docs OK"
+      - name: Check no secrets in tracked files (basic)
+        run: |
+          ! grep -rInE "supabase.*service_role|BEGIN (RSA |OPENSSH )?PRIVATE KEY|sk-live|ghp_[A-Za-z0-9]{20,}" --exclude-dir=.git . || (echo "Possible secret found" && exit 1)
+          echo "Secret scan OK"
