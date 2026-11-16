@@ -1,0 +1,32 @@
+# SafePC .gitignore
+# Secrets & local env - KHONG BAO GIO commit file nay
+.env
+.env.*
+!.env.example
+*.local
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+
+# .NET / Windows
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.exe
+*.msi
+*.dll
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+*.log
+
+# Supabase local
+backend/supabase/.branches/
+backend/supabase/.temp/
