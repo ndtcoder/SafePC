@@ -1,7 +1,8 @@
 ; SafePC Agent — Inno Setup script (skeleton Sprint 0)
 ;
 ; Cách dùng (trên Windows, sau khi publish — xem apps/pc-agent/README.md):
-;   1. Publish Service và Tray vào thư mục publish\Service và publish\Tray.
+;   1. Publish Service, Tray và NativeHost vào thư mục publish\Service,
+;      publish\Tray và publish\NativeHost.
 ;   2. Mở file này bằng Inno Setup 6 và chọn Build > Compile.
 ;   3. File cài đặt ra tại installer-output\SafePCAgentSetup-0.1.0.exe
 ;
@@ -35,6 +36,10 @@ UninstallDisplayName=SafePC Agent
 ; Thư mục publish phải tồn tại trước khi biên dịch script này.
 Source: "..\publish\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\publish\Tray\*"; DestDir: "{app}\Tray"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Native messaging host cho extension trình duyệt (Sprint 2 đợt 2). Manifest
+; com.safepc.agent.json KHÔNG đóng gói sẵn: [Code] sinh ra lúc cài đặt xong vì
+; nó phải chứa đường dẫn tuyệt đối tới exe (xem WriteNativeHostManifest).
+Source: "..\publish\NativeHost\*"; DestDir: "{app}\NativeHost"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\SafePC Agent"; Filename: "{app}\Tray\SafePC.Agent.Tray.exe"
@@ -42,6 +47,20 @@ Name: "{group}\SafePC Agent"; Filename: "{app}\Tray\SafePC.Agent.Tray.exe"
 [Registry]
 ; Tray App tự chạy khi bất kỳ user nào đăng nhập (All Users).
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "SafePC Agent"; ValueData: """{app}\Tray\SafePC.Agent.Tray.exe"""; Flags: uninsdeletevalue
+; Native messaging host cho extension (Sprint 2 đợt 2): Chrome và Edge đọc
+; giá trị mặc định của khóa này để tìm file manifest com.safepc.agent.json.
+; Bộ cài chạy ở chế độ 64-bit (ArchitecturesInstallIn64BitMode) nên khóa ghi
+; vào registry view 64-bit mà Chrome/Edge 64-bit đọc. uninsdeletekey: gỡ cài
+; đặt thì xóa cả khóa. ID extension trong manifest hiện là placeholder
+; "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" (32 ký tự, đúng định dạng); ID thật lấy
+; từ lúc đăng extension lên store (xem apps/browser-extension/README.md).
+Root: HKLM; Subkey: "SOFTWARE\Google\Chrome\NativeMessagingHosts\com.safepc.agent"; ValueType: string; ValueName: ""; ValueData: "{app}\NativeHost\com.safepc.agent.json"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.safepc.agent"; ValueType: string; ValueName: ""; ValueData: "{app}\NativeHost\com.safepc.agent.json"; Flags: uninsdeletekey
+
+[UninstallDelete]
+; Manifest do [Code] sinh ra lúc cài đặt (không nằm trong [Files]) nên phải
+; xóa tường minh khi gỡ; các file còn lại trong {app} Inno tự xóa.
+Type: files; Name: "{app}\NativeHost\com.safepc.agent.json"
 
 [Run]
 ; Đăng ký Windows Service chạy quyền SYSTEM, tự động khi khởi động.
@@ -124,4 +143,41 @@ begin
   // net stop CHỜ service dừng hẳn mới trả về (sc.exe stop thì không).
   Exec(ExpandConstant('{sys}\net.exe'), 'stop SafePCAgent /y', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := '';
+end;
+
+// Native messaging host (Sprint 2 đợt 2): sinh file manifest
+// com.safepc.agent.json sau khi cài đặt xong, vì trường "path" trong manifest
+// phải là đường dẫn TUYỆT ĐỐI tới exe. Cài đè cũng sinh lại (ghi đè) nên
+// manifest luôn khớp vị trí cài đặt hiện tại.
+// Extension ID "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" là placeholder 32 ký tự
+// đúng định dạng; ID thật lấy từ lúc đăng extension lên Chrome Web Store /
+// Edge Add-ons (hoặc key cố định khi đóng gói), rồi cập nhật cả chỗ này và
+// README của extension.
+procedure WriteNativeHostManifest();
+var
+  ExePath: String;
+  Manifest: String;
+begin
+  ExePath := ExpandConstant('{app}\NativeHost\SafePC.Agent.NativeHost.exe');
+  // JSON yêu cầu backslash nhân đôi trong chuỗi đường dẫn Windows.
+  ExePath := StringChange(ExePath, '\', '\\');
+  Manifest :=
+    '{' + #13#10 +
+    '  "name": "com.safepc.agent",' + #13#10 +
+    '  "description": "SafePC Agent native messaging host",' + #13#10 +
+    '  "path": "' + ExePath + '",' + #13#10 +
+    '  "type": "stdio",' + #13#10 +
+    '  "allowed_origins": [' + #13#10 +
+    '    "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"' + #13#10 +
+    '  ]' + #13#10 +
+    '}' + #13#10;
+  SaveStringToFile(ExpandConstant('{app}\NativeHost\com.safepc.agent.json'), Manifest, False);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    WriteNativeHostManifest();
+  end;
 end;
