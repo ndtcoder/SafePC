@@ -1,5 +1,10 @@
 # Edge Function `pair-device` (stub Sprint 1)
 
+> **ĐÃ THAY THẾ (16/11/2026):** luồng pairing thật dùng Postgres RPC
+> `safepc_redeem_pairing_code` (migration `20261116170000_device_rpc.sql`),
+> gọi qua PostgREST từ lệnh CLI `SafePC.Agent.Service.exe pair <mã>`.
+> Function này KHÔNG deploy. Giữ lại làm tài liệu tham khảo cho hợp đồng hash.
+
 Đổi pairing code 6 số thành device token cho PC Agent, theo luồng pairing ở
 `docs/02-ARCHITECTURE.md` mục 4.1 và quy tắc bảo mật ở `docs/03-SECURITY.md`
 mục 2 (chỉ lưu hash token/mã, pairing code hết hạn 10 phút, tối đa 5 lần thử,
