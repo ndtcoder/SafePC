@@ -76,6 +76,8 @@ export interface Device {
   os_version: string | null;
   agent_version: string | null;
   last_seen_at: string | null;
+  /** Lần cuối Agent thấy extension trình duyệt (thêm ở migration 5). */
+  last_extension_seen_at: string | null;
   status: DeviceStatus;
   created_at: string;
 }
@@ -153,12 +155,55 @@ export interface TimeWindowRuleConfig {
   windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
 }
 
-/** Chặn/cho phép 1 app. `exePathHash` là SHA-256 của đường dẫn exe (tránh lộ username Windows). */
-export interface AppRuleConfig {
-  appName: string;
-  exePathHash?: string;
-  action: RuleAction;
+/**
+ * Quy tắc ứng dụng (Sprint 2 đợt 3): một dòng rule type='app' mang đúng
+ * 1 chế độ (`mode`). Ứng dụng nhận dạng bằng tên file .exe (`exe`, đã
+ * trim, không chứa dấu phân tách đường dẫn hay ký tự cấm của tên file
+ * Windows); `name` chỉ để hiển thị, trống thì lấy theo tên exe.
+ */
+export type AppMode = "app_time_limit" | "app_block_by_time" | "forced_break";
+
+/** Một ứng dụng, nhận dạng bằng tên file .exe; `name` chỉ để hiển thị. */
+export interface AppEntry {
+  exe: string;
+  name: string;
 }
+
+/** Một ứng dụng kèm giới hạn số phút mỗi ngày (1..1440). */
+export interface AppTimeLimitEntry {
+  exe: string;
+  name: string;
+  minutesPerDay: number;
+}
+
+/** Giới hạn số phút mỗi ngày cho từng ứng dụng trong danh sách. */
+export interface AppTimeLimitConfig {
+  mode: "app_time_limit";
+  apps: AppTimeLimitEntry[];
+}
+
+/**
+ * Chặn các ứng dụng trong danh sách NGOÀI các khung giờ theo thứ (khung
+ * giờ = thời gian được phép dùng, giờ địa phương của máy con). Ngày nào
+ * không có khung giờ nào thì các ứng dụng trên bị chặn cả ngày.
+ */
+export interface AppBlockByTimeConfig {
+  mode: "app_block_by_time";
+  apps: AppEntry[];
+  windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
+}
+
+/**
+ * Dùng máy liên tục đủ `workMinutes` (15..180) thì khóa máy trong
+ * `breakMinutes` (5..60).
+ */
+export interface ForcedBreakConfig {
+  mode: "forced_break";
+  workMinutes: number;
+  breakMinutes: number;
+}
+
+export type AppRuleConfig = AppTimeLimitConfig | AppBlockByTimeConfig | ForcedBreakConfig;
 
 /**
  * Quy tắc website (Sprint 2 đợt 2): một dòng rule type='website' mang đúng
@@ -172,7 +217,8 @@ export type WebsiteMode =
   | "block_domains_by_time"
   | "allowlist"
   | "domain_time_limit"
-  | "safe_search";
+  | "safe_search"
+  | "focus";
 
 /** Chặn các domain trong danh sách (kể cả tên miền con). */
 export interface BlockDomainsConfig {
@@ -207,12 +253,27 @@ export interface SafeSearchConfig {
   youtubeRestricted: boolean;
 }
 
+/**
+ * Giờ học tập trung: trong các khung giờ theo thứ, chỉ các website trong
+ * `allowedDomains` (do extension thi hành) và các ứng dụng trong
+ * `allowedApps` (do Agent đóng các ứng dụng còn lại) mới mở được.
+ * Thứ tự ưu tiên: chặn tạm thời thắng danh sách cho phép của focus;
+ * cho phép tạm thời KHÔNG mở được website ngoài danh sách trong giờ tập trung.
+ */
+export interface FocusConfig {
+  mode: "focus";
+  windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
+  allowedApps: AppEntry[];
+  allowedDomains: string[];
+}
+
 export type WebsiteRuleConfig =
   | BlockDomainsConfig
   | BlockDomainsByTimeConfig
   | AllowlistConfig
   | DomainTimeLimitConfig
-  | SafeSearchConfig;
+  | SafeSearchConfig
+  | FocusConfig;
 
 /** Ánh xạ loại rule -> hình dạng `config` tương ứng. */
 export interface RuleConfigMap {
@@ -360,4 +421,8 @@ export interface AuditLog {
   /** Chỉ lưu hash IP, không lưu IP thô. */
   ip_hash: string | null;
   created_at: string;
+  // Các cột dưới đây do migration 5 thêm; chưa áp dụng migration 5 thì không có.
+  child_id?: string | null;
+  device_id?: string | null;
+  details?: Record<string, unknown> | null;
 }
