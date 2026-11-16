@@ -3,10 +3,12 @@
 // (tên bảng, tên cột và giá trị enum phải giữ đúng như schema này.)
 
 export type DeviceStatus = 'online' | 'offline' | 'locked'
-export type RuleType = 'daily_limit' | 'bedtime' | 'app' | 'website'
+export type RuleType = 'daily_limit' | 'bedtime' | 'time_window' | 'app' | 'website'
 export type RequestType = 'extra_time' | 'unblock_app'
 export type RequestStatus = 'pending' | 'approved' | 'denied'
-export type CommandType = 'lock_now' | 'unlock' | 'refresh_rules' | 'update'
+export type CommandType = 'lock_now' | 'unlock' | 'refresh_rules' | 'update' | 'temporary_override'
+export type CommandStatus = 'pending' | 'sent' | 'done' | 'failed'
+export type TemporaryOverrideAction = 'bonus_minutes' | 'lock' | 'unlock' | 'cancel'
 
 export interface Family {
   id: string
@@ -67,5 +69,15 @@ export interface AppRequest {
   reason: string | null
   decided_by: string | null
   decided_at: string | null
+  created_at: string
+}
+
+export interface Command {
+  id: string
+  family_id: string
+  device_id: string
+  type: CommandType
+  payload: Record<string, unknown>
+  status: CommandStatus
   created_at: string
 }

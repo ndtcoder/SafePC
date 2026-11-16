@@ -1,4 +1,17 @@
-import type { DeviceStatus, RequestStatus, RequestType, Rule, RuleType } from './types'
+import type { DeviceStatus, RequestStatus, RequestType, Rule, RuleType, TemporaryOverrideAction } from './types'
+import {
+  formatWeekdayGroup,
+  groupWeekdays,
+  hhmmToMinutes,
+  parseBedtimeConfig,
+  parseDailyLimitConfig,
+  parseTimeWindowConfig,
+  type BedtimeByWeekday,
+  type MinutesByWeekday,
+  type TimeRangeValue,
+  type WeekdayNumber,
+  type WindowsByWeekday,
+} from './ruleConfig'
 
 /** Định dạng thời lượng theo tiếng Việt, ví dụ: "1 giờ 20 phút", "45 phút", "30 giây". */
 export function formatDurationVi(totalSeconds: number): string {
@@ -73,10 +86,25 @@ export function ruleTypeLabel(type: RuleType): string {
       return 'Giới hạn giờ/ngày'
     case 'bedtime':
       return 'Giờ ngủ / giờ cấm'
+    case 'time_window':
+      return 'Khung giờ được dùng máy'
     case 'app':
       return 'Quy tắc ứng dụng'
     case 'website':
       return 'Quy tắc website'
+  }
+}
+
+export function overrideActionLabel(action: TemporaryOverrideAction): string {
+  switch (action) {
+    case 'bonus_minutes':
+      return 'Cộng thêm giờ'
+    case 'lock':
+      return 'Khóa máy tạm thời'
+    case 'unlock':
+      return 'Tạm mở máy (ngưng quy tắc giờ giấc)'
+    case 'cancel':
+      return 'Hủy ghi đè tạm thời'
   }
 }
 
@@ -114,6 +142,51 @@ function asText(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function fullWeek<T>(byWeekday: Partial<Record<WeekdayNumber, T>>, fallback: T): Record<WeekdayNumber, T> {
+  return {
+    0: byWeekday[0] ?? fallback,
+    1: byWeekday[1] ?? fallback,
+    2: byWeekday[2] ?? fallback,
+    3: byWeekday[3] ?? fallback,
+    4: byWeekday[4] ?? fallback,
+    5: byWeekday[5] ?? fallback,
+    6: byWeekday[6] ?? fallback,
+  }
+}
+
+/** "Thứ 2–6: 2 giờ mỗi ngày; Thứ 7–Chủ nhật: không giới hạn". Ngày vắng mặt = không giới hạn. */
+function describeDailyLimit(parsed: MinutesByWeekday): string[] {
+  const perDay = fullWeek<number | null>(parsed, null)
+  return groupWeekdays(perDay, (v) => (v === null ? 'none' : String(v))).map((group) =>
+    group.value === null
+      ? `${formatWeekdayGroup(group.days)}: không giới hạn`
+      : `${formatWeekdayGroup(group.days)}: ${formatDurationVi(group.value * 60)} mỗi ngày`,
+  )
+}
+
+/** "Thứ 2–6: cấm 21:00–07:00 (qua đêm); Thứ 7–Chủ nhật: không có giờ ngủ". Ngày vắng mặt = không khóa. */
+function describeBedtime(parsed: BedtimeByWeekday): string[] {
+  const perDay = fullWeek<TimeRangeValue | null>(parsed, null)
+  return groupWeekdays(perDay, (v) => (v === null ? 'none' : `${v.start}-${v.end}`)).map((group) => {
+    if (group.value === null) return `${formatWeekdayGroup(group.days)}: không có giờ ngủ`
+    const overnight = hhmmToMinutes(group.value.end) <= hhmmToMinutes(group.value.start)
+    return `${formatWeekdayGroup(group.days)}: cấm ${group.value.start}–${group.value.end}${overnight ? ' (qua đêm sang hôm sau)' : ''}`
+  })
+}
+
+/**
+ * "Thứ 2–6: được dùng 07:00–21:00; Chủ nhật: không được dùng máy".
+ * Ngày vắng mặt = KHÔNG được dùng máy ngày đó (khác với daily_limit).
+ */
+function describeTimeWindow(parsed: WindowsByWeekday): string[] {
+  const perDay = fullWeek<TimeRangeValue[] | null>(parsed, null)
+  return groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v))).map((group) => {
+    if (group.value === null) return `${formatWeekdayGroup(group.days)}: không được dùng máy`
+    const ranges = group.value.map((r) => `${r.start}–${r.end}`).join(', ')
+    return `${formatWeekdayGroup(group.days)}: được dùng ${ranges}`
+  })
+}
+
 /**
  * Trình bày config JSONB của rule thành các dòng dễ đọc.
  * Ưu tiên các key quen thuộc theo từng loại rule; các key còn lại hiển thị
@@ -124,19 +197,15 @@ export function describeRuleConfig(rule: Rule): string[] {
   const lines: string[] = []
 
   if (rule.type === 'daily_limit') {
-    const minutes = configValue(config, ['minutes_per_day', 'minutes', 'daily_minutes', 'limit_minutes'])
-    if (minutes !== undefined) {
-      const n = Number(minutes)
-      lines.push(`Giới hạn: ${Number.isFinite(n) ? formatDurationVi(n * 60) : asText(minutes)} mỗi ngày`)
-    }
+    lines.push(...describeDailyLimit(parseDailyLimitConfig(config)))
   }
 
   if (rule.type === 'bedtime') {
-    const start = configValue(config, ['start_time', 'start', 'bedtime_start', 'from'])
-    const end = configValue(config, ['end_time', 'end', 'bedtime_end', 'to'])
-    if (start !== undefined || end !== undefined) {
-      lines.push(`Khung giờ cấm: ${start !== undefined ? asText(start) : '?'} – ${end !== undefined ? asText(end) : '?'}`)
-    }
+    lines.push(...describeBedtime(parseBedtimeConfig(config)))
+  }
+
+  if (rule.type === 'time_window') {
+    lines.push(...describeTimeWindow(parseTimeWindowConfig(config)))
   }
 
   if (rule.type === 'app') {
@@ -160,6 +229,7 @@ export function describeRuleConfig(rule: Rule): string[] {
 
   // Các key chưa được trình bày ở trên: liệt kê nốt để không giấu thông tin.
   const shown = new Set([
+    'minutesByWeekday', 'windowsByWeekday', 'bedtimeByWeekday',
     'minutes_per_day', 'minutes', 'daily_minutes', 'limit_minutes',
     'start_time', 'start', 'bedtime_start', 'from',
     'end_time', 'end', 'bedtime_end', 'to',
