@@ -3,9 +3,9 @@
 **Stack:** Supabase Free — Postgres + Auth + Realtime + Storage + Edge Functions.
 
 **Trạng thái (16/11/2026): project Supabase SafePC ĐÃ tạo (gói Free, region
-Singapore).** Migration CHƯA áp dụng, Edge Function chưa deploy, RLS chưa kiểm
-chứng trên project thật. Các bước dưới đây áp migration lần đầu lên project
-đã tạo.
+Singapore).** Migration 1 (schema + RLS) và migration 2 (loại rule Sprint 2)
+ĐÃ áp dụng và kiểm chứng. Migration 3 (RPC cho Agent) chờ áp dụng theo các
+bước dưới đây. Edge Function pair-device KHÔNG deploy (đã thay bằng RPC).
 
 Tài liệu liên quan: `../../docs/02-ARCHITECTURE.md` (mục 3: mô hình dữ liệu,
 mục 4.1: pairing) và `../../docs/03-SECURITY.md` (RLS theo `family_id`, chỉ lưu
@@ -18,8 +18,9 @@ backend/supabase/
   migrations/
     20261116102900_init_safepc.sql   # Schema + RLS (12 bảng, 14 policy)
     20261116120000_sprint2_rule_types.sql  # Sprint 2 đợt 1: thêm type time_window + temporary_override
+    20261116170000_device_rpc.sql  # RPC cho Agent: pairing, heartbeat, rules, commands, usage
   functions/
-    pair-device/index.ts             # Edge Function stub đổi pairing code -> device token
+    pair-device/index.ts             # Edge Function stub — ĐÃ THAY BẰNG RPC, không deploy
   README.md                          # File này
   RLS_TESTING.md                     # Các ca kiểm thử RLS phải chạy sau khi áp migration
 ```
