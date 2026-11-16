@@ -35,6 +35,8 @@ export interface Device {
   os_version: string | null
   agent_version: string | null
   last_seen_at: string | null
+  // Lần cuối Agent thấy extension trình duyệt (thêm ở migration 5).
+  last_extension_seen_at: string | null
   status: DeviceStatus
   created_at: string
 }
@@ -81,4 +83,21 @@ export interface Command {
   payload: Record<string, unknown>
   status: CommandStatus
   created_at: string
+}
+
+// Dòng audit_logs theo migration 1: loại sự kiện nằm ở cột `action`
+// (vd 'clock_drift'), `target` giữ id thiết bị dạng text. Các cột tùy
+// chọn phía dưới do migration 5 thêm; chưa áp dụng migration 5 thì các
+// truy vấn chỉ được chọn các cột của migration 1.
+export interface AuditLog {
+  id: string
+  family_id: string
+  actor: string | null
+  action: string
+  target: string | null
+  ip_hash: string | null
+  created_at: string
+  child_id?: string | null
+  device_id?: string | null
+  details?: Record<string, unknown> | null
 }

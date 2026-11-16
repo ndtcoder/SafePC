@@ -3,10 +3,13 @@ import {
   formatWeekdayGroup,
   groupWeekdays,
   hhmmToMinutes,
+  parseAppConfig,
   parseBedtimeConfig,
   parseDailyLimitConfig,
   parseTimeWindowConfig,
   parseWebsiteConfig,
+  type AppConfig,
+  type AppEntry,
   type BedtimeByWeekday,
   type MinutesByWeekday,
   type TimeRangeValue,
@@ -193,6 +196,56 @@ function describeTimeWindow(parsed: WindowsByWeekday): string[] {
   })
 }
 
+/** "Game (game.exe)" khi tên hiển thị khác tên file, ngược lại chỉ tên file. */
+function formatAppEntry(app: AppEntry): string {
+  return app.name !== '' && app.name !== app.exe ? `${app.name} (${app.exe})` : app.exe
+}
+
+/**
+ * Mô tả quy tắc ứng dụng theo chế độ (mode). Không bao giờ throw: config
+ * thiếu/khuyết được mô tả bằng câu chung chung.
+ */
+function describeAppConfig(parsed: AppConfig): string[] {
+  switch (parsed.mode) {
+    case 'app_time_limit': {
+      if (parsed.apps.length === 0) {
+        return ['Giới hạn thời gian theo ứng dụng (chưa có ứng dụng nào).']
+      }
+      return parsed.apps.map((app) =>
+        app.minutesPerDay <= 0
+          ? `${formatAppEntry(app)}: chưa đặt số phút.`
+          : `${formatAppEntry(app)}: tối đa ${formatDurationVi(app.minutesPerDay * 60)} mỗi ngày`,
+      )
+    }
+    case 'app_block_by_time': {
+      const lines: string[] = []
+      if (parsed.apps.length === 0) {
+        lines.push('Chặn ứng dụng theo giờ (chưa có ứng dụng nào).')
+      } else {
+        lines.push(`Ứng dụng: ${parsed.apps.map(formatAppEntry).join(', ')}`)
+      }
+      const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
+      for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
+        if (group.value === null) {
+          lines.push(`${formatWeekdayGroup(group.days)}: bị chặn cả ngày`)
+        } else {
+          const ranges = group.value.map((r) => `${r.start}–${r.end}`).join(', ')
+          lines.push(`${formatWeekdayGroup(group.days)}: chỉ được dùng ${ranges}`)
+        }
+      }
+      return lines
+    }
+    case 'forced_break': {
+      if (parsed.workMinutes <= 0 || parsed.breakMinutes <= 0) {
+        return ['Nghỉ bắt buộc (chưa đặt số phút).']
+      }
+      return [
+        `Dùng liên tục ${parsed.workMinutes} phút thì nghỉ ${parsed.breakMinutes} phút (khóa máy).`,
+      ]
+    }
+  }
+}
+
 /** Liệt kê domain gọn: tối đa 8 domain, còn lại gộp thành "và N domain khác". */
 function formatDomainList(domains: string[]): string {
   if (domains.length <= 8) return domains.join(', ')
@@ -226,6 +279,31 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
       if (parsed.youtubeRestricted) parts.push('bật chế độ hạn chế của YouTube')
       if (parts.length === 0) return ['Tìm kiếm an toàn: cả hai tùy chọn đều đang tắt.']
       return [`Tìm kiếm an toàn: ${parts.join(', ')}`]
+    }
+    case 'focus': {
+      const lines: string[] = []
+      if (parsed.allowedDomains.length === 0) {
+        lines.push('Giờ học tập trung (chưa có domain nào được phép).')
+      } else {
+        lines.push(
+          `Giờ học tập trung — website được phép: ${formatDomainList(parsed.allowedDomains)} (kể cả tên miền con)`,
+        )
+      }
+      if (parsed.allowedApps.length === 0) {
+        lines.push('Ứng dụng được phép: chưa có ứng dụng nào.')
+      } else {
+        lines.push(`Ứng dụng được phép: ${parsed.allowedApps.map(formatAppEntry).join(', ')}`)
+      }
+      const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
+      for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
+        if (group.value === null) {
+          lines.push(`${formatWeekdayGroup(group.days)}: không phải giờ học tập trung`)
+        } else {
+          const ranges = group.value.map((r) => `${r.start}–${r.end}`).join(', ')
+          lines.push(`${formatWeekdayGroup(group.days)}: giờ học tập trung ${ranges}`)
+        }
+      }
+      return lines
     }
     case 'block_domains_by_time': {
       const lines: string[] = []
@@ -266,14 +344,21 @@ export function describeRuleConfig(rule: Rule): string[] {
   }
 
   if (rule.type === 'app') {
-    const app = configValue(config, ['app_name', 'app', 'name', 'process_name'])
-    if (app !== undefined) lines.push(`Ứng dụng: ${asText(app)}`)
-    const action = configValue(config, ['action'])
-    if (action !== undefined) lines.push(`Hành động: ${asText(action)}`)
-    const minutes = configValue(config, ['minutes_per_day', 'minutes', 'limit_minutes'])
-    if (minutes !== undefined) {
-      const n = Number(minutes)
-      lines.push(`Giới hạn: ${Number.isFinite(n) ? formatDurationVi(n * 60) : asText(minutes)} mỗi ngày`)
+    const parsed = parseAppConfig(config)
+    if (parsed) {
+      lines.push(...describeAppConfig(parsed))
+    } else {
+      // Hình dạng lạ/không nhận dạng được: hiển thị các key quen thuộc
+      // (nếu có) rồi câu chung chung — không bao giờ throw.
+      const app = configValue(config, ['app_name', 'app', 'name', 'process_name'])
+      if (app !== undefined) lines.push(`Ứng dụng: ${asText(app)}`)
+      const action = configValue(config, ['action'])
+      if (action !== undefined) lines.push(`Hành động: ${asText(action)}`)
+      const minutes = configValue(config, ['minutes_per_day', 'minutes', 'limit_minutes'])
+      if (minutes !== undefined) {
+        const n = Number(minutes)
+        lines.push(`Giới hạn: ${Number.isFinite(n) ? formatDurationVi(n * 60) : asText(minutes)} mỗi ngày`)
+      }
     }
   }
 
@@ -301,6 +386,7 @@ export function describeRuleConfig(rule: Rule): string[] {
     'app_name', 'app', 'name', 'process_name', 'action',
     'domain', 'website', 'url', 'host',
     'mode', 'domains', 'searchProviders', 'youtubeRestricted',
+    'apps', 'minutesPerDay', 'workMinutes', 'breakMinutes', 'allowedApps', 'allowedDomains',
   ])
   for (const [key, value] of Object.entries(config)) {
     if (!shown.has(key)) lines.push(`${key}: ${asText(value)}`)
@@ -308,6 +394,22 @@ export function describeRuleConfig(rule: Rule): string[] {
 
   if (lines.length === 0) lines.push('Chưa có cấu hình chi tiết.')
   return lines
+}
+
+/** Nhãn tiếng Việt cho sự kiện can thiệp trong audit_logs (cột `action`); loại lạ thì giữ nguyên. */
+export function tamperEventLabel(action: string): string {
+  switch (action) {
+    case 'clock_drift':
+      return 'Đồng hồ máy bị chỉnh lệch'
+    case 'agent_restart':
+      return 'Agent khởi động lại'
+    case 'extension_missing':
+      return 'Không thấy extension trình duyệt'
+    case 'service_stopped':
+      return 'Service đã dừng'
+    default:
+      return action
+  }
 }
 
 /** Dịch thông báo lỗi thường gặp (Supabase Auth / mạng) sang tiếng Việt. */

@@ -340,6 +340,7 @@ export type WebsiteMode =
   | 'allowlist'
   | 'domain_time_limit'
   | 'safe_search'
+  | 'focus'
 
 export interface WebsiteModeOption {
   value: WebsiteMode
@@ -352,6 +353,7 @@ export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
   { value: 'allowlist', label: 'Chỉ cho phép một số website' },
   { value: 'domain_time_limit', label: 'Giới hạn thời gian theo website' },
   { value: 'safe_search', label: 'Tìm kiếm an toàn (SafeSearch / YouTube)' },
+  { value: 'focus', label: 'Giờ học tập trung' },
 ]
 
 /** Chặn các domain trong danh sách (kể cả tên miền con). */
@@ -387,12 +389,86 @@ export type SafeSearchConfig = {
   youtubeRestricted: boolean
 }
 
+/**
+ * Giờ học tập trung: trong các khung giờ theo thứ, chỉ các website trong
+ * `allowedDomains` (do extension thi hành) và các ứng dụng trong
+ * `allowedApps` (do Agent đóng các ứng dụng còn lại) mới mở được.
+ * Thứ tự ưu tiên: chặn tạm thời thắng danh sách cho phép của focus;
+ * cho phép tạm thời KHÔNG mở được website ngoài danh sách trong giờ tập trung.
+ */
+export type FocusConfig = {
+  mode: 'focus'
+  windowsByWeekday: WindowsByWeekday
+  allowedApps: AppEntry[]
+  allowedDomains: string[]
+}
+
 export type WebsiteConfig =
   | BlockDomainsConfig
   | BlockDomainsByTimeConfig
   | AllowlistConfig
   | DomainTimeLimitConfig
   | SafeSearchConfig
+  | FocusConfig
+
+// ---------------------------------------------------------------------------
+// Quy tắc ứng dụng (đợt 3): một dòng rule type='app' mang đúng 1 chế độ
+// (mode), lưu trong config JSONB dạng {"mode": ..., ...}. Giống quy tắc
+// website, các hình dạng config dưới đây dùng `type` (không dùng
+// `interface`) để gán được trực tiếp vào `Record<string, unknown>`.
+// ---------------------------------------------------------------------------
+
+export type AppMode = 'app_time_limit' | 'app_block_by_time' | 'forced_break'
+
+export interface AppModeOption {
+  value: AppMode
+  label: string
+}
+
+export const APP_MODE_OPTIONS: AppModeOption[] = [
+  { value: 'app_time_limit', label: 'Giới hạn thời gian theo ứng dụng' },
+  { value: 'app_block_by_time', label: 'Chặn ứng dụng theo giờ' },
+  { value: 'forced_break', label: 'Nghỉ bắt buộc' },
+]
+
+/** Một ứng dụng, nhận dạng bằng tên file .exe; `name` chỉ để hiển thị. */
+export type AppEntry = {
+  exe: string
+  name: string
+}
+
+/** Một ứng dụng kèm giới hạn số phút mỗi ngày. */
+export type AppTimeLimitEntry = {
+  exe: string
+  name: string
+  minutesPerDay: number
+}
+
+/** Giới hạn số phút mỗi ngày cho từng ứng dụng trong danh sách. */
+export type AppTimeLimitConfig = {
+  mode: 'app_time_limit'
+  apps: AppTimeLimitEntry[]
+}
+
+/**
+ * Chặn các ứng dụng trong danh sách NGOÀI các khung giờ theo thứ (khung
+ * giờ = thời gian được phép dùng). Ngày nào không có khung giờ nào thì
+ * các ứng dụng trên bị chặn cả ngày.
+ */
+export type AppBlockByTimeConfig = {
+  mode: 'app_block_by_time'
+  apps: AppEntry[]
+  windowsByWeekday: WindowsByWeekday
+}
+
+/** Dùng máy liên tục đủ `workMinutes` thì khóa máy trong `breakMinutes`. */
+export type ForcedBreakConfig = {
+  mode: 'forced_break'
+  workMinutes: number
+  breakMinutes: number
+}
+
+export type AppConfig = AppTimeLimitConfig | AppBlockByTimeConfig | ForcedBreakConfig
 
 // ---------------------------------------------------------------------------
 // Domain: chuẩn hoá + kiểm tra hợp lệ.
@@ -508,12 +584,14 @@ function asStringArray(value: unknown): string[] {
  * khoan dung để phần mô tả/sửa không vỡ khi gặp dữ liệu cũ hoặc lạ).
  * Hình dạng cũ `{"domain": "..."}` (1 domain) được hiểu như danh sách
  * 1 phần tử; khóa `domain` chỉ dùng khi không có mảng `domains`.
+ * Tham số `key` cho phép đọc khóa khác (vd `allowedDomains` của chế độ
+ * focus); khóa khác `domains` thì không áp dụng tương thích hình dạng cũ.
  */
-function readStoredDomains(config: Record<string, unknown>): string[] {
-  const rawEntries = asStringArray(config['domains'])
-  if (rawEntries.length === 0) {
-    for (const key of ['domain', 'website', 'url', 'host']) {
-      const single = config[key]
+function readStoredDomains(config: Record<string, unknown>, key = 'domains'): string[] {
+  const rawEntries = asStringArray(config[key])
+  if (rawEntries.length === 0 && key === 'domains') {
+    for (const legacyKey of ['domain', 'website', 'url', 'host']) {
+      const single = config[legacyKey]
       if (typeof single === 'string') rawEntries.push(single)
     }
   }
@@ -529,6 +607,36 @@ function readStoredDomains(config: Record<string, unknown>): string[] {
   return domains
 }
 
+/**
+ * Đọc danh sách ứng dụng từ config đã lưu (khóa `apps` hoặc khóa khác do
+ * nơi gọi truyền vào), khoan dung: mục nhập là chuỗi thì hiểu là tên exe;
+ * mục nhập là object thì đọc `exe`/`name`; mục thiếu exe thì bỏ qua; tên
+ * hiển thị trống thì lấy theo tên exe. Không kiểm tra ký tự cấm ở đây —
+ * dữ liệu đã lưu được hiển thị/sửa lại, kiểm tra chặt chỉ áp dụng khi lưu.
+ */
+function readStoredApps(config: Record<string, unknown>, key = 'apps'): AppEntry[] {
+  const raw = config[key]
+  if (!Array.isArray(raw)) return []
+  const apps: AppEntry[] = []
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      const exe = item.trim()
+      if (exe !== '') apps.push({ exe, name: exe })
+      continue
+    }
+    const record = asRecord(item)
+    if (!record) continue
+    const exeRaw = record['exe']
+    if (typeof exeRaw !== 'string') continue
+    const exe = exeRaw.trim()
+    if (exe === '') continue
+    const nameRaw = record['name']
+    const name = typeof nameRaw === 'string' && nameRaw.trim() !== '' ? nameRaw.trim() : exe
+    apps.push({ exe, name })
+  }
+  return apps
+}
+
 function asBooleanOr(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
@@ -539,7 +647,10 @@ const WEBSITE_MODES: WebsiteMode[] = [
   'allowlist',
   'domain_time_limit',
   'safe_search',
+  'focus',
 ]
+
+const APP_MODES: AppMode[] = ['app_time_limit', 'app_block_by_time', 'forced_break']
 
 export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConfig | null {
   const modeRaw = config['mode']
@@ -565,6 +676,13 @@ export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConf
           searchProviders: asBooleanOr(config['searchProviders'], true),
           youtubeRestricted: asBooleanOr(config['youtubeRestricted'], true),
         }
+      case 'focus':
+        return {
+          mode,
+          windowsByWeekday: parseTimeWindowConfig(config),
+          allowedApps: readStoredApps(config, 'allowedApps'),
+          allowedDomains: readStoredDomains(config, 'allowedDomains'),
+        }
     }
   }
   // Không có mode: hình dạng cũ (1 domain + action) hoặc mảng domains trần.
@@ -572,6 +690,46 @@ export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConf
   if (domains.length === 0) return null
   if (config['action'] === 'allow') return { mode: 'allowlist', domains }
   return { mode: 'block_domains', domains }
+}
+
+// ---------------------------------------------------------------------------
+// Đọc config ứng dụng đã lưu -> dạng chuẩn. Trả về null khi mode lạ hoặc
+// không có mode (hình dạng cũ của rule app không có mode chuẩn nên phần
+// mô tả sẽ dùng câu chung chung thay vì đoán).
+// ---------------------------------------------------------------------------
+
+export function parseAppConfig(config: Record<string, unknown>): AppConfig | null {
+  const modeRaw = config['mode']
+  if (typeof modeRaw !== 'string' || !APP_MODES.includes(modeRaw as AppMode)) return null
+  const mode = modeRaw as AppMode
+  switch (mode) {
+    case 'app_time_limit': {
+      const apps: AppTimeLimitEntry[] = []
+      const raw = config['apps']
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          const record = asRecord(item)
+          if (!record) continue
+          const exeRaw = record['exe']
+          if (typeof exeRaw !== 'string' || exeRaw.trim() === '') continue
+          const exe = exeRaw.trim()
+          const nameRaw = record['name']
+          const name = typeof nameRaw === 'string' && nameRaw.trim() !== '' ? nameRaw.trim() : exe
+          const minutesPerDay = asNonNegativeInt(record['minutesPerDay']) ?? 0
+          apps.push({ exe, name, minutesPerDay })
+        }
+      }
+      return { mode, apps }
+    }
+    case 'app_block_by_time':
+      return { mode, apps: readStoredApps(config), windowsByWeekday: parseTimeWindowConfig(config) }
+    case 'forced_break':
+      return {
+        mode,
+        workMinutes: asNonNegativeInt(config['workMinutes']) ?? 0,
+        breakMinutes: asNonNegativeInt(config['breakMinutes']) ?? 0,
+      }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +755,13 @@ export interface SafeSearchDraft {
   youtubeRestricted: boolean
 }
 
+/** Draft cho chế độ giờ học tập trung: khung giờ + domain được phép + app được phép. */
+export interface FocusDraft {
+  windows: TimeWindowDraft
+  allowedDomainsText: string
+  apps: Array<{ exe: string; name: string }>
+}
+
 export function emptyWebsiteDomainsDraft(): WebsiteDomainsDraft {
   return { domainsText: '' }
 }
@@ -613,14 +778,21 @@ export function emptySafeSearchDraft(): SafeSearchDraft {
   return { searchProviders: true, youtubeRestricted: true }
 }
 
+/** Draft focus trống: một dòng ứng dụng trống để phụ huynh gõ ngay. */
+export function emptyFocusDraft(): FocusDraft {
+  return { windows: emptyTimeWindowDraft(), allowedDomainsText: '', apps: [{ exe: '', name: '' }] }
+}
+
 export function websiteConfigToDomainsDraft(config: WebsiteConfig | null): WebsiteDomainsDraft {
-  if (!config || config.mode === 'safe_search') return emptyWebsiteDomainsDraft()
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus') {
+    return emptyWebsiteDomainsDraft()
+  }
   return { domainsText: config.domains.join('\n') }
 }
 
 export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): BlockDomainsByTimeDraft {
   const draft = emptyBlockDomainsByTimeDraft()
-  if (!config || config.mode === 'safe_search') return draft
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
   draft.domainsText = config.domains.join('\n')
   if (config.mode === 'block_domains_by_time') {
     draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
@@ -630,7 +802,7 @@ export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): B
 
 export function websiteConfigToTimeLimitDraft(config: WebsiteConfig | null): DomainTimeLimitDraft {
   const draft = emptyDomainTimeLimitDraft()
-  if (!config || config.mode === 'safe_search') return draft
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
   draft.domainsText = config.domains.join('\n')
   if (config.mode === 'domain_time_limit' && config.minutes_per_day > 0) {
     draft.minutes = String(config.minutes_per_day)
@@ -643,6 +815,17 @@ export function websiteConfigToSafeSearchDraft(config: WebsiteConfig | null): Sa
     return { searchProviders: config.searchProviders, youtubeRestricted: config.youtubeRestricted }
   }
   return emptySafeSearchDraft()
+}
+
+export function websiteConfigToFocusDraft(config: WebsiteConfig | null): FocusDraft {
+  const draft = emptyFocusDraft()
+  if (config?.mode !== 'focus') return draft
+  draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
+  draft.allowedDomainsText = config.allowedDomains.join('\n')
+  if (config.allowedApps.length > 0) {
+    draft.apps = config.allowedApps.map((app) => ({ exe: app.exe, name: app.name }))
+  }
+  return draft
 }
 
 // ---------------------------------------------------------------------------
@@ -697,5 +880,353 @@ export function buildSafeSearchConfig(draft: SafeSearchDraft): SafeSearchConfig 
     mode: 'safe_search',
     searchProviders: draft.searchProviders,
     youtubeRestricted: draft.youtubeRestricted,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Giờ học tập trung (focus): kiểm tra hợp lệ + chuyển draft -> config.
+// Danh sách ứng dụng được phép KHÔNG được để trống: trong giờ tập trung,
+// Agent đóng mọi ứng dụng ngoài danh sách, nên danh sách trống sẽ đóng
+// tất cả các ứng dụng.
+// ---------------------------------------------------------------------------
+
+export function validateFocusDraft(draft: FocusDraft): string | null {
+  const windowsError = validateTimeWindowDraft(draft.windows)
+  if (windowsError) return windowsError
+  const domainsError = validateWebsiteDomainsText(draft.allowedDomainsText)
+  if (domainsError) return domainsError
+  const appsError = validateAppRows(
+    draft.apps,
+    'Hãy thêm ít nhất một ứng dụng được phép. Trong giờ học tập trung, mọi ứng dụng ngoài danh sách đều bị đóng, nên danh sách trống sẽ đóng tất cả các ứng dụng.',
+  )
+  if (appsError) return appsError
+  return null
+}
+
+export function buildFocusConfig(draft: FocusDraft): FocusConfig {
+  return {
+    mode: 'focus',
+    windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
+    allowedApps: buildAppEntries(draft.apps),
+    allowedDomains: parseDomainsInput(draft.allowedDomainsText).domains,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quy tắc ứng dụng (đợt 3): draft, kiểm tra hợp lệ, chuyển draft -> config.
+// ---------------------------------------------------------------------------
+
+export interface AppTimeLimitDraft {
+  apps: Array<{ exe: string; name: string; minutes: string }>
+}
+
+export interface AppBlockByTimeDraft {
+  apps: Array<{ exe: string; name: string }>
+  windows: TimeWindowDraft
+}
+
+export interface ForcedBreakDraft {
+  workMinutes: string
+  breakMinutes: string
+}
+
+/** Draft trống: một dòng ứng dụng trống để phụ huynh gõ ngay. */
+export function emptyAppTimeLimitDraft(): AppTimeLimitDraft {
+  return { apps: [{ exe: '', name: '', minutes: '60' }] }
+}
+
+export function emptyAppBlockByTimeDraft(): AppBlockByTimeDraft {
+  return { apps: [{ exe: '', name: '' }], windows: emptyTimeWindowDraft() }
+}
+
+export function emptyForcedBreakDraft(): ForcedBreakDraft {
+  return { workMinutes: '45', breakMinutes: '10' }
+}
+
+export function appConfigToTimeLimitDraft(config: AppConfig | null): AppTimeLimitDraft {
+  const draft = emptyAppTimeLimitDraft()
+  if (config?.mode !== 'app_time_limit') return draft
+  if (config.apps.length > 0) {
+    draft.apps = config.apps.map((app) => ({
+      exe: app.exe,
+      name: app.name,
+      minutes: app.minutesPerDay > 0 ? String(app.minutesPerDay) : '',
+    }))
+  }
+  return draft
+}
+
+export function appConfigToBlockByTimeDraft(config: AppConfig | null): AppBlockByTimeDraft {
+  const draft = emptyAppBlockByTimeDraft()
+  if (config?.mode !== 'app_block_by_time') return draft
+  if (config.apps.length > 0) {
+    draft.apps = config.apps.map((app) => ({ exe: app.exe, name: app.name }))
+  }
+  draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
+  return draft
+}
+
+export function appConfigToForcedBreakDraft(config: AppConfig | null): ForcedBreakDraft {
+  if (config?.mode !== 'forced_break') return emptyForcedBreakDraft()
+  return {
+    workMinutes: config.workMinutes > 0 ? String(config.workMinutes) : '',
+    breakMinutes: config.breakMinutes > 0 ? String(config.breakMinutes) : '',
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tên file .exe: kiểm tra hợp lệ + dùng chung cho các danh sách ứng dụng.
+// ---------------------------------------------------------------------------
+
+const EXE_FORBIDDEN_PATTERN = /[/\\:*?"<>|]/
+
+/**
+ * Kiểm tra tên file .exe đã nhập. Trả về null khi hợp lệ, ngược lại trả
+ * về thông báo lỗi tiếng Việt. Chỉ kiểm tra hình thức: tên đã trim dài
+ * 1–100 ký tự, không chứa dấu phân tách đường dẫn hay ký tự cấm của tên
+ * file Windows, không chứa ký tự điều khiển. Không bắt buộc hậu tố .exe
+ * (Agent so khớp tên tiến trình) — gợi ý "game.exe" nằm ở giao diện.
+ */
+export function validateAppExe(value: string): string | null {
+  const exe = value.trim()
+  if (exe === '') return 'Tên file .exe không được để trống.'
+  if (exe.length > 100) return 'Tên file .exe tối đa 100 ký tự.'
+  if (EXE_FORBIDDEN_PATTERN.test(exe)) {
+    return 'Tên file .exe không được chứa ký tự / \\ : * ? " < > | (chỉ nhập tên file, ví dụ: game.exe).'
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1F\x7F]/.test(exe)) {
+    return 'Tên file .exe không được chứa ký tự điều khiển.'
+  }
+  return null
+}
+
+/**
+ * Kiểm tra một danh sách dòng ứng dụng trong draft. Dòng hoàn toàn trống
+ * (cả exe, tên và số phút nếu có) được bỏ qua; dòng đã gõ dở (có tên hoặc
+ * số phút nhưng thiếu exe) là lỗi. Trùng exe (không phân biệt hoa/thường)
+ * là lỗi vì Agent không phân biệt được hai dòng đó. Trả về null khi có
+ * ít nhất một ứng dụng hợp lệ.
+ */
+function validateAppRows(
+  rows: Array<{ exe: string; name: string; minutes?: string }>,
+  emptyMessage = 'Hãy thêm ít nhất một ứng dụng.',
+): string | null {
+  const seen = new Set<string>()
+  let filled = 0
+  for (const row of rows) {
+    const exe = row.exe.trim()
+    const name = row.name.trim()
+    const minutes = (row.minutes ?? '').trim()
+    if (exe === '' && name === '' && minutes === '') continue
+    filled += 1
+    if (exe === '') return 'Mỗi ứng dụng cần có tên file .exe (ví dụ: game.exe).'
+    const exeError = validateAppExe(exe)
+    if (exeError) return `“${exe}”: ${exeError}`
+    const key = exe.toLowerCase()
+    if (seen.has(key)) return `Ứng dụng “${exe}” bị lặp lại trong danh sách.`
+    seen.add(key)
+  }
+  if (filled === 0) return emptyMessage
+  return null
+}
+
+/** Chuyển các dòng ứng dụng đã qua kiểm tra thành AppEntry (tên trống thì lấy theo tên exe). */
+function buildAppEntries(rows: Array<{ exe: string; name: string }>): AppEntry[] {
+  const entries: AppEntry[] = []
+  for (const row of rows) {
+    const exe = row.exe.trim()
+    if (exe === '') continue
+    const name = row.name.trim()
+    entries.push({ exe, name: name === '' ? exe : name })
+  }
+  return entries
+}
+
+export function validateAppTimeLimitDraft(draft: AppTimeLimitDraft): string | null {
+  const rowsError = validateAppRows(draft.apps)
+  if (rowsError) return rowsError
+  for (const row of draft.apps) {
+    if (row.exe.trim() === '') continue
+    const text = row.minutes.trim()
+    if (text === '') return `“${row.exe.trim()}”: hãy nhập số phút giới hạn mỗi ngày.`
+    const minutes = Number(text)
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      return `“${row.exe.trim()}”: số phút phải là số nguyên từ 1 đến 1440 (24 giờ).`
+    }
+  }
+  return null
+}
+
+export function buildAppTimeLimitConfig(draft: AppTimeLimitDraft): AppTimeLimitConfig {
+  const apps: AppTimeLimitEntry[] = []
+  for (const row of draft.apps) {
+    const exe = row.exe.trim()
+    if (exe === '') continue
+    const name = row.name.trim()
+    apps.push({ exe, name: name === '' ? exe : name, minutesPerDay: Number(row.minutes.trim()) })
+  }
+  return { mode: 'app_time_limit', apps }
+}
+
+export function validateAppBlockByTimeDraft(draft: AppBlockByTimeDraft): string | null {
+  const rowsError = validateAppRows(draft.apps)
+  if (rowsError) return rowsError
+  return validateTimeWindowDraft(draft.windows)
+}
+
+export function buildAppBlockByTimeConfig(draft: AppBlockByTimeDraft): AppBlockByTimeConfig {
+  return {
+    mode: 'app_block_by_time',
+    apps: buildAppEntries(draft.apps),
+    windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
+  }
+}
+
+export function validateForcedBreakDraft(draft: ForcedBreakDraft): string | null {
+  const workText = draft.workMinutes.trim()
+  if (workText === '') return 'Hãy nhập số phút dùng máy liên tục trước khi nghỉ.'
+  const workMinutes = Number(workText)
+  if (!Number.isInteger(workMinutes) || workMinutes < 15 || workMinutes > 180) {
+    return 'Số phút dùng liên tục phải là số nguyên từ 15 đến 180.'
+  }
+  const breakText = draft.breakMinutes.trim()
+  if (breakText === '') return 'Hãy nhập số phút nghỉ.'
+  const breakMinutes = Number(breakText)
+  if (!Number.isInteger(breakMinutes) || breakMinutes < 5 || breakMinutes > 60) {
+    return 'Số phút nghỉ phải là số nguyên từ 5 đến 60.'
+  }
+  return null
+}
+
+export function buildForcedBreakConfig(draft: ForcedBreakDraft): ForcedBreakConfig {
+  return {
+    mode: 'forced_break',
+    workMinutes: Number(draft.workMinutes.trim()),
+    breakMinutes: Number(draft.breakMinutes.trim()),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mẫu sẵn một chạm (đợt 3): dữ liệu thuần, không gọi Supabase. Trang Quy
+// tắc chèn từng rule do `buildPresetRules` trả về (chỉ THÊM, không xóa
+// hay sửa rule hiện có). `PresetRuleType` định nghĩa tại đây để module
+// thuần này không phải import kiểu của Dashboard (file này không có import).
+// ---------------------------------------------------------------------------
+
+export type PresetRuleType = 'daily_limit' | 'bedtime' | 'time_window' | 'app' | 'website'
+
+export type PresetId = 'school' | 'weekend' | 'holiday'
+
+export interface PresetOption {
+  id: PresetId
+  label: string
+  /** Các dòng mô tả đúng những quy tắc sẽ được tạo khi áp dụng mẫu. */
+  summary: string[]
+}
+
+export const PRESET_OPTIONS: PresetOption[] = [
+  {
+    id: 'school',
+    label: 'Ngày học',
+    summary: [
+      'Khung giờ được dùng máy: Thứ 2–6, 07:00–21:00.',
+      'Giờ ngủ 21:00–07:00 (qua đêm) vào Chủ nhật, Thứ 2, Thứ 3, Thứ 4, Thứ 5.',
+      'YouTube (youtube.com): tối đa 30 phút mỗi ngày.',
+      'Giờ học tập trung Thứ 2–6, 19:00–21:00: chỉ 6 website học tập và 5 ứng dụng (Chrome, Edge, Word, Excel, PowerPoint) được mở.',
+    ],
+  },
+  {
+    id: 'weekend',
+    label: 'Cuối tuần',
+    summary: [
+      'Tổng giờ dùng máy: 3 giờ mỗi ngày vào Thứ 7 và Chủ nhật.',
+      'Giờ ngủ 22:00–08:00 (qua đêm) vào Thứ 6 và Thứ 7.',
+    ],
+  },
+  {
+    id: 'holiday',
+    label: 'Kỳ nghỉ',
+    summary: ['Tổng giờ dùng máy: 4 giờ mỗi ngày, cả tuần.'],
+  },
+]
+
+export interface PresetRule {
+  type: PresetRuleType
+  config: Record<string, unknown>
+}
+
+export function buildPresetRules(presetId: PresetId): PresetRule[] {
+  switch (presetId) {
+    case 'school': {
+      const schoolDays: WindowsByWeekday = {
+        1: [{ start: '07:00', end: '21:00' }],
+        2: [{ start: '07:00', end: '21:00' }],
+        3: [{ start: '07:00', end: '21:00' }],
+        4: [{ start: '07:00', end: '21:00' }],
+        5: [{ start: '07:00', end: '21:00' }],
+      }
+      const focusWindows: WindowsByWeekday = {
+        1: [{ start: '19:00', end: '21:00' }],
+        2: [{ start: '19:00', end: '21:00' }],
+        3: [{ start: '19:00', end: '21:00' }],
+        4: [{ start: '19:00', end: '21:00' }],
+        5: [{ start: '19:00', end: '21:00' }],
+      }
+      const night: TimeRangeValue = { start: '21:00', end: '07:00' }
+      return [
+        { type: 'time_window', config: { windowsByWeekday: schoolDays } },
+        {
+          type: 'bedtime',
+          config: { bedtimeByWeekday: { 0: night, 1: night, 2: night, 3: night, 4: night } },
+        },
+        {
+          type: 'website',
+          config: { mode: 'domain_time_limit', domains: ['youtube.com'], minutes_per_day: 30 },
+        },
+        {
+          type: 'website',
+          config: {
+            mode: 'focus',
+            windowsByWeekday: focusWindows,
+            allowedDomains: [
+              'classroom.google.com',
+              'docs.google.com',
+              'drive.google.com',
+              'meet.google.com',
+              'wikipedia.org',
+              'khanacademy.org',
+            ],
+            allowedApps: [
+              { exe: 'chrome.exe', name: 'Chrome' },
+              { exe: 'msedge.exe', name: 'Edge' },
+              { exe: 'WINWORD.EXE', name: 'Word' },
+              { exe: 'EXCEL.EXE', name: 'Excel' },
+              { exe: 'POWERPNT.EXE', name: 'PowerPoint' },
+            ],
+          },
+        },
+      ]
+    }
+    case 'weekend':
+      return [
+        { type: 'daily_limit', config: { minutesByWeekday: { 0: 180, 6: 180 } } },
+        {
+          type: 'bedtime',
+          config: {
+            bedtimeByWeekday: {
+              5: { start: '22:00', end: '08:00' },
+              6: { start: '22:00', end: '08:00' },
+            },
+          },
+        },
+      ]
+    case 'holiday':
+      return [
+        {
+          type: 'daily_limit',
+          config: { minutesByWeekday: { 0: 240, 1: 240, 2: 240, 3: 240, 4: 240, 5: 240, 6: 240 } },
+        },
+      ]
   }
 }
