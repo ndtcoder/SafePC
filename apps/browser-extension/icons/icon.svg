@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="SafePC — khiên bảo vệ">
+  <!-- Icon stub Sprint 3: khiên đơn giản tự vẽ. Chưa phải icon thương hiệu cuối cùng. -->
+  <title>SafePC</title>
+  <path d="M64 8 L108 26 V64 C108 92 88 112 64 122 C40 112 20 92 20 64 V26 Z" fill="#2563eb" stroke="#1e40af" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M44 64 L58 78 L86 48" fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
