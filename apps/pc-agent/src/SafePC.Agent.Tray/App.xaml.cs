@@ -12,6 +12,10 @@ namespace SafePC.Agent.Tray;
 ///
 /// Tray App cũng là nơi lấy mẫu app foreground (Service ở session 0 không
 /// nhìn thấy cửa sổ user) rồi gửi về Service qua IPC Named Pipe.
+///
+/// Vì app không có cửa sổ chính, OnStartup tạo thêm một cửa sổ neo ẩn để
+/// làm Owner cho mọi cửa sổ và PlacementTarget cho menu chuột phải — nếu
+/// không, menu/cửa sổ rất dễ mất kích hoạt và kẹt (xem ghi chú ở OnStartup).
 /// </summary>
 public partial class App : System.Windows.Application
 {
@@ -22,6 +26,9 @@ public partial class App : System.Windows.Application
     private ForegroundSampler? _sampler;
     private LocalLogger? _log;
     private LockWindow? _lockWindow;
+    private RemainingTimeWindow? _remainingWindow;
+    private ExtraTimeWindow? _extraTimeWindow;
+    private System.Windows.Window? _anchor;
     private bool _shutDown;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -41,7 +48,26 @@ public partial class App : System.Windows.Application
         _sampler = new ForegroundSampler(_ipc, _log);
         _sampler.Start();
 
-        _tray = new TrayIconManager(ShowRemainingTime, ShowExtraTime, RequestExit);
+        // Cửa sổ neo ẩn (0x0, ngoài màn hình): làm Owner cho mọi cửa sổ Tray
+        // và PlacementTarget cho menu chuột phải. App không có cửa sổ chính
+        // (ShutdownMode.OnExplicitShutdown) nên menu/cửa sổ không có owner
+        // rất dễ mất kích hoạt và kẹt, nuốt mọi cú chuột — lỗi đơ gặp trên
+        // máy thật ngày 2026-11-16 (menu hiện nhưng không bấm được, cửa sổ
+        // không đóng được, bấm đúp thì mở thêm cửa sổ mới).
+        _anchor = new System.Windows.Window
+        {
+            Width = 0,
+            Height = 0,
+            Left = -100,
+            Top = -100,
+            WindowStyle = System.Windows.WindowStyle.None,
+            ResizeMode = System.Windows.ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            ShowActivated = false,
+        };
+        _anchor.Show();
+
+        _tray = new TrayIconManager(_anchor, ShowRemainingTime, ShowExtraTime, RequestExit);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -61,13 +87,13 @@ public partial class App : System.Windows.Application
                     WarningPayload? warning = message.GetPayload<WarningPayload>();
                     if (warning is not null)
                     {
-                        new WarningWindow(warning.Reason, warning.MinutesLeft).Show();
+                        new WarningWindow(warning.Reason, warning.MinutesLeft) { Owner = _anchor }.Show();
                     }
                     break;
 
                 case IpcMessageTypes.Lock:
                     LockPayload? lockPayload = message.GetPayload<LockPayload>();
-                    _lockWindow ??= new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime);
+                    _lockWindow ??= new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime) { Owner = _anchor };
                     if (!_lockWindow.IsVisible)
                     {
                         _lockWindow.Show();
@@ -87,9 +113,23 @@ public partial class App : System.Windows.Application
     {
         Dispatcher.Invoke(() =>
         {
+            _log?.Info("Tray: mở cửa sổ thời gian còn lại.");
+            if (_remainingWindow is { IsVisible: true })
+            {
+                _remainingWindow.Activate();
+                return;
+            }
+
             // TODO Sprint 1: hỏi Service qua IPC để lấy thời gian còn lại thật
             // (từ cache rules + usage hôm nay) thay cho chuỗi placeholder này.
-            new RemainingTimeWindow("Đang tải... (skeleton: TODO lấy thời gian còn lại từ Service qua IPC ở Sprint 1.)").Show();
+            // Chỉ giữ một cửa sổ: bấm đúp nhiều lần thì đưa cửa sổ cũ lên
+            // trước thay vì mở thêm cửa sổ mới.
+            _remainingWindow = new RemainingTimeWindow("Đang tải... (skeleton: TODO lấy thời gian còn lại từ Service qua IPC ở Sprint 1.)")
+            {
+                Owner = _anchor,
+            };
+            _remainingWindow.Closed += (_, _) => _remainingWindow = null;
+            _remainingWindow.Show();
         });
     }
 
@@ -97,7 +137,14 @@ public partial class App : System.Windows.Application
     {
         Dispatcher.Invoke(() =>
         {
-            var window = new ExtraTimeWindow(async (minutes, reason) =>
+            _log?.Info("Tray: mở form xin thêm giờ.");
+            if (_extraTimeWindow is { IsVisible: true })
+            {
+                _extraTimeWindow.Activate();
+                return;
+            }
+
+            _extraTimeWindow = new ExtraTimeWindow(async (minutes, reason) =>
             {
                 if (_ipc is not null)
                 {
@@ -105,8 +152,12 @@ public partial class App : System.Windows.Application
                         IpcMessageTypes.ExtraTimeRequest,
                         new ExtraTimeRequestPayload(minutes, reason, DateTimeOffset.UtcNow)));
                 }
-            });
-            window.Show();
+            })
+            {
+                Owner = _anchor,
+            };
+            _extraTimeWindow.Closed += (_, _) => _extraTimeWindow = null;
+            _extraTimeWindow.Show();
         });
     }
 
@@ -114,7 +165,8 @@ public partial class App : System.Windows.Application
     {
         Dispatcher.Invoke(() =>
         {
-            var pinDialog = new PinDialog();
+            _log?.Info("Tray: mở hộp nhập PIN để thoát.");
+            var pinDialog = new PinDialog { Owner = _anchor };
             if (pinDialog.ShowDialog() == true)
             {
                 Shutdown();
@@ -153,6 +205,15 @@ public partial class App : System.Windows.Application
         try
         {
             _ipc?.Dispose();
+        }
+        catch
+        {
+            // Bỏ qua lỗi khi dọn dẹp lúc thoát.
+        }
+
+        try
+        {
+            _anchor?.Close();
         }
         catch
         {

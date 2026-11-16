@@ -17,6 +17,10 @@ namespace SafePC.Agent.Tray;
 /// trên máy thật ngày 2026-11-16. WPF ContextMenu chạy trên Dispatcher nên
 /// không gặp vấn đề đó. Mọi kiểu WPF đều ghi rõ namespace đầy đủ vì project
 /// bật cả UseWPF lẫn UseWindowsForms (ContextMenu/MenuItem tồn tại ở cả hai).
+///
+/// Menu phải có PlacementTarget là cửa sổ neo ẩn của App: menu "trôi" không
+/// owner từng bị kẹt và nuốt mọi cú chuột trên máy thật (2026-11-16).
+/// Chuột phải khi menu đang mở thì đóng menu (kiểu bật/tắt như tray chuẩn).
 /// </summary>
 public sealed class TrayIconManager : IDisposable
 {
@@ -24,13 +28,18 @@ public sealed class TrayIconManager : IDisposable
     private readonly System.Windows.Controls.ContextMenu _menu;
     private bool _disposed;
 
-    public TrayIconManager(Action showRemainingTime, Action showExtraTime, Action requestExit)
+    public TrayIconManager(System.Windows.Window anchor, Action showRemainingTime, Action showExtraTime, Action requestExit)
     {
+        ArgumentNullException.ThrowIfNull(anchor);
         ArgumentNullException.ThrowIfNull(showRemainingTime);
         ArgumentNullException.ThrowIfNull(showExtraTime);
         ArgumentNullException.ThrowIfNull(requestExit);
 
-        _menu = new System.Windows.Controls.ContextMenu();
+        _menu = new System.Windows.Controls.ContextMenu
+        {
+            PlacementTarget = anchor,
+            StaysOpen = false,
+        };
 
         var remainingItem = new System.Windows.Controls.MenuItem { Header = "Xem thời gian còn lại" };
         remainingItem.Click += (_, _) => showRemainingTime();
@@ -61,6 +70,13 @@ public sealed class TrayIconManager : IDisposable
     {
         if (_disposed || e.Button != WinForms.MouseButtons.Right)
         {
+            return;
+        }
+
+        // Chuột phải khi menu đang mở thì đóng menu (bật/tắt).
+        if (_menu.IsOpen)
+        {
+            _menu.IsOpen = false;
             return;
         }
 
