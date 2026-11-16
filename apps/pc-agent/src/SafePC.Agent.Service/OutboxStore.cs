@@ -83,6 +83,7 @@ public sealed class OutboxStore
                 action TEXT NOT NULL,
                 minutes INTEGER NOT NULL,
                 expires_at TEXT NOT NULL,
+                domains_json TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS device_state (
@@ -91,6 +92,40 @@ public sealed class OutboxStore
             );
             """;
         await command.ExecuteNonQueryAsync(ct);
+
+        // Migration tại chỗ cho DB đã tồn tại từ bản trước Sprint 2 đợt 2:
+        // bảng active_override cũ chưa có cột domains_json (ghi đè domain).
+        // CREATE TABLE IF NOT EXISTS không thêm cột vào bảng đã có, nên kiểm
+        // tra PRAGMA và ALTER TABLE khi cần. DB mới đã có cột từ CREATE TABLE
+        // ở trên nên nhánh này không chạy.
+        await EnsureOverrideDomainsColumnAsync(connection, ct);
+    }
+
+    /// <summary>Thêm cột <c>domains_json</c> vào bảng <c>active_override</c> nếu chưa có.</summary>
+    private static async Task EnsureOverrideDomainsColumnAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool hasColumn = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(active_override);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                // PRAGMA table_info: cid, name, type, notnull, dflt_value, pk.
+                if (reader.GetString(1) == "domains_json")
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE active_override ADD COLUMN domains_json TEXT;";
+            await alter.ExecuteNonQueryAsync(ct);
+        }
     }
 
     /// <summary>Xếp một usage record vào outbox để gửi sau.</summary>
@@ -259,7 +294,8 @@ public sealed class OutboxStore
 
     /// <summary>
     /// Lưu ghi đè tạm thời đang hiệu lực (ghi đè mới thay thế ghi đè cũ).
-    /// Chỉ có tối đa 1 hàng (id = 1).
+    /// Chỉ có tối đa 1 hàng (id = 1). Domains của ghi đè domain được lưu
+    /// dạng mảng JSON trong cột <c>domains_json</c> (null với ghi đè giờ giấc).
     /// </summary>
     public async Task SaveOverrideAsync(TemporaryOverride ov, CancellationToken ct)
     {
@@ -270,17 +306,19 @@ public sealed class OutboxStore
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO active_override (id, action, minutes, expires_at, updated_at)
-            VALUES (1, $action, $minutes, $expires, $now)
+            INSERT INTO active_override (id, action, minutes, expires_at, domains_json, updated_at)
+            VALUES (1, $action, $minutes, $expires, $domains, $now)
             ON CONFLICT(id) DO UPDATE SET
                 action = excluded.action,
                 minutes = excluded.minutes,
                 expires_at = excluded.expires_at,
+                domains_json = excluded.domains_json,
                 updated_at = excluded.updated_at;
             """;
         command.Parameters.AddWithValue("$action", ov.Action);
         command.Parameters.AddWithValue("$minutes", ov.Minutes);
         command.Parameters.AddWithValue("$expires", ov.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$domains", ov.Domains is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Domains));
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -299,15 +337,17 @@ public sealed class OutboxStore
         string? action = null;
         long minutes = 0;
         string? expiresText = null;
+        string? domainsJson = null;
         await using (var select = connection.CreateCommand())
         {
-            select.CommandText = "SELECT action, minutes, expires_at FROM active_override WHERE id = 1;";
+            select.CommandText = "SELECT action, minutes, expires_at, domains_json FROM active_override WHERE id = 1;";
             await using var reader = await select.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct))
             {
                 action = reader.GetString(0);
                 minutes = reader.GetInt64(1);
                 expiresText = reader.GetString(2);
+                domainsJson = reader.IsDBNull(3) ? null : reader.GetString(3);
             }
         }
 
@@ -329,7 +369,42 @@ public sealed class OutboxStore
             return null;
         }
 
-        return new TemporaryOverride(action, (int)minutes, expiresAt);
+        // domains_json hỏng thì coi như không có domains (ghi đè domain sẽ
+        // không sinh temp entry nào — an toàn hơn là đoán), không xóa hàng.
+        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson));
+    }
+
+    /// <summary>Đọc mảng domains từ chuỗi JSON đã lưu. Null/hỏng thì trả về null.</summary>
+    private static IReadOnlyList<string>? ParseOverrideDomains(string? domainsJson)
+    {
+        if (string.IsNullOrWhiteSpace(domainsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(domainsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var domains = new List<string>();
+            foreach (JsonElement element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.String && element.GetString() is string domain)
+                {
+                    domains.Add(domain);
+                }
+            }
+
+            return domains;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Xóa ghi đè đang hiệu lực (khi phụ huynh gửi lệnh hủy).</summary>

@@ -257,6 +257,52 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Gửi một batch web visits lên bảng web_visits (migration 4). Hình dạng
+    /// payload: mỗi sample là {domain, visited_at, duration_sec}, khớp cột
+    /// recordset của RPC <c>safepc_push_web_visits</c> và cột bảng
+    /// web_visits. family_id/child_id/device_id do server suy ra từ device
+    /// đã xác thực. Trả về true chỉ khi server xác nhận đã nhận (để nơi gọi
+    /// cắt file web_usage.jsonl); false thì giữ file lại gửi sau.
+    /// </summary>
+    public async Task<bool> SendWebVisitsAsync(IReadOnlyList<WebVisitRecord> records, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        if (records.Count == 0)
+        {
+            return true;
+        }
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Gửi web visits bỏ qua: " + reason + ". Dữ liệu giữ lại để gửi sau.");
+            return false;
+        }
+
+        var samples = new List<object>(records.Count);
+        foreach (WebVisitRecord record in records)
+        {
+            samples.Add(new
+            {
+                domain = record.Domain,
+                visited_at = record.VisitedAt,
+                duration_sec = record.DurationSec,
+            });
+        }
+
+        int? inserted = await PostRpcAsync<int>(
+            "safepc_push_web_visits",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_samples = samples,
+            },
+            ct);
+        return inserted.HasValue;
+    }
+
+    /// <summary>
     /// Kiểm tra đã sẵn sàng gọi server chưa: có URL cấu hình, có khóa
     /// publishable (header đã gắn ở constructor), và đã pairing (có token).
     /// Đọc token ở mỗi lần gọi để Service đang chạy tự nhận ghép nối mới.

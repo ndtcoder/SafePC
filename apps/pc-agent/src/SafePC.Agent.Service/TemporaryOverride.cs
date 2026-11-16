@@ -14,6 +14,18 @@ public static class OverrideActions
 
     /// <summary>Hủy ghi đè đang hiệu lực (không cần minutes/expires_at).</summary>
     public const string Cancel = "cancel";
+
+    /// <summary>
+    /// Cho phép tạm thời các domain trong <c>domains</c> tới <c>expires_at</c>
+    /// (chỉ ảnh hưởng file domain_rules.json, không mở/khóa máy).
+    /// </summary>
+    public const string AllowDomain = "allow_domain";
+
+    /// <summary>
+    /// Chặn tạm thời các domain trong <c>domains</c> tới <c>expires_at</c>
+    /// (chỉ ảnh hưởng file domain_rules.json, không mở/khóa máy).
+    /// </summary>
+    public const string BlockDomain = "block_domain";
 }
 
 /// <summary>
@@ -25,5 +37,11 @@ public static class OverrideActions
 /// Service khởi động lại, ghi đè sẽ mất trong khi vẫn còn hạn. <see cref="RuleEngine"/>
 /// kiểm tra <see cref="ExpiresAt"/> ở mỗi lần đánh giá nên ghi đè hết hạn thì
 /// tự vô hiệu, không cần lệnh hủy riêng.
+///
+/// <see cref="Domains"/> chỉ có ý nghĩa với ghi đè domain
+/// (<c>allow_domain</c>/<c>block_domain</c>): danh sách domain phụ huynh cho
+/// phép/chặn tạm thời, lưu kèm trong cột <c>domains_json</c> để Service khởi
+/// động lại không làm mất ghi đè domain đang hiệu lực khi xuất bản lại file
+/// domain_rules.json. Ghi đè giờ giấc (bonus/lock/unlock) để null.
 /// </summary>
-public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt);
+public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null);

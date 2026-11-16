@@ -38,9 +38,11 @@ public sealed record RuleDecision(RuleDecisionKind Kind, string Reason, int Minu
 ///   rỗng = không được dùng máy ngày đó. Nhiều rule thì hợp (union) các
 ///   khung giờ lại. Chỉ khoảng start &lt; end mới có hiệu lực.
 ///
-/// TODO Sprint 2 (đợt 2-3): rule theo app (chặn/giới hạn từng app, dùng
-/// foregroundAppName) và rule website (phối hợp với extension). Hiện các
-/// rule đó được bỏ qua.
+/// TODO Sprint 2 (đợt 3): rule theo app (chặn/giới hạn từng app, dùng
+/// foregroundAppName). Rule website được xử lý riêng: DomainRulesPublisher
+/// xuất bản chúng ra file domain_rules.json cho extension trình duyệt, và
+/// RuleEngine bỏ qua chúng ở đây (kể cả ghi đè domain — xem chốt chặn trong
+/// <see cref="Evaluate"/>).
 /// </summary>
 public sealed class RuleEngine
 {
@@ -62,7 +64,17 @@ public sealed class RuleEngine
         }
 
         int bonusMinutes = 0;
-        if (activeOverride is not null && activeOverride.ExpiresAt > now)
+        // CHỐT CHẶN AN TOÀN (Sprint 2 đợt 2): ghi đè domain (allow_domain /
+        // block_domain) CHỈ ảnh hưởng file domain_rules.json do
+        // DomainRulesPublisher xuất bản — RuleEngine phải bỏ qua hoàn toàn,
+        // không bao giờ được hiểu là mở/khóa máy. Khối dưới đây không có
+        // nhánh default nào coi action lạ là unlock: action không khớp
+        // Lock/Unlock/BonusMinutes thì rơi xuống đánh giá rules bình thường.
+        // Điều kiện phủ định tường minh dưới đây là lớp bảo vệ thứ hai, để
+        // một sửa đổi sau này không vô tình biến ghi đè domain thành unlock.
+        if (activeOverride is not null && activeOverride.ExpiresAt > now
+            && activeOverride.Action != OverrideActions.AllowDomain
+            && activeOverride.Action != OverrideActions.BlockDomain)
         {
             if (activeOverride.Action == OverrideActions.Lock)
             {
@@ -125,6 +137,8 @@ public sealed class RuleEngine
         }
 
         // TODO Sprint 2: dùng foregroundAppName để đánh giá rule loại "app".
+        // Rule loại "website" không đánh giá ở đây: chúng được xuất bản cho
+        // extension trình duyệt qua DomainRulesPublisher (Sprint 2 đợt 2).
         _ = foregroundAppName;
         return new RuleDecision(RuleDecisionKind.Allowed, string.Empty, int.MaxValue);
     }
