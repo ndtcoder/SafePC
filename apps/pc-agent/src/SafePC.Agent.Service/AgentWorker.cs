@@ -35,6 +35,15 @@ namespace SafePC.Agent.Service;
 /// device_state), và báo sự kiện can thiệp (lệch đồng hồ, Service khởi động
 /// lại) + heartbeat của extension lên server qua RPC migration 5. Ghi đè mở
 /// máy tạm thời (unlock) tạm ngưng cả ba nhóm thi hành này.
+///
+/// Bản sửa lỗi sau Sprint 2 đợt 3: thêm mode app mới (app_block luôn chặn,
+/// app_allowlist / app_allowlist_by_time chỉ cho phép danh sách app), ghi đè
+/// app tạm thời (block_app/allow_app, xét trước mọi rule theo app), và báo
+/// cáo trạng thái thi hành (snapshot enforcement qua RPC migration 6, gửi ở
+/// chu kỳ heartbeat khi đổi, tối đa 1 lần/5 phút) + log chẩn đoán quyết
+/// định rules (khi đổi + mỗi 15 phút). Thứ tự thi hành theo app: ghi đè app
+/// → focus → allowlist → luôn chặn → chặn theo giờ → giới hạn thời gian;
+/// mọi đường đóng app đều qua KillAppAsync với denylist bảo vệ.
 /// </summary>
 public sealed class AgentWorker : BackgroundService
 {
@@ -83,6 +92,22 @@ public sealed class AgentWorker : BackgroundService
     // rules đổi, để không phân tích JSON và ghi log cảnh báo lặp mỗi 15s.
     private string? _appRulesSignature;
     private ParsedAppRules? _parsedAppRules;
+
+    // Báo cáo trạng thái thi hành (migration 6): vòng kiểm tra rules dựng
+    // snapshot mỗi 15s và để ở đây; vòng heartbeat gửi lên server khi nội
+    // dung (trừ thời điểm) ĐỔI, tối đa 1 lần/5 phút. Hai vòng chạy song song
+    // nên mọi truy cập qua khóa này.
+    private readonly object _enforcementGate = new();
+    private string? _pendingEnforcementJson;
+    private string? _pendingEnforcementSignature;
+    private string? _lastSentEnforcementSignature;
+    private DateTimeOffset _lastEnforcementSentAt;
+
+    // Chẩn đoán quyết định rules: ghi log khi quyết định đổi, hoặc tối đa
+    // 1 lần/15 phút khi không đổi — để log Service trả lời được rules có
+    // đồng bộ và đánh giá đúng không.
+    private string? _lastDecisionLogSignature;
+    private DateTimeOffset _lastDecisionLogAt;
 
     public AgentWorker(
         LocalLogger log,
@@ -189,6 +214,12 @@ public sealed class AgentWorker : BackgroundService
                     // extension): đọc file heartbeat NativeHost ghi, báo lên
                     // server tối đa 1 lần/5 phút.
                     await CheckExtensionHeartbeatAsync(ct);
+
+                    // Báo trạng thái thi hành mới nhất (nếu đổi) lên server
+                    // — Dashboard đọc để hiển thị máy đang bị khóa bởi gì.
+                    // Hàm tự kiểm tra đổi/throttle nên gọi mỗi chu kỳ là an
+                    // toàn; máy offline thì snapshot chờ ở _pending.
+                    await MaybeReportEnforcementAsync(ct);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -673,7 +704,8 @@ public sealed class AgentWorker : BackgroundService
                 string overrideSignature = activeOverride is null
                     ? "(none)"
                     : activeOverride.Action + "|" + activeOverride.ExpiresAt.ToString("o", CultureInfo.InvariantCulture)
-                        + "|" + string.Join(",", activeOverride.Domains ?? Array.Empty<string>());
+                        + "|" + string.Join(",", activeOverride.Domains ?? Array.Empty<string>())
+                        + "|" + string.Join(",", activeOverride.Apps ?? Array.Empty<string>());
                 if (overrideSignature != _lastOverrideSignature)
                 {
                     _lastOverrideSignature = overrideSignature;
@@ -755,11 +787,31 @@ public sealed class AgentWorker : BackgroundService
                 }
 
                 // Thi hành theo app/focus SAU switch quyết định giờ giấc:
-                // không có rule app/focus nào thì hàm tự bỏ qua ngay.
+                // không có rule app/focus nào và không có ghi đè app thì hàm
+                // tự bỏ qua ngay. Kết quả thi hành (focus có đang hiệu lực,
+                // app nào đang bị chặn) đi vào snapshot enforcement bên dưới.
+                bool focusActive = false;
+                var appBlocks = new List<string>();
                 if (!unlockOverride)
                 {
-                    await EnforceAppRulesAsync(parsedAppRules, now, ct);
+                    (focusActive, appBlocks) = await EnforceAppRulesAsync(parsedAppRules, now, activeOverride, ct);
                 }
+
+                // Snapshot trạng thái thi hành + chẩn đoán quyết định: dựng
+                // mỗi lần kiểm tra, gửi lên server ở chu kỳ heartbeat khi
+                // đổi (xem MaybeReportEnforcementAsync). lockedBy/reasons/
+                // ruleIds suy ra từ chính kết quả đánh giá của lần này.
+                (List<string> reasons, List<string> ruleIds) = DeriveEnforcementReasons(decision, rules, breakActive, forcedLock, activeOverride, now);
+                string? lockedBy = DeriveLockedBy(decision, breakActive, forcedLock, activeOverride, now);
+                (string snapshotJson, string snapshotSignature) = BuildEnforcementSnapshot(
+                    decision, lockedBy, reasons, ruleIds, appBlocks, HasEnabledWebsiteRule(rules), focusActive, now);
+                lock (_enforcementGate)
+                {
+                    _pendingEnforcementJson = snapshotJson;
+                    _pendingEnforcementSignature = snapshotSignature;
+                }
+
+                LogRuleDecisionIfDue(decision, ruleIds, usedToday, activeOverride);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -996,15 +1048,71 @@ public sealed class AgentWorker : BackgroundService
 
     /// <summary>
     /// Thi hành quy tắc theo app và giờ học tập trung cho mọi session có báo
-    /// cáo foreground tươi. Không có rule nào thì bỏ qua ngay. Không có báo
-    /// cáo tươi thì KHÔNG kill (fail-open: không biết foreground là gì), chỉ
-    /// ghi log chống spam. Nơi gọi đã loại trường hợp ghi đè unlock.
+    /// cáo foreground tươi. Không có rule nào và không có ghi đè app thì bỏ
+    /// qua ngay. Không có báo cáo tươi thì KHÔNG kill (fail-open: không biết
+    /// foreground là gì), chỉ ghi log chống spam — nhưng vẫn trả về trạng
+    /// thái focus/appBlocks tính theo giờ (không cần foreground) để snapshot
+    /// enforcement phản ánh đúng. Nơi gọi đã loại trường hợp ghi đè unlock.
+    /// Trả về (focus có đang hiệu lực, exe đang chịu thi hành chặn/allowlist
+    /// trong lần này). Ghi đè app (block_app/allow_app) được xét trong
+    /// <see cref="EnforceAppRulesForReportAsync"/> và có hiệu lực cả khi
+    /// không có rule app nào.
     /// </summary>
-    private async Task EnforceAppRulesAsync(ParsedAppRules parsed, DateTimeOffset now, CancellationToken ct)
+    private async Task<(bool FocusActive, List<string> AppBlocks)> EnforceAppRulesAsync(
+        ParsedAppRules parsed,
+        DateTimeOffset now,
+        TemporaryOverride? activeOverride,
+        CancellationToken ct)
     {
-        if (!parsed.HasAny)
+        // Ghi đè app chỉ có hiệu lực khi còn hạn (GetActiveOverrideAsync đã
+        // lọc hết hạn, kiểm tra lại ở đây cho chắc).
+        TemporaryOverride? appOverride = activeOverride is not null
+            && activeOverride.ExpiresAt > now
+            && (activeOverride.Action == OverrideActions.BlockApp || activeOverride.Action == OverrideActions.AllowApp)
+            ? activeOverride
+            : null;
+        HashSet<string>? overrideApps = appOverride?.Apps is null ? null : NormalizeExeSet(appOverride.Apps);
+        if (overrideApps is not null && overrideApps.Count == 0)
         {
-            return;
+            appOverride = null;
+            overrideApps = null;
+        }
+
+        if (!parsed.HasAny && appOverride is null)
+        {
+            return (false, new List<string>());
+        }
+
+        DateTime local = now.LocalDateTime;
+        (bool focusActive, _) = EvaluateFocusState(parsed, local);
+
+        IReadOnlyDictionary<string, TimeSpan> usageByApp = await _outbox.GetUsageByAppTodayAsync(ct);
+        Dictionary<string, TimeSpan> normalizedUsage = NormalizeUsageByApp(usageByApp);
+
+        // App đang chịu thi hành chặn trong lần này (không cần foreground):
+        // luôn chặn + ngoài khung giờ được dùng + đã hết hạn mức hôm nay.
+        // App bị đóng do focus/allowlist/ghi đè được thêm ở từng báo cáo.
+        var appBlocks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (AppRef blocked in parsed.BlockAlways)
+        {
+            appBlocks.Add(blocked.NormalizedExe);
+        }
+
+        foreach (AppBlockEntry block in parsed.BlockByTime)
+        {
+            if (AppRuleParser.MinutesUntilWindowEnd(block.WindowsByWeekday, local) is null)
+            {
+                appBlocks.Add(block.App.NormalizedExe);
+            }
+        }
+
+        foreach (AppTimeLimitEntry limit in parsed.TimeLimits)
+        {
+            normalizedUsage.TryGetValue(limit.App.NormalizedExe, out TimeSpan used);
+            if (limit.MinutesPerDay - (int)used.TotalMinutes <= 0)
+            {
+                appBlocks.Add(limit.App.NormalizedExe);
+            }
         }
 
         IReadOnlyList<ForegroundReport> reports = _foregroundState.TryGetFreshReports(TimeSpan.FromSeconds(90));
@@ -1016,12 +1124,9 @@ public sealed class AgentWorker : BackgroundService
                 _log.Warning("Không có báo cáo foreground tươi, bỏ qua thi hành quy tắc theo app kỳ này.");
             }
 
-            return;
+            return (focusActive, SortAppBlocks(appBlocks));
         }
 
-        IReadOnlyDictionary<string, TimeSpan> usageByApp = await _outbox.GetUsageByAppTodayAsync(ct);
-        Dictionary<string, TimeSpan> normalizedUsage = NormalizeUsageByApp(usageByApp);
-        DateTime local = now.LocalDateTime;
         string todayKey = local.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
         // Dọn key cảnh báo của ngày cũ để HashSet không phình vô hạn.
@@ -1029,15 +1134,26 @@ public sealed class AgentWorker : BackgroundService
 
         foreach (ForegroundReport report in reports)
         {
-            await EnforceAppRulesForReportAsync(report.Payload, parsed, normalizedUsage, local, todayKey, ct);
+            await EnforceAppRulesForReportAsync(
+                report.Payload, parsed, normalizedUsage, local, todayKey, appOverride, overrideApps, appBlocks, ct);
         }
+
+        return (focusActive, SortAppBlocks(appBlocks));
+    }
+
+    private static List<string> SortAppBlocks(HashSet<string> appBlocks)
+    {
+        return appBlocks.OrderBy(exe => exe, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>
-    /// Thi hành cho một báo cáo foreground: focus trước (đóng app ngoài danh
-    /// sách cho phép trong giờ tập trung), rồi chặn theo giờ, rồi giới hạn
-    /// thời gian. Có lệnh đóng thì đóng và dừng (không cảnh báo thêm); không
-    /// thì cảnh báo một lần/ngày/exe khi sắp hết hạn. Chỉ log tên exe + lý do.
+    /// Thi hành cho một báo cáo foreground. Thứ tự: ghi đè app tạm thời
+    /// TRƯỚC (block_app đóng app khớp danh sách, allow_app miễn app khớp
+    /// khỏi MỌI thi hành dưới đây), rồi focus, rồi allowlist theo app
+    /// (luôn áp dụng hoặc theo giờ), rồi luôn chặn, rồi chặn theo giờ, rồi
+    /// giới hạn thời gian. Có lệnh đóng thì đóng và dừng (không cảnh báo
+    /// thêm); không thì cảnh báo một lần/ngày/exe khi sắp hết hạn. Chỉ log
+    /// tên exe + lý do. Mọi đường đóng đều qua <see cref="KillAppAsync"/>.
     /// </summary>
     private async Task EnforceAppRulesForReportAsync(
         ForegroundChangedPayload foreground,
@@ -1045,28 +1161,61 @@ public sealed class AgentWorker : BackgroundService
         Dictionary<string, TimeSpan> usageByApp,
         DateTime local,
         string todayKey,
+        TemporaryOverride? appOverride,
+        HashSet<string>? overrideApps,
+        HashSet<string> appBlocks,
         CancellationToken ct)
     {
-        // Giờ học tập trung: hợp danh sách app cho phép của mọi rule focus
-        // đang trong khung giờ. App foreground không thuộc danh sách thì đóng.
-        bool focusActive = false;
-        var focusAllowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (FocusRuleEntry focus in parsed.FocusRules)
+        // Ghi đè app tạm thời, xét TRƯỚC mọi rule: app foreground khớp danh
+        // sách thì hoặc bị đóng (block_app) hoặc được miễn hoàn toàn
+        // (allow_app, kể cả focus/allowlist).
+        if (appOverride is not null && overrideApps is not null && IsForegroundAllowed(foreground, overrideApps))
         {
-            if (AppRuleParser.MinutesUntilWindowEnd(focus.WindowsByWeekday, local) is not null)
+            if (appOverride.Action == OverrideActions.BlockApp)
             {
-                focusActive = true;
-                foreach (AppRef allowed in focus.AllowedApps)
+                string display = foreground.ExeName ?? foreground.AppName;
+                string? fgExe = ForegroundNormalizedExe(foreground);
+                if (fgExe is not null)
                 {
-                    focusAllowed.Add(allowed.NormalizedExe);
+                    appBlocks.Add(fgExe);
                 }
+
+                await KillAppAsync(fgExe, foreground.SessionId, display, "đang bị chặn tạm thời", ct);
             }
+
+            return;
         }
 
+        // Giờ học tập trung: hợp danh sách app cho phép của mọi rule focus
+        // đang trong khung giờ. App foreground không thuộc danh sách thì đóng.
+        (bool focusActive, HashSet<string> focusAllowed) = EvaluateFocusState(parsed, local);
         if (focusActive && !IsForegroundAllowed(foreground, focusAllowed))
         {
             string display = foreground.ExeName ?? foreground.AppName;
-            await KillAppAsync(ForegroundNormalizedExe(foreground), foreground.SessionId, display, "đang giờ học tập trung", ct);
+            string? fgExe = ForegroundNormalizedExe(foreground);
+            if (fgExe is not null)
+            {
+                appBlocks.Add(fgExe);
+            }
+
+            await KillAppAsync(fgExe, foreground.SessionId, display, "đang giờ học tập trung", ct);
+            return;
+        }
+
+        // Allowlist theo app: hợp danh sách cho phép của mọi rule allowlist
+        // đang hiệu lực (luôn áp dụng, hoặc theo giờ thì chỉ trong khung).
+        // App foreground không thuộc danh sách thì đóng (mirror focus).
+        (bool allowlistActive, HashSet<string> allowlistAllowed) = EvaluateAllowlistState(parsed, local);
+        if (allowlistActive && !IsForegroundAllowed(foreground, allowlistAllowed))
+        {
+            string display = foreground.ExeName ?? foreground.AppName;
+            string? fgExe = ForegroundNormalizedExe(foreground);
+            if (fgExe is not null)
+            {
+                appBlocks.Add(fgExe);
+            }
+
+            await KillAppAsync(fgExe, foreground.SessionId, display, "không thuộc danh sách app được phép", ct);
             return;
         }
 
@@ -1077,30 +1226,45 @@ public sealed class AgentWorker : BackgroundService
         string? warnWindowExe = null;
         string? warnWindowDisplay = null;
 
-        foreach (AppBlockEntry block in parsed.BlockByTime)
+        // Luôn chặn: app trong danh sách thì đóng khi thấy, không cần khung giờ.
+        foreach (AppRef blocked in parsed.BlockAlways)
         {
-            if (!MatchesForeground(foreground, block.App.NormalizedExe))
+            if (MatchesForeground(foreground, blocked.NormalizedExe))
             {
-                continue;
-            }
-
-            int? minutesLeft = AppRuleParser.MinutesUntilWindowEnd(block.WindowsByWeekday, local);
-            if (minutesLeft is null)
-            {
-                // Ngoài mọi khung giờ được dùng hôm nay (kể cả ngày không có
-                // khung nào): đóng app.
-                killExe = block.App.NormalizedExe;
-                killDisplay = block.App.DisplayName;
-                killClause = "đang ngoài khung giờ được dùng";
+                killExe = blocked.NormalizedExe;
+                killDisplay = blocked.DisplayName;
+                killClause = "đang bị chặn";
                 break;
             }
+        }
 
-            int clamped = Math.Max(1, minutesLeft.Value);
-            if (clamped <= 5 && (warnWindowMinutes is null || clamped < warnWindowMinutes.Value))
+        if (killExe is null)
+        {
+            foreach (AppBlockEntry block in parsed.BlockByTime)
             {
-                warnWindowMinutes = clamped;
-                warnWindowExe = block.App.NormalizedExe;
-                warnWindowDisplay = block.App.DisplayName;
+                if (!MatchesForeground(foreground, block.App.NormalizedExe))
+                {
+                    continue;
+                }
+
+                int? minutesLeft = AppRuleParser.MinutesUntilWindowEnd(block.WindowsByWeekday, local);
+                if (minutesLeft is null)
+                {
+                    // Ngoài mọi khung giờ được dùng hôm nay (kể cả ngày không có
+                    // khung nào): đóng app.
+                    killExe = block.App.NormalizedExe;
+                    killDisplay = block.App.DisplayName;
+                    killClause = "đang ngoài khung giờ được dùng";
+                    break;
+                }
+
+                int clamped = Math.Max(1, minutesLeft.Value);
+                if (clamped <= 5 && (warnWindowMinutes is null || clamped < warnWindowMinutes.Value))
+                {
+                    warnWindowMinutes = clamped;
+                    warnWindowExe = block.App.NormalizedExe;
+                    warnWindowDisplay = block.App.DisplayName;
+                }
             }
         }
 
@@ -1137,6 +1301,7 @@ public sealed class AgentWorker : BackgroundService
 
         if (killExe is not null)
         {
+            appBlocks.Add(killExe);
             await KillAppAsync(killExe, foreground.SessionId, killDisplay!, killClause!, ct);
             return;
         }
@@ -1209,6 +1374,73 @@ public sealed class AgentWorker : BackgroundService
     private static string? ForegroundNormalizedExe(ForegroundChangedPayload foreground)
     {
         return ExeNames.Normalize(foreground.ExeName) ?? ExeNames.Normalize(foreground.AppName);
+    }
+
+    /// <summary>
+    /// Trạng thái giờ học tập trung tại thời điểm <paramref name="local"/>:
+    /// có rule focus nào đang trong khung giờ không, và hợp danh sách app
+    /// được phép của các rule đang hiệu lực đó.
+    /// </summary>
+    private static (bool Active, HashSet<string> Allowed) EvaluateFocusState(ParsedAppRules parsed, DateTime local)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool active = false;
+        foreach (FocusRuleEntry focus in parsed.FocusRules)
+        {
+            if (AppRuleParser.MinutesUntilWindowEnd(focus.WindowsByWeekday, local) is not null)
+            {
+                active = true;
+                foreach (AppRef app in focus.AllowedApps)
+                {
+                    allowed.Add(app.NormalizedExe);
+                }
+            }
+        }
+
+        return (active, allowed);
+    }
+
+    /// <summary>
+    /// Trạng thái allowlist theo app tại thời điểm <paramref name="local"/>:
+    /// có rule allowlist nào đang hiệu lực không (luôn áp dụng, hoặc theo
+    /// giờ thì đang trong khung), và hợp danh sách app được phép của các
+    /// rule đang hiệu lực đó. Mirror <see cref="EvaluateFocusState"/>.
+    /// </summary>
+    private static (bool Active, HashSet<string> Allowed) EvaluateAllowlistState(ParsedAppRules parsed, DateTime local)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool active = false;
+        foreach (AppAllowlistEntry entry in parsed.AllowlistRules)
+        {
+            bool inWindow = entry.WindowsByWeekday is null
+                || AppRuleParser.MinutesUntilWindowEnd(entry.WindowsByWeekday, local) is not null;
+            if (inWindow)
+            {
+                active = true;
+                foreach (AppRef app in entry.AllowedApps)
+                {
+                    allowed.Add(app.NormalizedExe);
+                }
+            }
+        }
+
+        return (active, allowed);
+    }
+
+    /// <summary>Chuẩn hóa một danh sách tên exe thành tập so khớp (bỏ tên rỗng/chỉ ".exe", không phân biệt hoa thường).</summary>
+    private static HashSet<string> NormalizeExeSet(IReadOnlyList<string> names)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string name in names)
+        {
+            string? normalized = ExeNames.Normalize(name);
+            if (normalized is not null)
+            {
+                set.Add(normalized);
+            }
+        }
+
+        return set;
     }
 
     /// <summary>Ghi nhận đã cảnh báo cho một exe trong ngày. Trả về false nếu đã cảnh báo rồi (mỗi exe mỗi ngày một lần cho mỗi loại).</summary>
@@ -1364,12 +1596,16 @@ public sealed class AgentWorker : BackgroundService
 
     /// <summary>
     /// Thi hành lệnh ghi đè tạm thời (payload: action, minutes, expires_at;
-    /// ghi đè domain thêm domains). Ghi đè được lưu xuống SQLite để sống sót
-    /// qua khởi động lại Service; lệnh mới nhất thay thế lệnh trước đó.
+    /// ghi đè domain thêm domains, ghi đè app thêm apps). Ghi đè được lưu
+    /// xuống SQLite để sống sót qua khởi động lại Service; lệnh mới nhất
+    /// thay thế lệnh trước đó (chỉ 1 hàng active_override — ghi đè app mới
+    /// sẽ thay ghi đè giờ giấc/domain đang có và ngược lại).
     /// Payload thiếu/sai thì bỏ qua và trả về false — không đoán ý phụ huynh.
     /// Ghi đè domain (allow_domain/block_domain) CHỈ ảnh hưởng file
     /// domain_rules.json (xuất bản lại ngay), không mở/khóa máy, không gửi
     /// IPC xuống Tray; RuleEngine cũng bỏ qua chúng (xem chốt chặn ở đó).
+    /// Ghi đè app (block_app/allow_app) CHỈ ảnh hưởng thi hành theo app
+    /// trong vòng kiểm tra rules, cũng không mở/khóa máy và không gửi IPC.
     /// </summary>
     private async Task<bool> ExecuteTemporaryOverrideAsync(Command command, CancellationToken ct)
     {
@@ -1386,11 +1622,13 @@ public sealed class AgentWorker : BackgroundService
         }
 
         bool isDomainAction = action == OverrideActions.AllowDomain || action == OverrideActions.BlockDomain;
+        bool isAppAction = action == OverrideActions.BlockApp || action == OverrideActions.AllowApp;
 
         if (action != OverrideActions.BonusMinutes
             && action != OverrideActions.Lock
             && action != OverrideActions.Unlock
-            && !isDomainAction)
+            && !isDomainAction
+            && !isAppAction)
         {
             _log.Warning("Ghi đè tạm thời không rõ action, bỏ qua: " + (action ?? "(trống)"));
             return false;
@@ -1419,16 +1657,31 @@ public sealed class AgentWorker : BackgroundService
             }
         }
 
+        IReadOnlyList<string>? apps = null;
+        if (isAppAction)
+        {
+            apps = TryGetPayloadStringArray(payload, "apps");
+            if (apps is null || apps.Count == 0 || !apps.Any(app => ExeNames.Normalize(app) is not null))
+            {
+                _log.Warning("Ghi đè app thiếu mảng apps hợp lệ, bỏ qua.");
+                return false;
+            }
+        }
+
         if (expiresAt <= DateTimeOffset.UtcNow)
         {
             _log.Info("Ghi đè tạm thời đã hết hạn trước khi nhận, bỏ qua.");
             return true;
         }
 
-        await _outbox.SaveOverrideAsync(new TemporaryOverride(action!, minutes, expiresAt, domains), ct);
+        await _outbox.SaveOverrideAsync(new TemporaryOverride(action!, minutes, expiresAt, domains, apps), ct);
         if (isDomainAction)
         {
             _log.Info("Đã lưu ghi đè domain: " + action + " " + domains!.Count + " domain, " + minutes + " phút, hết hạn " + expiresAt.ToString("o") + ".");
+        }
+        else if (isAppAction)
+        {
+            _log.Info("Đã lưu ghi đè app: " + action + " " + apps!.Count + " app, " + minutes + " phút, hết hạn " + expiresAt.ToString("o") + ".");
         }
         else
         {
@@ -1440,7 +1693,9 @@ public sealed class AgentWorker : BackgroundService
         await _publisher.PublishAsync(ct);
 
         // Tác dụng ngay với ghi đè giờ giấc, không chờ tới lần kiểm tra rules
-        // tiếp theo (15 giây). Ghi đè domain không chạm tới khóa/mở máy.
+        // tiếp theo (15 giây). Ghi đè domain/app không chạm tới khóa/mở máy:
+        // domain có tác dụng qua file đã xuất bản ở trên, app qua vòng kiểm
+        // tra rules tiếp theo. Nhánh dưới đây chỉ khớp action Lock/Unlock.
         if (!isDomainAction && action == OverrideActions.Lock)
         {
             _lockSent = true;
@@ -1482,10 +1737,11 @@ public sealed class AgentWorker : BackgroundService
     }
 
     /// <summary>
-    /// Đọc một mảng chuỗi trong payload (VD: domains của ghi đè domain).
-    /// Trả về null khi thuộc tính vắng mặt hoặc không phải mảng; phần tử
-    /// không phải chuỗi thì bỏ qua. Chuẩn hóa/kiểm tra domain do
-    /// DomainRulesPublisher thực hiện lúc xuất bản.
+    /// Đọc một mảng chuỗi trong payload (VD: domains của ghi đè domain,
+    /// apps của ghi đè app). Trả về null khi thuộc tính vắng mặt hoặc không
+    /// phải mảng; phần tử không phải chuỗi thì bỏ qua. Chuẩn hóa/kiểm tra
+    /// domain do DomainRulesPublisher thực hiện lúc xuất bản; chuẩn hóa exe
+    /// do ExeNames thực hiện lúc thi hành.
     /// </summary>
     private static IReadOnlyList<string>? TryGetPayloadStringArray(JsonElement payload, string property)
     {
@@ -1506,6 +1762,264 @@ public sealed class AgentWorker : BackgroundService
         }
 
         return values;
+    }
+
+    /// <summary>
+    /// Suy ra lý do + rule gây ra quyết định của lần kiểm tra này, từ chính
+    /// kết quả đánh giá của <see cref="RuleEngine"/> (không đánh giá lại):
+    /// nghỉ bắt buộc thắng trước (rule app mode forced_break), rồi khóa
+    /// cưỡng chế / ghi đè khóa (không gắn rule nào), rồi ánh xạ chuỗi lý do
+    /// ổn định của engine sang loại rule (giờ ngủ / khung giờ / giới hạn
+    /// ngày). Các rule cùng loại đang bật đều được liệt kê vì engine đánh
+    /// giá hợp (union) — đây là xấp xỉ trung thực, không phải rule duy nhất.
+    /// Quyết định cho phép (không cảnh báo) thì reasons/ruleIds rỗng.
+    /// </summary>
+    private static (List<string> Reasons, List<string> RuleIds) DeriveEnforcementReasons(
+        RuleDecision decision,
+        IReadOnlyList<Rule> rules,
+        bool breakActive,
+        bool forcedLock,
+        TemporaryOverride? activeOverride,
+        DateTimeOffset now)
+    {
+        var reasons = new List<string>();
+        var ruleIds = new List<string>();
+
+        if (breakActive)
+        {
+            reasons.Add(RuleTypes.App);
+            foreach (Rule rule in rules)
+            {
+                if (rule.Enabled && rule.Type == RuleTypes.App && GetRuleMode(rule) == "forced_break")
+                {
+                    ruleIds.Add(rule.Id.ToString());
+                }
+            }
+
+            return (reasons, ruleIds);
+        }
+
+        if (forcedLock)
+        {
+            return (reasons, ruleIds);
+        }
+
+        if (activeOverride is not null && activeOverride.ExpiresAt > now && activeOverride.Action == OverrideActions.Lock)
+        {
+            return (reasons, ruleIds);
+        }
+
+        string? type = null;
+        if (decision.Reason.Contains("giờ ngủ", StringComparison.Ordinal))
+        {
+            type = RuleTypes.Bedtime;
+        }
+        else if (decision.Reason.Contains("khung giờ", StringComparison.Ordinal))
+        {
+            type = RuleTypes.TimeWindow;
+        }
+        else if (decision.Reason.Contains("thời gian dùng máy", StringComparison.Ordinal))
+        {
+            type = RuleTypes.DailyLimit;
+        }
+
+        if (type is null)
+        {
+            return (reasons, ruleIds);
+        }
+
+        reasons.Add(type);
+        foreach (Rule rule in rules)
+        {
+            if (rule.Enabled && rule.Type == type)
+            {
+                ruleIds.Add(rule.Id.ToString());
+            }
+        }
+
+        return (reasons, ruleIds);
+    }
+
+    /// <summary>
+    /// Ai/cái gì đang khóa máy: null khi không khóa; "break" (nghỉ bắt buộc)
+    /// thắng "forced" (khóa cưỡng chế), rồi "override" (ghi đè khóa), còn
+    /// lại là "rule" (bedtime/khung giờ/giới hạn ngày). Cùng thứ tự ưu tiên
+    /// với <see cref="RuleEngine.Evaluate"/> + nhánh break trong vòng kiểm tra.
+    /// </summary>
+    private static string? DeriveLockedBy(
+        RuleDecision decision,
+        bool breakActive,
+        bool forcedLock,
+        TemporaryOverride? activeOverride,
+        DateTimeOffset now)
+    {
+        if (decision.Kind != RuleDecisionKind.Lock)
+        {
+            return null;
+        }
+
+        if (breakActive)
+        {
+            return "break";
+        }
+
+        if (forcedLock)
+        {
+            return "forced";
+        }
+
+        if (activeOverride is not null && activeOverride.ExpiresAt > now && activeOverride.Action == OverrideActions.Lock)
+        {
+            return "override";
+        }
+
+        return "rule";
+    }
+
+    /// <summary>Đọc trường <c>mode</c> trong config rule. Null khi thiếu/không phải chuỗi.</summary>
+    private static string? GetRuleMode(Rule rule)
+    {
+        return rule.Config.ValueKind == JsonValueKind.Object
+            && rule.Config.TryGetProperty("mode", out JsonElement mode)
+            && mode.ValueKind == JsonValueKind.String
+            ? mode.GetString()
+            : null;
+    }
+
+    /// <summary>Có rule website nào đang bật không (publisher xuất bản từ cùng cache nên rule bật là đã/ sắp được xuất bản).</summary>
+    private static bool HasEnabledWebsiteRule(IReadOnlyList<Rule> rules)
+    {
+        foreach (Rule rule in rules)
+        {
+            if (rule.Enabled && rule.Type == RuleTypes.Website)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Dựng snapshot trạng thái thi hành (hợp đồng LITERAL với Dashboard,
+    /// xem migration 6 + docs/02 mục 4.8). Trả về (JSON để gửi, chữ ký so
+    /// sánh KHÔNG gồm thời điểm — nếu gồm "at" thì snapshot đổi mỗi 15 giây
+    /// và throttle đổi-trạng-thái trở nên vô nghĩa). appBlocks cắt tối đa
+    /// 20 exe để snapshot luôn dưới trần 4KB của RPC.
+    /// </summary>
+    private static (string Json, string Signature) BuildEnforcementSnapshot(
+        RuleDecision decision,
+        string? lockedBy,
+        List<string> reasons,
+        List<string> ruleIds,
+        List<string> appBlocks,
+        bool domainRulesActive,
+        bool focusActive,
+        DateTimeOffset now)
+    {
+        string decisionText = decision.Kind switch
+        {
+            RuleDecisionKind.Warn => "warn",
+            RuleDecisionKind.Lock => "lock",
+            _ => "allow",
+        };
+        List<string> cappedBlocks = appBlocks.Take(20).ToList();
+        var payload = new
+        {
+            v = 1,
+            at = now.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
+            decision = decisionText,
+            lockedBy,
+            reasons,
+            ruleIds,
+            appBlocks = cappedBlocks,
+            domainRulesActive,
+            focusActive,
+        };
+        string json = JsonSerializer.Serialize(payload);
+        string signature = decisionText + "|" + (lockedBy ?? "-")
+            + "|" + string.Join(",", reasons)
+            + "|" + string.Join(",", ruleIds)
+            + "|" + string.Join(",", cappedBlocks)
+            + "|" + domainRulesActive + "|" + focusActive;
+        return (json, signature);
+    }
+
+    /// <summary>
+    /// Gửi snapshot enforcement đang chờ lên server nếu nội dung (trừ thời
+    /// điểm) đã đổi so với lần gửi trước và đã qua 5 phút từ lần gửi trước.
+    /// Chỉ gọi sau khi heartbeat thành công (máy đang online). Gửi lỗi thì
+    /// giữ nguyên mốc lần gửi để chu kỳ sau thử lại với snapshot mới nhất.
+    /// </summary>
+    private async Task MaybeReportEnforcementAsync(CancellationToken ct)
+    {
+        string? json;
+        string? signature;
+        lock (_enforcementGate)
+        {
+            json = _pendingEnforcementJson;
+            signature = _pendingEnforcementSignature;
+            if (json is null || signature is null || signature == _lastSentEnforcementSignature)
+            {
+                return;
+            }
+
+            if (_lastSentEnforcementSignature is not null
+                && DateTimeOffset.UtcNow - _lastEnforcementSentAt < TimeSpan.FromMinutes(5))
+            {
+                return;
+            }
+        }
+
+        JsonElement payload;
+        try
+        {
+            payload = JsonDocument.Parse(json).RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            _log.Error("Snapshot enforcement hỏng, bỏ qua lần gửi này.", ex);
+            return;
+        }
+
+        if (await _api.ReportEnforcementAsync(payload, ct))
+        {
+            lock (_enforcementGate)
+            {
+                _lastSentEnforcementSignature = signature;
+                _lastEnforcementSentAt = DateTimeOffset.UtcNow;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ghi log chẩn đoán quyết định rules: khi quyết định/lý do/rule/ghi đè
+    /// đổi, hoặc tối đa 1 lần/15 phút khi không đổi. Số phút đã dùng chỉ là
+    /// nội dung log, không nằm trong chữ ký đổi (nếu không log sẽ lặp mỗi
+    /// phút khi con đang dùng máy). Không bao giờ log token/hash.
+    /// </summary>
+    private void LogRuleDecisionIfDue(
+        RuleDecision decision,
+        List<string> ruleIds,
+        TimeSpan usedToday,
+        TemporaryOverride? activeOverride)
+    {
+        string overrideState = activeOverride is null ? "(không có)" : activeOverride.Action;
+        string signature = decision.Kind + "|" + decision.Reason + "|" + string.Join(",", ruleIds) + "|" + overrideState;
+        DateTimeOffset nowUtc = DateTimeOffset.UtcNow;
+        bool due = signature != _lastDecisionLogSignature || nowUtc - _lastDecisionLogAt >= TimeSpan.FromMinutes(15);
+        if (!due)
+        {
+            return;
+        }
+
+        _lastDecisionLogSignature = signature;
+        _lastDecisionLogAt = nowUtc;
+        string idsText = ruleIds.Count == 0
+            ? "(không có)"
+            : string.Join(", ", ruleIds.Take(3)) + (ruleIds.Count > 3 ? " (+" + (ruleIds.Count - 3) + " rule nữa)" : "");
+        _log.Info("Quyết định rules: " + decision.Kind + " (" + decision.Reason + "), rule đang áp: " + idsText
+            + ", đã dùng " + (int)usedToday.TotalMinutes + " phút, ghi đè: " + overrideState + ".");
     }
 
     /// <summary>Chờ một khoảng thời gian. Trả về false nếu bị hủy (Service đang dừng).</summary>

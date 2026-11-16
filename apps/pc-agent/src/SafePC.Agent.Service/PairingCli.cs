@@ -25,6 +25,19 @@ public static class PairingCli
 
     public static async Task<int> RunAsync(string[] args)
     {
+        // FIRST: ép console dùng UTF-8 để tiếng Việt in ra PowerShell/
+        // Terminal không bị vỡ dấu. Output bị redirect có thể từ chối đổi
+        // encoding — thất bại thì cứ tiếp tục, kết quả vẫn ghi vào log.
+        try
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            Console.InputEncoding = System.Text.Encoding.UTF8;
+        }
+        catch
+        {
+            // Không đổi được encoding thì bỏ qua.
+        }
+
         // Exe này là WinExe nên mặc định không gắn console: gắn vào console
         // của tiến trình cha để in kết quả ra PowerShell/Terminal. Thất bại
         // (VD: chạy bằng double-click) thì vẫn tiếp tục, kết quả nằm ở log.

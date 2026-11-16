@@ -84,6 +84,7 @@ public sealed class OutboxStore
                 minutes INTEGER NOT NULL,
                 expires_at TEXT NOT NULL,
                 domains_json TEXT,
+                apps_json TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS device_state (
@@ -94,11 +95,13 @@ public sealed class OutboxStore
         await command.ExecuteNonQueryAsync(ct);
 
         // Migration tại chỗ cho DB đã tồn tại từ bản trước Sprint 2 đợt 2:
-        // bảng active_override cũ chưa có cột domains_json (ghi đè domain).
-        // CREATE TABLE IF NOT EXISTS không thêm cột vào bảng đã có, nên kiểm
-        // tra PRAGMA và ALTER TABLE khi cần. DB mới đã có cột từ CREATE TABLE
-        // ở trên nên nhánh này không chạy.
+        // bảng active_override cũ chưa có cột domains_json (ghi đè domain)
+        // và apps_json (ghi đè app). CREATE TABLE IF NOT EXISTS không thêm
+        // cột vào bảng đã có, nên kiểm tra PRAGMA và ALTER TABLE khi cần.
+        // DB mới đã có cả hai cột từ CREATE TABLE ở trên nên các nhánh này
+        // không chạy.
         await EnsureOverrideDomainsColumnAsync(connection, ct);
+        await EnsureOverrideAppsColumnAsync(connection, ct);
     }
 
     /// <summary>Thêm cột <c>domains_json</c> vào bảng <c>active_override</c> nếu chưa có.</summary>
@@ -124,6 +127,33 @@ public sealed class OutboxStore
         {
             await using var alter = connection.CreateCommand();
             alter.CommandText = "ALTER TABLE active_override ADD COLUMN domains_json TEXT;";
+            await alter.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    /// <summary>Thêm cột <c>apps_json</c> vào bảng <c>active_override</c> nếu chưa có (ghi đè app, mirror cột domains_json).</summary>
+    private static async Task EnsureOverrideAppsColumnAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool hasColumn = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(active_override);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                // PRAGMA table_info: cid, name, type, notnull, dflt_value, pk.
+                if (reader.GetString(1) == "apps_json")
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE active_override ADD COLUMN apps_json TEXT;";
             await alter.ExecuteNonQueryAsync(ct);
         }
     }
@@ -295,7 +325,8 @@ public sealed class OutboxStore
     /// <summary>
     /// Lưu ghi đè tạm thời đang hiệu lực (ghi đè mới thay thế ghi đè cũ).
     /// Chỉ có tối đa 1 hàng (id = 1). Domains của ghi đè domain được lưu
-    /// dạng mảng JSON trong cột <c>domains_json</c> (null với ghi đè giờ giấc).
+    /// dạng mảng JSON trong cột <c>domains_json</c> (null với ghi đè khác);
+    /// apps của ghi đè app lưu tương tự trong cột <c>apps_json</c>.
     /// </summary>
     public async Task SaveOverrideAsync(TemporaryOverride ov, CancellationToken ct)
     {
@@ -306,19 +337,21 @@ public sealed class OutboxStore
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO active_override (id, action, minutes, expires_at, domains_json, updated_at)
-            VALUES (1, $action, $minutes, $expires, $domains, $now)
+            INSERT INTO active_override (id, action, minutes, expires_at, domains_json, apps_json, updated_at)
+            VALUES (1, $action, $minutes, $expires, $domains, $apps, $now)
             ON CONFLICT(id) DO UPDATE SET
                 action = excluded.action,
                 minutes = excluded.minutes,
                 expires_at = excluded.expires_at,
                 domains_json = excluded.domains_json,
+                apps_json = excluded.apps_json,
                 updated_at = excluded.updated_at;
             """;
         command.Parameters.AddWithValue("$action", ov.Action);
         command.Parameters.AddWithValue("$minutes", ov.Minutes);
         command.Parameters.AddWithValue("$expires", ov.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$domains", ov.Domains is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Domains));
+        command.Parameters.AddWithValue("$apps", ov.Apps is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Apps));
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -338,9 +371,10 @@ public sealed class OutboxStore
         long minutes = 0;
         string? expiresText = null;
         string? domainsJson = null;
+        string? appsJson = null;
         await using (var select = connection.CreateCommand())
         {
-            select.CommandText = "SELECT action, minutes, expires_at, domains_json FROM active_override WHERE id = 1;";
+            select.CommandText = "SELECT action, minutes, expires_at, domains_json, apps_json FROM active_override WHERE id = 1;";
             await using var reader = await select.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct))
             {
@@ -348,6 +382,7 @@ public sealed class OutboxStore
                 minutes = reader.GetInt64(1);
                 expiresText = reader.GetString(2);
                 domainsJson = reader.IsDBNull(3) ? null : reader.GetString(3);
+                appsJson = reader.IsDBNull(4) ? null : reader.GetString(4);
             }
         }
 
@@ -369,9 +404,10 @@ public sealed class OutboxStore
             return null;
         }
 
-        // domains_json hỏng thì coi như không có domains (ghi đè domain sẽ
-        // không sinh temp entry nào — an toàn hơn là đoán), không xóa hàng.
-        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson));
+        // domains_json/apps_json hỏng thì coi như không có danh sách (ghi đè
+        // domain/app sẽ không sinh entry nào — an toàn hơn là đoán), không
+        // xóa hàng.
+        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson), ParseOverrideApps(appsJson));
     }
 
     /// <summary>Đọc mảng domains từ chuỗi JSON đã lưu. Null/hỏng thì trả về null.</summary>
@@ -400,6 +436,39 @@ public sealed class OutboxStore
             }
 
             return domains;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Đọc mảng tên exe từ chuỗi JSON đã lưu (ghi đè app, mirror ParseOverrideDomains). Null/hỏng thì trả về null.</summary>
+    private static IReadOnlyList<string>? ParseOverrideApps(string? appsJson)
+    {
+        if (string.IsNullOrWhiteSpace(appsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(appsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var apps = new List<string>();
+            foreach (JsonElement element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.String && element.GetString() is string app)
+                {
+                    apps.Add(app);
+                }
+            }
+
+            return apps;
         }
         catch (JsonException)
         {

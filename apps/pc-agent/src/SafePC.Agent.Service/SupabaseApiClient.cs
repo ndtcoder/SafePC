@@ -359,6 +359,32 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Báo trạng thái thi hành hiện tại lên server: cập nhật hai cột
+    /// <c>devices.enforcement_json</c> / <c>enforcement_updated_at</c>
+    /// (migration 6). RPC trả về void nên dùng
+    /// <see cref="PostRpcNoResultAsync"/> như
+    /// <see cref="ReportExtensionHeartbeatAsync"/>. Trả về true khi HTTP 2xx.
+    /// </summary>
+    public async Task<bool> ReportEnforcementAsync(JsonElement payload, CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Báo enforcement bỏ qua: " + reason + ".");
+            return false;
+        }
+
+        return await PostRpcNoResultAsync(
+            "safepc_report_enforcement",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_payload = payload,
+            },
+            ct);
+    }
+
+    /// <summary>
     /// Kiểm tra đã sẵn sàng gọi server chưa: có URL cấu hình, có khóa
     /// publishable (header đã gắn ở constructor), và đã pairing (có token).
     /// Đọc token ở mỗi lần gọi để Service đang chạy tự nhận ghép nối mới.

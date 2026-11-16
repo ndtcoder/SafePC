@@ -26,6 +26,20 @@ public static class OverrideActions
     /// (chỉ ảnh hưởng file domain_rules.json, không mở/khóa máy).
     /// </summary>
     public const string BlockDomain = "block_domain";
+
+    /// <summary>
+    /// Chặn tạm thời các app trong <c>apps</c> tới <c>expires_at</c> (đóng
+    /// app foreground khớp danh sách, qua <c>KillAppAsync</c> như mọi đường
+    /// đóng app khác; không mở/khóa máy).
+    /// </summary>
+    public const string BlockApp = "block_app";
+
+    /// <summary>
+    /// Cho phép tạm thời các app trong <c>apps</c> tới <c>expires_at</c>:
+    /// app khớp danh sách được miễn MỌI thi hành theo app (kể cả focus và
+    /// allowlist) trong lúc ghi đè còn hạn. Không mở/khóa máy.
+    /// </summary>
+    public const string AllowApp = "allow_app";
 }
 
 /// <summary>
@@ -43,5 +57,8 @@ public static class OverrideActions
 /// phép/chặn tạm thời, lưu kèm trong cột <c>domains_json</c> để Service khởi
 /// động lại không làm mất ghi đè domain đang hiệu lực khi xuất bản lại file
 /// domain_rules.json. Ghi đè giờ giấc (bonus/lock/unlock) để null.
+/// <see cref="Apps"/> tương tự, cho ghi đè app (<c>block_app</c>/
+/// <c>allow_app</c>): tên exe thô như Dashboard gửi, lưu trong cột
+/// <c>apps_json</c>; chuẩn hóa/so khớp bằng <c>ExeNames</c> lúc thi hành.
 /// </summary>
-public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null);
+public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null, IReadOnlyList<string>? Apps = null);

@@ -19,7 +19,10 @@ namespace SafePC.Agent.Service;
 /// cho extension qua giao thức native messaging. Extension KHÔNG bao giờ nói
 /// chuyện trực tiếp với Supabase và không đọc được database/token của Agent.
 /// Từ Sprint 2 đợt 3, file còn mang thêm mục <c>focus</c> (giờ học tập trung,
-/// hợp từ mọi rule focus) — trường cộng thêm, Version vẫn là 1.
+/// hợp từ mọi rule focus) — trường cộng thêm, Version vẫn là 1. Bản sửa lỗi
+/// sau đó thêm <c>allowlistByTime</c> (allowlist chỉ trong khung giờ, hợp từ
+/// mọi rule mode 'allowlist_by_time'; khóa vắng mặt khi không có rule nào) —
+/// cũng là trường cộng thêm, Version vẫn là 1.
 ///
 /// File chỉ ghi lại khi nội dung (trừ <c>updated_at</c>) thay đổi, để vòng
 /// lặp đồng bộ mỗi phút không chạm đĩa vô ích. Ghi nguyên tử: ghi file tạm
@@ -117,6 +120,7 @@ public sealed class DomainRulesPublisher
             _log.Info("Đã xuất bản domain_rules.json: " + file.Blocked.Count + " domain chặn, "
                 + file.BlockedByTime.Count + " chặn theo giờ, "
                 + (file.Allowlist is null ? "không có allowlist" : file.Allowlist.Count + " domain cho phép") + ", "
+                + (file.AllowlistByTime is null ? "không có allowlist theo giờ" : file.AllowlistByTime.Count + " allowlist theo giờ") + ", "
                 + file.DomainLimits.Count + " giới hạn theo domain, "
                 + "tempAllow " + file.TempAllow.Count + ", tempBlock " + file.TempBlock.Count + ", "
                 + (file.Focus is null ? "không có focus" : "focus " + file.Focus.AllowedDomains.Count + " domain cho phép") + ".");
@@ -145,6 +149,12 @@ public sealed class DomainRulesPublisher
         HashSet<string>? allowlist = null;
         bool safeSearch = false;
         bool youtubeRestricted = false;
+
+        // Allowlist theo giờ: hợp (union) qua nhiều entry — mỗi rule hợp lệ
+        // thành một entry, extension đánh giá "trong khung giờ của BẤT KỲ
+        // entry nào thì chỉ cho phép hợp các domain của các entry đang hiệu
+        // lực" (xem thang ưu tiên DNR ở DomainRulesFile).
+        var allowlistByTime = new List<TimeBlockedEntry>();
 
         // Giờ học tập trung (Sprint 2 đợt 3): hợp (union) mọi rule focus
         // đang bật — gộp khung giờ theo từng thứ, hợp các domain cho phép.
@@ -198,6 +208,25 @@ public sealed class DomainRulesPublisher
                     allowlist ??= new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(allowlist, config);
                     break;
+
+                case "allowlist_by_time":
+                {
+                    var domains = new HashSet<string>(StringComparer.Ordinal);
+                    AddRuleDomains(domains, config);
+                    Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
+                    if (domains.Count == 0 || windows is null)
+                    {
+                        _log.Warning("Rule allowlist_by_time thiếu domain hoặc khung giờ hợp lệ, bỏ qua.");
+                        break;
+                    }
+
+                    allowlistByTime.Add(new TimeBlockedEntry
+                    {
+                        Domains = domains.OrderBy(d => d, StringComparer.Ordinal).ToList(),
+                        WindowsByWeekday = windows,
+                    });
+                    break;
+                }
 
                 case "domain_time_limit":
                 {
@@ -265,6 +294,7 @@ public sealed class DomainRulesPublisher
         file.Allowlist = allowlist is null || allowlist.Count == 0
             ? null
             : allowlist.OrderBy(d => d, StringComparer.Ordinal).ToList();
+        file.AllowlistByTime = allowlistByTime.Count == 0 ? null : allowlistByTime;
         file.SafeSearch = safeSearch;
         file.YoutubeRestricted = youtubeRestricted;
 
@@ -704,7 +734,15 @@ public sealed class DomainRulesPublisher
     }
 }
 
-/// <summary>Nội dung file domain_rules.json. Tên trường JSON khớp extension đọc qua NativeHost.</summary>
+/// <summary>Nội dung file domain_rules.json. Tên trường JSON khớp extension đọc qua NativeHost.
+///
+/// THANG ƯU TIÊN DNR PHÍA EXTENSION (extension thi hành; file này chỉ mang
+/// dữ liệu, Service không sắp xếp gì thêm): tempBlock 100 &gt; focus 60 &gt;
+/// allowlistByTime 55 &gt; allowlist 50 &gt; blockByTime 40 &gt; block 30 &gt;
+/// domainLimits 20. Số càng cao càng thắng khi nhiều rule cùng khớp một
+/// domain. Ghi đè cho phép tạm thời (tempAllow) không có trong thang này:
+/// nó chỉ gỡ chặn trong các rule chặn thường, không xuyên qua focus.
+/// </summary>
 internal sealed class DomainRulesFile
 {
     [JsonPropertyName("version")]
@@ -722,6 +760,17 @@ internal sealed class DomainRulesFile
     /// <summary>Null = không có chế độ allowlist (chỉ chặn theo danh sách); mảng = chỉ cho phép các domain này.</summary>
     [JsonPropertyName("allowlist")]
     public List<string>? Allowlist { get; set; }
+
+    /// <summary>
+    /// Allowlist theo giờ (hợp từ mọi rule website mode 'allowlist_by_time'):
+    /// mỗi entry là một rule (domains + khung giờ theo thứ). Null = không có
+    /// rule hợp lệ nào — khóa JSON được BỎ HOÀN TOÀN khi null (WhenNull) để
+    /// extension cũ không thấy khóa lạ. Hình dạng entry tái dùng
+    /// <see cref="TimeBlockedEntry"/> (domains + windowsByWeekday).
+    /// </summary>
+    [JsonPropertyName("allowlistByTime")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenNull)]
+    public List<TimeBlockedEntry>? AllowlistByTime { get; set; }
 
     [JsonPropertyName("domainLimits")]
     public List<DomainLimitEntry> DomainLimits { get; set; } = new();

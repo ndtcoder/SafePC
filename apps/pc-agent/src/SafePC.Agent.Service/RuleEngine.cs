@@ -64,17 +64,21 @@ public sealed class RuleEngine
         }
 
         int bonusMinutes = 0;
-        // CHỐT CHẶN AN TOÀN (Sprint 2 đợt 2): ghi đè domain (allow_domain /
-        // block_domain) CHỈ ảnh hưởng file domain_rules.json do
-        // DomainRulesPublisher xuất bản — RuleEngine phải bỏ qua hoàn toàn,
-        // không bao giờ được hiểu là mở/khóa máy. Khối dưới đây không có
-        // nhánh default nào coi action lạ là unlock: action không khớp
-        // Lock/Unlock/BonusMinutes thì rơi xuống đánh giá rules bình thường.
-        // Điều kiện phủ định tường minh dưới đây là lớp bảo vệ thứ hai, để
-        // một sửa đổi sau này không vô tình biến ghi đè domain thành unlock.
+        // CHỐT CHẶN AN TOÀN (Sprint 2 đợt 2, mở rộng cho ghi đè app): ghi đè
+        // domain (allow_domain / block_domain) CHỈ ảnh hưởng file
+        // domain_rules.json và ghi đè app (block_app / allow_app) CHỈ ảnh
+        // hưởng thi hành theo app trong AgentWorker — RuleEngine phải bỏ qua
+        // hoàn toàn cả hai nhóm, không bao giờ được hiểu là mở/khóa máy.
+        // Khối dưới đây không có nhánh default nào coi action lạ là unlock:
+        // action không khớp Lock/Unlock/BonusMinutes thì rơi xuống đánh giá
+        // rules bình thường. Điều kiện phủ định tường minh dưới đây là lớp
+        // bảo vệ thứ hai, để một sửa đổi sau này không vô tình biến ghi đè
+        // domain/app thành unlock.
         if (activeOverride is not null && activeOverride.ExpiresAt > now
             && activeOverride.Action != OverrideActions.AllowDomain
-            && activeOverride.Action != OverrideActions.BlockDomain)
+            && activeOverride.Action != OverrideActions.BlockDomain
+            && activeOverride.Action != OverrideActions.BlockApp
+            && activeOverride.Action != OverrideActions.AllowApp)
         {
             if (activeOverride.Action == OverrideActions.Lock)
             {

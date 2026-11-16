@@ -22,16 +22,21 @@ internal sealed record FocusRuleEntry(Dictionary<int, List<AppTimeWindow>> Windo
 /// <summary>Cấu hình nghỉ bắt buộc: dùng liên tục workMinutes thì khóa máy breakMinutes.</summary>
 internal sealed record ForcedBreakConfig(int WorkMinutes, int BreakMinutes);
 
+/// <summary>Một rule allowlist theo app: các app được phép + khung giờ theo thứ (null = luôn áp dụng).</summary>
+internal sealed record AppAllowlistEntry(List<AppRef> AllowedApps, Dictionary<int, List<AppTimeWindow>>? WindowsByWeekday);
+
 /// <summary>Kết quả phân tích các rule theo app / focus / nghỉ bắt buộc từ cache rules.</summary>
 internal sealed class ParsedAppRules
 {
     public List<AppTimeLimitEntry> TimeLimits { get; } = new();
     public List<AppBlockEntry> BlockByTime { get; } = new();
+    public List<AppRef> BlockAlways { get; } = new();
+    public List<AppAllowlistEntry> AllowlistRules { get; } = new();
     public List<FocusRuleEntry> FocusRules { get; } = new();
     public ForcedBreakConfig? BreakConfig { get; set; }
 
     /// <summary>Có rule nào cần thi hành theo foreground không (không tính nghỉ bắt buộc — đánh giá riêng).</summary>
-    public bool HasAny => TimeLimits.Count > 0 || BlockByTime.Count > 0 || FocusRules.Count > 0;
+    public bool HasAny => TimeLimits.Count > 0 || BlockByTime.Count > 0 || BlockAlways.Count > 0 || AllowlistRules.Count > 0 || FocusRules.Count > 0;
 }
 
 /// <summary>
@@ -42,6 +47,9 @@ internal sealed class ParsedAppRules
 /// Hình dạng config (khớp hợp đồng chia sẻ với Dashboard, xem docs/02):
 /// - type 'app', mode 'app_time_limit': {"apps":[{"exe":"game.exe","name":"Game","minutesPerDay":60}]}
 /// - type 'app', mode 'app_block_by_time': {"apps":[...],"windowsByWeekday":{"1":[{"start":"07:00","end":"21:00"}]}}
+/// - type 'app', mode 'app_block': {"apps":[{"exe":"game.exe","name":"Game"}]} (luôn chặn, đóng khi thấy)
+/// - type 'app', mode 'app_allowlist': {"apps":[...]} (luôn áp dụng: chỉ các app này được mở)
+/// - type 'app', mode 'app_allowlist_by_time': {"apps":[...],"windowsByWeekday":{...}} (allowlist chỉ trong khung giờ)
 /// - type 'app', mode 'forced_break': {"workMinutes":45,"breakMinutes":10}
 /// - type 'website', mode 'focus': {"windowsByWeekday":{...},"allowedApps":[...],"allowedDomains":[...]}
 ///   (phía Agent chỉ cần windowsByWeekday + allowedApps; allowedDomains do
@@ -106,6 +114,18 @@ internal static class AppRuleParser
                 ParseAppBlockByTime(config, parsed, log);
                 break;
 
+            case "app_block":
+                ParseAppBlock(config, parsed, log);
+                break;
+
+            case "app_allowlist":
+                ParseAppAllowlist(config, parsed, log);
+                break;
+
+            case "app_allowlist_by_time":
+                ParseAppAllowlistByTime(config, parsed, log);
+                break;
+
             case "forced_break":
                 ParseForcedBreak(config, parsed, log);
                 break;
@@ -168,6 +188,49 @@ internal static class AppRuleParser
         {
             parsed.BlockByTime.Add(new AppBlockEntry(app, windows));
         }
+    }
+
+    private static void ParseAppBlock(JsonElement config, ParsedAppRules parsed, LocalLogger log)
+    {
+        List<AppRef> apps = ParseAppRefs(config, "apps", log, "app_block");
+        if (apps.Count == 0)
+        {
+            log.Warning("Rule app_block không có app hợp lệ, bỏ qua.");
+            return;
+        }
+
+        parsed.BlockAlways.AddRange(apps);
+    }
+
+    private static void ParseAppAllowlist(JsonElement config, ParsedAppRules parsed, LocalLogger log)
+    {
+        List<AppRef> apps = ParseAppRefs(config, "apps", log, "app_allowlist");
+        if (apps.Count == 0)
+        {
+            log.Warning("Rule app_allowlist không có app hợp lệ, bỏ qua.");
+            return;
+        }
+
+        parsed.AllowlistRules.Add(new AppAllowlistEntry(apps, WindowsByWeekday: null));
+    }
+
+    private static void ParseAppAllowlistByTime(JsonElement config, ParsedAppRules parsed, LocalLogger log)
+    {
+        List<AppRef> apps = ParseAppRefs(config, "apps", log, "app_allowlist_by_time");
+        if (apps.Count == 0)
+        {
+            log.Warning("Rule app_allowlist_by_time không có app hợp lệ, bỏ qua.");
+            return;
+        }
+
+        Dictionary<int, List<AppTimeWindow>>? windows = ParseWindowsByWeekday(config);
+        if (windows is null)
+        {
+            log.Warning("Rule app_allowlist_by_time thiếu khung giờ hợp lệ, bỏ qua.");
+            return;
+        }
+
+        parsed.AllowlistRules.Add(new AppAllowlistEntry(apps, windows));
     }
 
     private static void ParseForcedBreak(JsonElement config, ParsedAppRules parsed, LocalLogger log)
