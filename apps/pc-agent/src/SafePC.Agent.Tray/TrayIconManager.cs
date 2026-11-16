@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using WinForms = System.Windows.Forms;
 
 namespace SafePC.Agent.Tray;
@@ -117,20 +118,20 @@ public sealed class TrayIconManager : IDisposable
     {
         // Vị trí chuột theo pixel màn hình -> đơn vị WPF (DIP), vì Left/Top
         // của Window tính bằng DIP còn Cursor.Position tính bằng pixel.
+        // Lấy DPI của cửa sổ neo qua GetDpiForWindow (Windows 10+). KHÔNG
+        // dùng PresentationSource/CompositionTarget: API đó làm CI lỗi
+        // CS0234 ở project này (run #54) dù UseWPF đã bật.
         System.Drawing.Point cursor = WinForms.Cursor.Position;
-        var point = new System.Windows.Point(cursor.X, cursor.Y);
-        System.Windows.Media.PresentationSource? source = System.Windows.Media.PresentationSource.FromVisual(_anchor);
-        if (source?.CompositionTarget is not null)
-        {
-            point = source.CompositionTarget.TransformFromDevice.Transform(point);
-        }
+        double scale = GetWindowDpiScale(_anchor);
+        double cursorX = cursor.X / scale;
+        double cursorY = cursor.Y / scale;
 
         System.Windows.Rect workArea = System.Windows.SystemParameters.WorkArea;
-        double left = point.X - menu.ActualWidth;
-        double top = point.Y - menu.ActualHeight - 4;
+        double left = cursorX - menu.ActualWidth;
+        double top = cursorY - menu.ActualHeight - 4;
         if (top < workArea.Top)
         {
-            top = point.Y + 4;
+            top = cursorY + 4;
         }
 
         if (left < workArea.Left)
@@ -151,6 +152,35 @@ public sealed class TrayIconManager : IDisposable
         menu.Left = left;
         menu.Top = top;
     }
+
+    /// <summary>
+    /// Tỉ lệ DPI của cửa sổ (1.0 ở màn hình 100%). Lấy qua GetDpiForWindow
+    /// của user32; thất bại thì trả về 1.0 thay vì làm hỏng việc mở menu.
+    /// </summary>
+    private static double GetWindowDpiScale(System.Windows.Window window)
+    {
+        try
+        {
+            IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                uint dpi = GetDpiForWindow(hwnd);
+                if (dpi > 0)
+                {
+                    return dpi / 96.0;
+                }
+            }
+        }
+        catch
+        {
+            // Lấy DPI thất bại thì dùng tỉ lệ 1.0 (màn hình 100%).
+        }
+
+        return 1.0;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
 
     private void CloseMenu()
     {
