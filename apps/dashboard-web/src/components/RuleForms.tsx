@@ -2,9 +2,13 @@ import { useState } from 'react'
 import {
   WEEKDAY_OPTIONS,
   type BedtimeDraft,
+  type BlockDomainsByTimeDraft,
   type DailyLimitDraft,
+  type DomainTimeLimitDraft,
+  type SafeSearchDraft,
   type TimeRangeValue,
   type TimeWindowDraft,
+  type WebsiteDomainsDraft,
   type WeekdayNumber,
 } from '../lib/ruleConfig'
 import { inputClassName, secondaryButtonClassName } from './ui'
@@ -88,12 +92,22 @@ export function DailyLimitForm({
   )
 }
 
-export function TimeWindowForm({
+/**
+ * Trình sửa khung giờ theo từng thứ trong tuần, dùng chung cho quy tắc
+ * khung giờ được dùng máy (TimeWindowForm) và quy tắc chặn website theo
+ * giờ. `emptyDayText` là câu hiển thị khi một ngày chưa có khung giờ nào —
+ * ý nghĩa khác nhau theo từng loại quy tắc nên do nơi dùng truyền vào.
+ */
+export function WeekdayWindowsEditor({
   draft,
   onChange,
+  idPrefix,
+  emptyDayText,
 }: {
   draft: TimeWindowDraft
   onChange: (draft: TimeWindowDraft) => void
+  idPrefix: string
+  emptyDayText: string
 }) {
   const setRanges = (day: WeekdayNumber, ranges: TimeRangeValue[]) => {
     const next = { ...draft }
@@ -121,11 +135,6 @@ export function TimeWindowForm({
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-600">
-        Ngoài các khung giờ dưới đây, máy sẽ bị khóa. <strong>Ngày nào không có khung giờ nào thì con không được
-        dùng máy ngày đó.</strong> Giờ tính theo giờ địa phương trên máy của con. Khung giờ không được qua đêm
-        (giờ bắt đầu phải sớm hơn giờ kết thúc) — muốn khóa qua đêm, dùng quy tắc giờ ngủ.
-      </p>
       {WEEKDAY_OPTIONS.map(({ value, label }) => (
         <div key={value} className="rounded-lg border border-slate-200 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -135,17 +144,17 @@ export function TimeWindowForm({
             </button>
           </div>
           {draft[value].length === 0 ? (
-            <p className="mt-2 text-sm text-slate-500">Không có khung giờ nào — con không được dùng máy ngày này.</p>
+            <p className="mt-2 text-sm text-slate-500">{emptyDayText}</p>
           ) : (
             <div className="mt-2 space-y-2">
               {draft[value].map((range, index) => (
                 <div key={index} className="flex flex-wrap items-end gap-2">
                   <div>
-                    <label htmlFor={`window-start-${value}-${index}`} className="mb-1 block text-xs text-slate-500">
+                    <label htmlFor={`${idPrefix}-start-${value}-${index}`} className="mb-1 block text-xs text-slate-500">
                       Từ giờ
                     </label>
                     <input
-                      id={`window-start-${value}-${index}`}
+                      id={`${idPrefix}-start-${value}-${index}`}
                       type="time"
                       required
                       value={range.start}
@@ -154,11 +163,11 @@ export function TimeWindowForm({
                     />
                   </div>
                   <div>
-                    <label htmlFor={`window-end-${value}-${index}`} className="mb-1 block text-xs text-slate-500">
+                    <label htmlFor={`${idPrefix}-end-${value}-${index}`} className="mb-1 block text-xs text-slate-500">
                       Đến giờ
                     </label>
                     <input
-                      id={`window-end-${value}-${index}`}
+                      id={`${idPrefix}-end-${value}-${index}`}
                       type="time"
                       required
                       value={range.end}
@@ -179,6 +188,30 @@ export function TimeWindowForm({
           )}
         </div>
       ))}
+    </div>
+  )
+}
+
+export function TimeWindowForm({
+  draft,
+  onChange,
+}: {
+  draft: TimeWindowDraft
+  onChange: (draft: TimeWindowDraft) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Ngoài các khung giờ dưới đây, máy sẽ bị khóa. <strong>Ngày nào không có khung giờ nào thì con không được
+        dùng máy ngày đó.</strong> Giờ tính theo giờ địa phương trên máy của con. Khung giờ không được qua đêm
+        (giờ bắt đầu phải sớm hơn giờ kết thúc) — muốn khóa qua đêm, dùng quy tắc giờ ngủ.
+      </p>
+      <WeekdayWindowsEditor
+        draft={draft}
+        onChange={onChange}
+        idPrefix="window"
+        emptyDayText="Không có khung giờ nào — con không được dùng máy ngày này."
+      />
     </div>
   )
 }
@@ -245,6 +278,201 @@ export function BedtimeForm({
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Quy tắc website (đợt 2). Các form dùng chung DomainsField; kiểm tra hợp
+// lệ ở lib/ruleConfig.ts (parseDomainsInput).
+// ---------------------------------------------------------------------------
+
+/**
+ * Ô nhập danh sách domain, dùng chung cho mọi form website và thẻ ghi đè
+ * website tạm thời. Định dạng: mỗi dòng một domain (dấu phẩy cũng được
+ * chấp nhận). Có thể dán cả đường link — hệ thống chỉ lấy phần tên miền.
+ */
+export function DomainsField({
+  id,
+  label,
+  value,
+  onChange,
+  hint,
+}: {
+  id: string
+  label: string
+  value: string
+  onChange: (value: string) => void
+  hint?: string
+}) {
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700">
+        {label}
+      </label>
+      <textarea
+        id={id}
+        rows={4}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={'youtube.com\nfacebook.com'}
+        className={inputClassName}
+      />
+      <p className="mt-1 text-xs text-slate-500">
+        {hint ??
+          'Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Có thể dán cả đường link, ví dụ https://www.youtube.com/ — hệ thống chỉ lấy phần tên miền.'}
+      </p>
+    </div>
+  )
+}
+
+export function BlockDomainsForm({
+  draft,
+  onChange,
+}: {
+  draft: WebsiteDomainsDraft
+  onChange: (draft: WebsiteDomainsDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        Các website dưới đây sẽ bị chặn mọi lúc. Quy tắc áp dụng cả cho tên miền con — chặn youtube.com thì cả
+        www.youtube.com cũng bị chặn.
+      </p>
+      <DomainsField
+        id="website-domains"
+        label="Domain bị chặn"
+        value={draft.domainsText}
+        onChange={(domainsText) => onChange({ ...draft, domainsText })}
+      />
+    </div>
+  )
+}
+
+export function BlockDomainsByTimeForm({
+  draft,
+  onChange,
+}: {
+  draft: BlockDomainsByTimeDraft
+  onChange: (draft: BlockDomainsByTimeDraft) => void
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Trong các khung giờ dưới đây, các website trong danh sách sẽ bị chặn. Ngoài khung giờ, con vẫn mở được
+        các website này. <strong>Ngày nào không có khung giờ nào thì các website không bị chặn ngày đó.</strong>{' '}
+        Giờ tính theo giờ địa phương trên máy của con.
+      </p>
+      <DomainsField
+        id="website-domains"
+        label="Domain bị chặn theo giờ"
+        value={draft.domainsText}
+        onChange={(domainsText) => onChange({ ...draft, domainsText })}
+      />
+      <WeekdayWindowsEditor
+        draft={draft.windows}
+        onChange={(windows) => onChange({ ...draft, windows })}
+        idPrefix="domain-window"
+        emptyDayText="Không có khung giờ nào — các domain trên không bị chặn ngày này."
+      />
+    </div>
+  )
+}
+
+export function AllowlistForm({
+  draft,
+  onChange,
+}: {
+  draft: WebsiteDomainsDraft
+  onChange: (draft: WebsiteDomainsDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        <strong>Chỉ</strong> các website dưới đây được mở; mọi website khác đều bị chặn. Quy tắc áp dụng cả cho
+        tên miền con — cho phép youtube.com thì cả www.youtube.com cũng được mở. Hãy chắc chắn đã liệt kê đủ
+        các trang con cần cho việc học.
+      </p>
+      <DomainsField
+        id="website-domains"
+        label="Domain được phép"
+        value={draft.domainsText}
+        onChange={(domainsText) => onChange({ ...draft, domainsText })}
+      />
+    </div>
+  )
+}
+
+export function DomainTimeLimitForm({
+  draft,
+  onChange,
+}: {
+  draft: DomainTimeLimitDraft
+  onChange: (draft: DomainTimeLimitDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        Tổng thời gian con được xem các website dưới đây mỗi ngày (cộng chung cho tất cả các domain trong danh
+        sách). Hết giờ, các website này sẽ bị chặn tới hết ngày.
+      </p>
+      <DomainsField
+        id="website-domains"
+        label="Domain bị giới hạn thời gian"
+        value={draft.domainsText}
+        onChange={(domainsText) => onChange({ ...draft, domainsText })}
+      />
+      <div>
+        <label htmlFor="website-minutes" className="mb-1 block text-sm font-medium text-slate-700">
+          Giới hạn mỗi ngày (phút)
+        </label>
+        <input
+          id="website-minutes"
+          type="number"
+          inputMode="numeric"
+          min={1}
+          max={1440}
+          step={5}
+          value={draft.minutes}
+          onChange={(e) => onChange({ ...draft, minutes: e.target.value })}
+          className={inputClassName}
+        />
+      </div>
+    </div>
+  )
+}
+
+export function SafeSearchForm({
+  draft,
+  onChange,
+}: {
+  draft: SafeSearchDraft
+  onChange: (draft: SafeSearchDraft) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-600">
+        Ép chế độ tìm kiếm an toàn trên trình duyệt của con. Quy tắc này không chặn website nào — nó chỉ lọc
+        kết quả tìm kiếm và video không phù hợp.
+      </p>
+      <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
+        <input
+          type="checkbox"
+          checked={draft.searchProviders}
+          onChange={(e) => onChange({ ...draft, searchProviders: e.target.checked })}
+          className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+        />
+        Bật SafeSearch cho công cụ tìm kiếm (Google, Bing…)
+      </label>
+      <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800">
+        <input
+          type="checkbox"
+          checked={draft.youtubeRestricted}
+          onChange={(e) => onChange({ ...draft, youtubeRestricted: e.target.checked })}
+          className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+        />
+        Bật chế độ hạn chế của YouTube (Restricted Mode)
+      </label>
     </div>
   )
 }
