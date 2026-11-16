@@ -12,6 +12,14 @@ namespace SafePC.Agent.Tray;
 /// - Tự kết nối lại sau 5 giây nếu mất kết nối.
 /// - Giao thức: JSON theo dòng, như phía server. Ghi chú ACL phía server:
 ///   pipe chỉ cho SYSTEM và nhóm Users kết nối (docs/03-SECURITY.md mục 4).
+///
+/// Ghi chú 2026-11-16 (lỗi thật trên máy test): KHÔNG dùng
+/// NamedPipeClientStream.IsConnected để quyết định nối/rớt — cờ này có thể
+/// báo false ngay sau khi ConnectAsync thành công, khiến vòng đọc thoát im
+/// lặng trong khi server vẫn giữ kết nối chết (log Tray 14:35 ngày
+/// 2026-11-16: "đã kết nối" rồi rớt ngay, server giữ kết nối tới 8 phút).
+/// Mọi quyết định nối/rớt đều dựa vào kết quả I/O thật (ReadLineAsync/
+/// WriteLineAsync) và mọi lần rớt kết nối đều phải ghi log.
 /// </summary>
 public sealed class IpcPipeClient : IDisposable
 {
@@ -37,27 +45,7 @@ public sealed class IpcPipeClient : IDisposable
         {
             try
             {
-                _pipe = new NamedPipeClientStream(".", AgentConstants.IpcPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-                await _pipe.ConnectAsync(ct);
-                _log.Info("IPC: đã kết nối tới Service.");
-
-                _writer = new StreamWriter(_pipe, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
-
-                using var reader = new StreamReader(_pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
-                while (!ct.IsCancellationRequested && _pipe.IsConnected)
-                {
-                    string? line = await reader.ReadLineAsync();
-                    if (line is null)
-                    {
-                        break;
-                    }
-
-                    IpcMessage? message = IpcMessage.FromLine(line);
-                    if (message is not null)
-                    {
-                        MessageReceived?.Invoke(message);
-                    }
-                }
+                await ConnectAndReadAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -83,17 +71,68 @@ public sealed class IpcPipeClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Nối tới Service rồi đọc message cho tới khi server đóng kết nối hoặc
+    /// token bị hủy. Trả về (không ném) khi hết timeout nối hoặc server đóng
+    /// êm — RunAsync sẽ chờ 5 giây rồi thử lại.
+    /// </summary>
+    private async Task ConnectAndReadAsync(CancellationToken ct)
+    {
+        _pipe = new NamedPipeClientStream(".", AgentConstants.IpcPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+
+        // ConnectAsync không timeout sẽ chờ mãi nếu server chưa tạo pipe —
+        // giới hạn 10 giây để lỗi hiện rõ trong log thay vì im lặng (gặp ở
+        // log Tray đợt 13:32–14:02 ngày 2026-11-16: chờ nửa tiếng không lỗi).
+        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        connectCts.CancelAfter(TimeSpan.FromSeconds(10));
+        try
+        {
+            await _pipe.ConnectAsync(connectCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Error("IPC: không nối được tới Service trong 10 giây (pipe chưa sẵn sàng?), thử lại sau 5 giây.");
+            return;
+        }
+
+        _log.Info("IPC: đã kết nối tới Service.");
+        _writer = new StreamWriter(_pipe, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+
+        using var reader = new StreamReader(_pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+        // KHÔNG kiểm tra _pipe.IsConnected ở đây (xem ghi chú ở đầu file):
+        // chỉ thoát khi ReadLineAsync trả về null (server đóng) hoặc ném
+        // exception — cả hai đều phải ghi log.
+        while (!ct.IsCancellationRequested)
+        {
+            string? line = await reader.ReadLineAsync();
+            if (line is null)
+            {
+                _log.Warning("IPC: Service đã đóng kết nối, thử lại sau 5 giây.");
+                return;
+            }
+
+            IpcMessage? message = IpcMessage.FromLine(line);
+            if (message is not null)
+            {
+                MessageReceived?.Invoke(message);
+            }
+        }
+    }
+
     /// <summary>Gửi một message lên Service. Bỏ qua (ghi log) nếu chưa kết nối.</summary>
     public async Task SendAsync(IpcMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
 
         StreamWriter? writer = _writer;
-        if (writer is null || _pipe is not { IsConnected: true })
+        if (writer is null)
         {
             _log.Warning("IPC: chưa kết nối tới Service, bỏ qua message " + message.Type + ".");
             return;
         }
+
+        // Không kiểm tra _pipe.IsConnected (xem ghi chú ở đầu file): cứ ghi,
+        // lỗi ghi sẽ hiện rõ trong log và vòng đọc sẽ tự nối lại.
 
         await _writeGate.WaitAsync();
         try
