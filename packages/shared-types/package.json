@@ -1,0 +1,1 @@
+{"description":"Type contract dùng chung giữa Dashboard, PC Agent và Backend của SafePC (chỉ TypeScript types, không code runtime).","devDependencies":{"typescript":"^5.9.0"},"exports":{".":{"types":"./src/index.ts"}},"files":["src"],"name":"@safepc/shared-types","private":true,"scripts":{"check":"tsc -p tsconfig.json"},"types":"./src/index.ts","version":"0.1.0"}
