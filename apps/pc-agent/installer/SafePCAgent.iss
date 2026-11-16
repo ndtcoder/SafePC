@@ -54,6 +54,23 @@ Filename: "{sys}\sc.exe"; Parameters: "start SafePCAgent"; Flags: runhidden
 Filename: "{app}\Tray\SafePC.Agent.Tray.exe"; Description: "Khởi động SafePC Tray"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+; Dừng Tray đang chạy trước: nếu không, icon Tray vẫn còn sau khi gỡ và
+; process cũ giữ khóa file khi cài đè (lỗi gặp trên máy thật ngày 2026-11-16).
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM SafePC.Agent.Tray.exe"; Flags: runhidden
 ; Dừng và xóa Service khi gỡ cài đặt. TODO Sprint 4: yêu cầu mã PIN trước.
 Filename: "{sys}\sc.exe"; Parameters: "stop SafePCAgent"; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "delete SafePCAgent"; Flags: runhidden
+
+[Code]
+// Trước khi cài (kể cả cài đè bản cũ): dừng Tray và Service đang chạy để
+// file không bị khóa khi ghi đè. Lỗi (không có process/service) thì bỏ qua.
+// Ghi chú 2026-11-16: trước đây gỡ cài đặt không dừng Tray nên icon vẫn còn
+// sau khi gỡ, và cài đè lên process đang chạy gây ra bản cài chắp vá.
+function PrepareToInstall(): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM SafePC.Agent.Tray.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\sc.exe'), 'stop SafePCAgent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
