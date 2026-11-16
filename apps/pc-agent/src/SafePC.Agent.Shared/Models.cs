@@ -39,6 +39,7 @@ public static class RuleTypes
 {
     public const string DailyLimit = "daily_limit";
     public const string Bedtime = "bedtime";
+    public const string TimeWindow = "time_window";
     public const string App = "app";
     public const string Website = "website";
 }
@@ -50,6 +51,7 @@ public static class CommandTypes
     public const string Unlock = "unlock";
     public const string RefreshRules = "refresh_rules";
     public const string Update = "update";
+    public const string TemporaryOverride = "temporary_override";
 }
 
 /// <summary>Khớp bảng <c>rules</c>. Cột <c>config</c> là JSONB, giữ nguyên dạng JsonElement.</summary>
