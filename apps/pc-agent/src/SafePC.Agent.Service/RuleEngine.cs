@@ -17,9 +17,10 @@ public sealed record RuleDecision(RuleDecisionKind Kind, string Reason, int Minu
 
 /// <summary>
 /// Đánh giá rules từ cache local (thuần logic, không I/O — dễ kiểm thử).
-/// Thứ tự ưu tiên: ghi đè tạm thời (khóa/mở) trước, rồi bedtime, rồi khung
-/// giờ được dùng, rồi giới hạn ngày. Trong các quyết định cảnh báo, ngưỡng
-/// gần nhất (ít phút còn lại nhất) thắng.
+/// Thứ tự ưu tiên: khóa cưỡng chế của phụ huynh (lệnh lock_now, tồn tại tới
+/// khi có lệnh unlock) trước, rồi ghi đè tạm thời (khóa/mở), rồi bedtime,
+/// rồi khung giờ được dùng, rồi giới hạn ngày. Trong các quyết định cảnh
+/// báo, ngưỡng gần nhất (ít phút còn lại nhất) thắng.
 ///
 /// Mọi giờ giấc đều theo GIỜ ĐỊA PHƯƠNG của máy con. Quy ước thứ: số 0-6
 /// khớp <see cref="DayOfWeek"/> của C# và <c>Date.getDay()</c> của JS
@@ -48,9 +49,17 @@ public sealed class RuleEngine
         TimeSpan usedToday,
         DateTimeOffset now,
         string? foregroundAppName,
-        TemporaryOverride? activeOverride)
+        TemporaryOverride? activeOverride,
+        bool forcedLock)
     {
         ArgumentNullException.ThrowIfNull(rules);
+
+        // Khóa cưỡng chế của phụ huynh (lệnh lock_now) có độ ưu tiên cao
+        // nhất, tồn tại tới khi có lệnh unlock — kể cả sau khởi động lại.
+        if (forcedLock)
+        {
+            return new RuleDecision(RuleDecisionKind.Lock, "Phụ huynh đã khóa máy.", 0);
+        }
 
         int bonusMinutes = 0;
         if (activeOverride is not null && activeOverride.ExpiresAt > now)

@@ -9,6 +9,9 @@ namespace SafePC.Agent.Service;
 /// <summary>Một bản ghi chờ gửi trong bảng outbox.</summary>
 public sealed record OutboxItem(long Id, string PayloadJson);
 
+/// <summary>Tổng hợp mẫu foreground theo app trong một khoảng thời gian, để gửi lên server.</summary>
+public sealed record UsageSummary(string AppName, string? ExePathHash, long SampleCount, DateTimeOffset FirstSampledAt, DateTimeOffset LastSampledAt);
+
 /// <summary>
 /// Lưu trữ local SQLite cho Service (offline-first, docs/02-ARCHITECTURE.md mục 4.2):
 /// - Bảng <c>outbox</c>: usage batch chưa gửi, retry với backoff.
@@ -17,6 +20,13 @@ public sealed record OutboxItem(long Id, string PayloadJson);
 ///   thời gian đã dùng hôm nay.
 /// - Bảng <c>active_override</c>: ghi đè tạm thời đang hiệu lực (tối đa 1 hàng),
 ///   để ghi đè không bị mất khi Service khởi động lại và vẫn hết hạn đúng giờ.
+/// - Bảng <c>device_state</c>: trạng thái bền vững dạng khóa/giá trị (khóa
+///   cưỡng chế của phụ huynh, watermark đẩy usage).
+///
+/// Mẫu foreground trong <c>usage_samples</c> KHÔNG bị xóa khi đã gửi lên
+/// server (việc đếm giờ hôm nay cho daily_limit vẫn cần chúng); việc đẩy
+/// usage dùng watermark (xem <see cref="GetUsageSummaryAsync"/>) và mẫu cũ
+/// hơn 7 ngày được dọn định kỳ.
 ///
 /// Mọi câu lệnh đều dùng tham số (parameterized) — không nối chuỗi SQL.
 /// </summary>
@@ -74,6 +84,10 @@ public sealed class OutboxStore
                 minutes INTEGER NOT NULL,
                 expires_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS device_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );
             """;
         await command.ExecuteNonQueryAsync(ct);
@@ -353,20 +367,130 @@ public sealed class OutboxStore
     }
 
     /// <summary>
-    /// Ước lượng thời gian đã dùng hôm nay (UTC) = số mẫu x 15 giây/mẫu.
-    /// TODO Sprint 1: thay bằng tổng hợp theo phiên (session) chính xác hơn và
-    /// tổng hợp thành UsageRecord gửi lên server, kèm dọn mẫu cũ.
+    /// Ước lượng thời gian đã dùng "hôm nay" theo NGÀY ĐỊA PHƯƠNG của máy con
+    /// (quy tắc daily_limit tính theo giờ local) = số mẫu trong [nửa đêm
+    /// local hôm nay, nửa đêm local ngày mai) x 15 giây/mẫu. Mẫu lưu theo giờ
+    /// UTC nên ranh giới ngày local được đổi sang UTC trước khi so sánh chuỗi.
     /// </summary>
     public async Task<TimeSpan> GetUsageTodayAsync(CancellationToken ct)
     {
+        DateTimeOffset localNow = DateTimeOffset.Now;
+        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
+        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
 
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM usage_samples WHERE substr(sampled_at, 1, 10) = $today;";
-        command.Parameters.AddWithValue("$today", DateTimeOffset.UtcNow.ToString("yyyy-MM-dd"));
+        command.CommandText = "SELECT COUNT(*) FROM usage_samples WHERE sampled_at >= $from AND sampled_at < $to;";
+        command.Parameters.AddWithValue("$from", from);
+        command.Parameters.AddWithValue("$to", to);
         object? value = await command.ExecuteScalarAsync(ct);
         long count = value is long c ? c : 0;
         return TimeSpan.FromSeconds(count * AgentConstants.ForegroundSampleInterval.TotalSeconds);
+    }
+
+    /// <summary>Đọc một giá trị trạng thái bền vững của Service. Null khi chưa có.</summary>
+    public async Task<string?> GetStateAsync(string key, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM device_state WHERE key = $key;";
+        command.Parameters.AddWithValue("$key", key);
+        object? value = await command.ExecuteScalarAsync(ct);
+        return value as string;
+    }
+
+    /// <summary>Ghi (hoặc ghi đè) một giá trị trạng thái bền vững của Service.</summary>
+    public async Task SetStateAsync(string key, string value, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        ArgumentNullException.ThrowIfNull(value);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO device_state (key, value) VALUES ($key, $value)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """;
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Xóa một giá trị trạng thái bền vững của Service.</summary>
+    public async Task DeleteStateAsync(string key, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM device_state WHERE key = $key;";
+        command.Parameters.AddWithValue("$key", key);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Tổng hợp mẫu foreground mới hơn <paramref name="since"/> theo từng app
+    /// (số mẫu x 15 giây/mẫu = thời lượng ước lượng), để gửi lên server.
+    /// Nhóm theo cả tên app và hash exe để hai app trùng tên nhưng khác file
+    /// không bị gộp chung.
+    /// </summary>
+    public async Task<IReadOnlyList<UsageSummary>> GetUsageSummaryAsync(DateTimeOffset since, CancellationToken ct)
+    {
+        var summaries = new List<UsageSummary>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT app_name, exe_path_hash, COUNT(*), MIN(sampled_at), MAX(sampled_at)
+            FROM usage_samples
+            WHERE sampled_at > $since
+            GROUP BY app_name, exe_path_hash
+            ORDER BY MIN(sampled_at) ASC;
+            """;
+        command.Parameters.AddWithValue("$since", since.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string appName = reader.GetString(0);
+            string? hash = reader.IsDBNull(1) ? null : reader.GetString(1);
+            long count = reader.GetInt64(2);
+            if (!DateTimeOffset.TryParse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset first)
+                || !DateTimeOffset.TryParse(reader.GetString(4), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset last))
+            {
+                continue;
+            }
+
+            summaries.Add(new UsageSummary(appName, hash, count, first, last));
+        }
+
+        return summaries;
+    }
+
+    /// <summary>Xóa mẫu foreground cũ hơn <paramref name="maxAge"/> (mặc định 7 ngày).</summary>
+    public async Task PruneOldSamplesAsync(TimeSpan maxAge, CancellationToken ct)
+    {
+        string cutoff = DateTimeOffset.UtcNow.Subtract(maxAge).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM usage_samples WHERE sampled_at < $cutoff;";
+        command.Parameters.AddWithValue("$cutoff", cutoff);
+        await command.ExecuteNonQueryAsync(ct);
     }
 }

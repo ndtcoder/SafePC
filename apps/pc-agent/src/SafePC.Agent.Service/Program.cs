@@ -15,6 +15,18 @@ using SafePC.Agent.Shared;
 
 var builder = Host.CreateDefaultBuilder(args);
 
+// Lệnh ghép nối chạy một lần, không khởi động Service:
+//   SafePC.Agent.Service.exe pair 123456 [--force]
+if (args.Length > 0 && args[0].Equals("pair", StringComparison.OrdinalIgnoreCase))
+{
+    return await PairingCli.RunAsync(args[1..]);
+}
+
+// Service do SCM khởi động với thư mục làm việc là C:\Windows\System32, nên
+// phải cố định content root về thư mục chứa exe — nếu không, appsettings.json
+// (URL + khóa Supabase) sẽ không được nạp và đồng bộ im lặng không chạy.
+builder.UseContentRoot(AppContext.BaseDirectory);
+
 builder.UseWindowsService(options =>
 {
     options.ServiceName = AgentConstants.ServiceName;
