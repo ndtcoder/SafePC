@@ -57,23 +57,71 @@ Filename: "{app}\Tray\SafePC.Agent.Tray.exe"; Description: "Khởi động SafeP
 ; Dừng Tray đang chạy trước: nếu không, icon Tray vẫn còn sau khi gỡ và
 ; process cũ giữ khóa file khi cài đè (lỗi gặp trên máy thật ngày 2026-11-16).
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM SafePC.Agent.Tray.exe"; Flags: runhidden
-; Dừng và xóa Service khi gỡ cài đặt. TODO Sprint 4: yêu cầu mã PIN trước.
-Filename: "{sys}\sc.exe"; Parameters: "stop SafePCAgent"; Flags: runhidden
+; Dừng và xóa Service khi gỡ cài đặt. net stop chờ dừng hẳn (sc.exe stop thì
+; không). TODO Sprint 4: yêu cầu mã PIN trước.
+Filename: "{sys}\net.exe"; Parameters: "stop SafePCAgent /y"; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "delete SafePCAgent"; Flags: runhidden
 
 [Code]
-// Trước khi cài (kể cả cài đè bản cũ): dừng Tray và Service đang chạy để
-// file không bị khóa khi ghi đè. Lỗi (không có process/service) thì bỏ qua.
+// Trước khi cài (kể cả cài đè bản cũ): dừng Tray và Service đang chạy, và
+// ĐỢI chúng thoát/dừng hẳn rồi mới ghi đè file. Lỗi (không có
+// process/service) thì bỏ qua.
 // Ghi chú 2026-11-16: trước đây gỡ cài đặt không dừng Tray nên icon vẫn còn
-// sau khi gỡ, và cài đè lên process đang chạy gây ra bản cài chắp vá.
+// sau khi gỡ, và cài đè lên process đang chạy gây ra bản cài chắp vá
+// (thiếu file UIAutomationTypes.dll trên máy thật). Ngoài ra sc.exe stop
+// trả về ngay khi vừa YÊU CẦU dừng, file Service vẫn bị khóa lúc ghi đè —
+// nên dùng net stop (chờ dừng hẳn) và vòng đợi Tray thoát hẳn.
 // Lưu ý: prototype phải đúng dạng event function của Inno Setup
 // (var NeedsRestart: Boolean), khai báo không tham số thì ISCC báo
 // "Invalid prototype" (gặp ở CI run #47, 2026-11-16).
+
+// Kiểm tra process Tray còn chạy không (qua tasklist).
+function IsTrayRunning(): Boolean;
+var
+  ResultCode: Integer;
+  TempFile: String;
+  Lines: TArrayOfString;
+  I: Integer;
+begin
+  Result := False;
+  TempFile := ExpandConstant('{tmp}\safepc_tasklist.txt');
+  Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq SafePC.Agent.Tray.exe" /NH > "' + TempFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if LoadStringsFromFile(TempFile, Lines) then
+  begin
+    for I := 0 to GetArrayLength(Lines) - 1 do
+    begin
+      if Pos('SafePC.Agent.Tray.exe', Lines[I]) > 0 then
+      begin
+        Result := True;
+        Break;
+      end;
+    end;
+  end;
+  DeleteFile(TempFile);
+end;
+
+// Đợi Tray thoát hẳn, tối đa TimeoutMs. Trả về True nếu đã thoát.
+function WaitForTrayExit(TimeoutMs: Integer): Boolean;
+var
+  Elapsed: Integer;
+begin
+  Elapsed := 0;
+  while IsTrayRunning() and (Elapsed < TimeoutMs) do
+  begin
+    Sleep(500);
+    Elapsed := Elapsed + 500;
+  end;
+  Result := not IsTrayRunning();
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
+  // Dừng Tray ở mọi session rồi đợi thoát hẳn (tối đa 10 giây).
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM SafePC.Agent.Tray.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop SafePCAgent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  WaitForTrayExit(10000);
+  // net stop CHỜ service dừng hẳn mới trả về (sc.exe stop thì không).
+  Exec(ExpandConstant('{sys}\net.exe'), 'stop SafePCAgent /y', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := '';
 end;
