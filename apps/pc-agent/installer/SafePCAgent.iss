@@ -66,7 +66,10 @@ Filename: "{sys}\sc.exe"; Parameters: "delete SafePCAgent"; Flags: runhidden
 // file không bị khóa khi ghi đè. Lỗi (không có process/service) thì bỏ qua.
 // Ghi chú 2026-11-16: trước đây gỡ cài đặt không dừng Tray nên icon vẫn còn
 // sau khi gỡ, và cài đè lên process đang chạy gây ra bản cài chắp vá.
-function PrepareToInstall(): String;
+// Lưu ý: prototype phải đúng dạng event function của Inno Setup
+// (var NeedsRestart: Boolean), khai báo không tham số thì ISCC báo
+// "Invalid prototype" (gặp ở CI run #47, 2026-11-16).
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
