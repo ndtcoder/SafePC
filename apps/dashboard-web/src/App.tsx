@@ -1,0 +1,52 @@
+import { Navigate, Route, Routes } from 'react-router-dom'
+import Layout from './components/Layout'
+import { useAuth } from './context/AuthContext'
+import { Spinner } from './components/ui'
+import LoginPage from './pages/LoginPage'
+import TodayPage from './pages/TodayPage'
+import DevicesPage from './pages/DevicesPage'
+import RulesPage from './pages/RulesPage'
+import RequestsPage from './pages/RequestsPage'
+
+/**
+ * Bảo vệ các trang bên trong:
+ * - Khi đã cấu hình Supabase mà chưa đăng nhập -> chuyển tới trang đăng nhập.
+ * - Khi CHƯA cấu hình Supabase -> vẫn cho xem các trang để thấy hướng dẫn
+ *   cấu hình (không có dữ liệu thật, không gọi API giả).
+ */
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { configured, user, loading } = useAuth()
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Spinner label="Đang kiểm tra phiên đăng nhập…" />
+      </div>
+    )
+  }
+  if (configured && !user) {
+    return <Navigate to="/dang-nhap" replace />
+  }
+  return <>{children}</>
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/dang-nhap" element={<LoginPage />} />
+      <Route
+        element={
+          <RequireAuth>
+            <Layout />
+          </RequireAuth>
+        }
+      >
+        <Route path="/" element={<Navigate to="/hom-nay" replace />} />
+        <Route path="/hom-nay" element={<TodayPage />} />
+        <Route path="/thiet-bi" element={<DevicesPage />} />
+        <Route path="/quy-tac" element={<RulesPage />} />
+        <Route path="/yeu-cau" element={<RequestsPage />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/hom-nay" replace />} />
+    </Routes>
+  )
+}
