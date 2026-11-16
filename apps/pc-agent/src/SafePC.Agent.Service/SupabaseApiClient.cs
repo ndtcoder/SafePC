@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -260,7 +261,9 @@ public sealed class SupabaseApiClient
     /// publishable (header đã gắn ở constructor), và đã pairing (có token).
     /// Đọc token ở mỗi lần gọi để Service đang chạy tự nhận ghép nối mới.
     /// </summary>
-    private bool TryGetCredentials(out DeviceCredentials? credentials, out string? reason)
+    private bool TryGetCredentials(
+        [NotNullWhen(true)] out DeviceCredentials? credentials,
+        out string? reason)
     {
         credentials = null;
 

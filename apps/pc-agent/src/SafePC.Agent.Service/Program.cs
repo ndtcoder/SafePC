@@ -53,3 +53,7 @@ builder.ConfigureServices((context, services) =>
 
 var host = builder.Build();
 await host.RunAsync();
+
+// Nhánh "pair" ở trên trả về int, nên mọi đường đi của top-level statements
+// đều phải trả về int (CS0161 nếu thiếu) — Service dừng bình thường là 0.
+return 0;
