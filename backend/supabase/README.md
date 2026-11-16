@@ -17,6 +17,7 @@ hash token/PIN/mã, chỉ lưu domain không lưu full URL).
 backend/supabase/
   migrations/
     20261116102900_init_safepc.sql   # Schema + RLS (12 bảng, 14 policy)
+    20261116120000_sprint2_rule_types.sql  # Sprint 2 đợt 1: thêm type time_window + temporary_override
   functions/
     pair-device/index.ts             # Edge Function stub đổi pairing code -> device token
   README.md                          # File này
