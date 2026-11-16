@@ -1,4 +1,1 @@
-# Vercel: SPA fallback — mọi route đều trả về index.html để React Router xử lý.
-{
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
-}
+{"rewrites":[{"destination":"/index.html","source":"/(.*)"}]}
