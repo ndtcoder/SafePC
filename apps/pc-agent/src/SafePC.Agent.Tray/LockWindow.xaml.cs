@@ -52,6 +52,20 @@ public partial class LockWindow : Window
         CountdownText.Text = "Máy sẽ khóa sau " + _secondsLeft + " giây.";
     }
 
+    /// <summary>
+    /// Khóa lại ngay khi Service nhắc lại lệnh khóa (giờ nghỉ bắt buộc nhắc
+    /// mỗi 15 giây): chỉ khi cửa sổ đã khóa rồi (hết đếm ngược, con đăng
+    /// nhập lại sớm) thì gọi LockWorkStation lại ngay; đang đếm ngược thì
+    /// không làm gì — đếm ngược KHÔNG khởi động lại.
+    /// </summary>
+    public void ReassertLock()
+    {
+        if (_locked)
+        {
+            LockWorkStation();
+        }
+    }
+
     private void ExtraTimeButton_Click(object sender, RoutedEventArgs e)
     {
         _showExtraTime();

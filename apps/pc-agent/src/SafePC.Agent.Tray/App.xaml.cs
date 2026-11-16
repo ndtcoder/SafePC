@@ -126,12 +126,20 @@ public partial class App : System.Windows.Application
 
                 case IpcMessageTypes.Lock:
                     LockPayload? lockPayload = message.GetPayload<LockPayload>();
-                    _lockWindow ??= new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime) { Owner = _anchor };
-                    if (!_lockWindow.IsVisible)
+                    if (_lockWindow is { IsVisible: true })
                     {
-                        _lockWindow.Show();
+                        // Màn hình khóa đã hiện: nhắc lại lệnh khóa (VD: giờ
+                        // nghỉ bắt buộc nhắc mỗi 15 giây) thì khóa lại ngay
+                        // nếu đã hết đếm ngược, không khởi động lại đếm ngược.
+                        _lockWindow.ReassertLock();
+                        _lockWindow.Activate();
                     }
-                    _lockWindow.Activate();
+                    else
+                    {
+                        _lockWindow ??= new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime) { Owner = _anchor };
+                        _lockWindow.Show();
+                        _lockWindow.Activate();
+                    }
                     break;
 
                 case IpcMessageTypes.Unlock:
