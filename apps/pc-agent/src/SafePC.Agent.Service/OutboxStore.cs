@@ -167,7 +167,7 @@ public sealed class OutboxStore
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
 
-        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(ct);
         try
         {
             await using (var delete = connection.CreateCommand())

@@ -110,7 +110,7 @@ public sealed class IpcPipeServer : BackgroundService
             PipeAccessRights.ReadWrite,
             AccessControlType.Allow));
 
-        return new NamedPipeServerStream(
+        return NamedPipeServerStreamAcl.Create(
             AgentConstants.IpcPipeName,
             PipeDirection.InOut,
             maxNumberOfServerInstances: 1,
