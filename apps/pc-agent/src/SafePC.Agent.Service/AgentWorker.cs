@@ -747,10 +747,15 @@ public sealed class AgentWorker : BackgroundService
                             // Chuyển từ khóa sang cho phép (hết giờ ngủ, hết
                             // khung cấm, ghi đè hết hạn...): báo Tray đóng
                             // màn hình khóa, nếu không cửa sổ khóa sẽ ở lại
-                            // dù rules đã cho phép.
-                            _lockSent = false;
+                            // dù rules đã cho phép. Chỉ xóa cờ khi gửi thành
+                            // công tới ≥1 Tray (review batch #5): gửi rớt thì
+                            // tick sau gửi lại.
                             _log.Info("Hết điều kiện khóa. Báo Tray đóng màn hình khóa.");
-                            await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                            int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                            if (unlockSent > 0)
+                            {
+                                _lockSent = false;
+                            }
                         }
                         break;
 
@@ -1577,8 +1582,14 @@ public sealed class AgentWorker : BackgroundService
 
             case CommandTypes.Unlock:
                 await _outbox.DeleteStateAsync(StateKeys.ForcedLock, ct);
-                _lockSent = false;
-                await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
+                // gửi rớt thì tick sau gửi lại từ quyết định Allowed.
+                int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                if (unlockSent > 0)
+                {
+                    _lockSent = false;
+                }
+
                 return true;
 
             case CommandTypes.RefreshRules:
@@ -1629,7 +1640,11 @@ public sealed class AgentWorker : BackgroundService
         if (action == OverrideActions.Cancel)
         {
             await _outbox.ClearOverrideAsync(ct);
-            _lockSent = false;
+            // KHÔNG xóa _lockSent ở đây (review batch #5): nếu màn hình khóa
+            // đang hiện mà cờ bị xóa trước, tick sau quyết định Allowed nhưng
+            // nhánh Allowed thấy cờ đã false nên không gửi Unlock và màn hình
+            // khóa ở lại tới khi đếm ngược khóa phiên. Để tick sau tự gửi
+            // Unlock qua nhánh Allowed rồi mới xóa cờ.
             _log.Info("Đã hủy ghi đè tạm thời theo lệnh phụ huynh.");
             await _publisher.PublishAsync(ct);
             return true;
@@ -1721,8 +1736,13 @@ public sealed class AgentWorker : BackgroundService
         }
         else if (!isDomainAction && action == OverrideActions.Unlock)
         {
-            _lockSent = false;
-            await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+            // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
+            // gửi rớt thì tick sau gửi lại từ ghi đè đang hiệu lực.
+            int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+            if (unlockSent > 0)
+            {
+                _lockSent = false;
+            }
         }
 
         return true;

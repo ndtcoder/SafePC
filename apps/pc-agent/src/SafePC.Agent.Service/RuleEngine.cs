@@ -17,10 +17,11 @@ public sealed record RuleDecision(RuleDecisionKind Kind, string Reason, int Minu
 
 /// <summary>
 /// Đánh giá rules từ cache local (thuần logic, không I/O — dễ kiểm thử).
-/// Thứ tự ưu tiên: khóa cưỡng chế của phụ huynh (lệnh lock_now, tồn tại tới
-/// khi có lệnh unlock) trước, rồi ghi đè tạm thời (khóa/mở), rồi bedtime,
-/// rồi khung giờ được dùng, rồi giới hạn ngày. Trong các quyết định cảnh
-/// báo, ngưỡng gần nhất (ít phút còn lại nhất) thắng.
+/// Thứ tự ưu tiên: ghi đè mở khóa tạm thời còn hạn thắng cả khóa cưỡng chế,
+/// rồi khóa cưỡng chế của phụ huynh (lệnh lock_now, tồn tại tới khi có lệnh
+/// unlock), rồi ghi đè khóa tạm thời, rồi bedtime, rồi khung giờ được dùng,
+/// rồi giới hạn ngày. Trong các quyết định cảnh báo, ngưỡng gần nhất (ít
+/// phút còn lại nhất) thắng.
 ///
 /// Mọi giờ giấc đều theo GIỜ ĐỊA PHƯƠNG của máy con. Quy ước thứ: số 0-6
 /// khớp <see cref="DayOfWeek"/> của C# và <c>Date.getDay()</c> của JS
@@ -56,8 +57,22 @@ public sealed class RuleEngine
     {
         ArgumentNullException.ThrowIfNull(rules);
 
+        // Ghi đè MỞ KHÓA TẠM THỜI thắng cả khóa cưỡng chế trong thời hạn
+        // của nó (sửa 17/11/2026): nút "Mở khóa ngay" trên Dashboard gửi
+        // temporary_override action unlock — nếu khóa cưỡng chế được kiểm
+        // tra trước, nút này không bao giờ có tác dụng khi máy đang bị
+        // khóa cưỡng chế (log thật 17/11: ghi đè unlock đã lưu nhưng quyết
+        // định vẫn Lock). Hết hạn ghi đè thì khóa cưỡng chế tự có hiệu lực
+        // trở lại ở kỳ đánh giá sau; cờ khóa cưỡng chế không bị xóa.
+        if (activeOverride is not null && activeOverride.ExpiresAt > now
+            && activeOverride.Action == OverrideActions.Unlock)
+        {
+            return new RuleDecision(RuleDecisionKind.Allowed, string.Empty, int.MaxValue);
+        }
+
         // Khóa cưỡng chế của phụ huynh (lệnh lock_now) có độ ưu tiên cao
-        // nhất, tồn tại tới khi có lệnh unlock — kể cả sau khởi động lại.
+        // nhất sau ghi đè mở khóa tạm thời, tồn tại tới khi có lệnh unlock
+        // — kể cả sau khởi động lại.
         if (forcedLock)
         {
             return new RuleDecision(RuleDecisionKind.Lock, "Phụ huynh đã khóa máy.", 0);
@@ -85,10 +100,8 @@ public sealed class RuleEngine
                 return new RuleDecision(RuleDecisionKind.Lock, "Phụ huynh đã khóa máy tạm thời.", 0);
             }
 
-            if (activeOverride.Action == OverrideActions.Unlock)
-            {
-                return new RuleDecision(RuleDecisionKind.Allowed, string.Empty, int.MaxValue);
-            }
+            // Unlock còn hạn đã return ở khối trên (thắng cả khóa cưỡng chế)
+            // nên tới đây không còn nhánh Unlock nào — không thêm lại.
 
             if (activeOverride.Action == OverrideActions.BonusMinutes)
             {

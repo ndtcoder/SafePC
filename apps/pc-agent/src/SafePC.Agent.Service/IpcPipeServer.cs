@@ -4,6 +4,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using SafePC.Agent.Shared;
 
@@ -105,6 +106,11 @@ public sealed class IpcPipeServer : BackgroundService
             writers = _clientWriters.ToList();
         }
 
+        // Chẩn đoán 17/11/2026: ghi mọi lần gửi kèm số writer đang nối —
+        // log bản 0.1.122 cho thấy handler đã bắt đầu đọc nhưng mọi lần gửi
+        // đều thấy danh sách rỗng; dòng này cho biết phía gửi nhìn thấy gì.
+        _log.Info("IPC: gửi message " + message.Type + " (đang nối: " + writers.Count + " writer).");
+
         if (writers.Count == 0)
         {
             bool due;
@@ -155,7 +161,7 @@ public sealed class IpcPipeServer : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    _log.Error("IPC: không gửi được message tới một Tray, gỡ khỏi danh sách.", ex);
+                    _log.Error("IPC: không gửi được message tới một Tray (writer #" + writer.GetHashCode() + "), gỡ khỏi danh sách.", ex);
                     lock (_writersLock)
                     {
                         _clientWriters.Remove(writer);
@@ -316,79 +322,123 @@ public sealed class IpcPipeServer : BackgroundService
         _log.Info("IPC: handler #" + handlerId + " bắt đầu đọc từ Tray App.");
 
         StreamWriter? writer = null;
+        long receivedCount = 0;
         try
         {
             using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
             writer = new StreamWriter(server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            int writerCount;
             lock (_writersLock)
             {
                 _clientWriters.Add(writer);
+                writerCount = _clientWriters.Count;
             }
+
+            // Chẩn đoán 17/11/2026: dòng này chứng minh handler đã đăng ký
+            // writer — log bản 0.1.122 cho thấy handler bắt đầu đọc nhưng
+            // mọi lần gửi đều thấy danh sách rỗng.
+            _log.Info("IPC: handler #" + handlerId + " đã đăng ký writer #" + writer.GetHashCode() + " (tổng " + writerCount + " writer).");
 
             // KHÔNG kiểm tra server.IsConnected (cờ này không đáng tin —
             // xem ghi chú ở IpcPipeClient): chỉ thoát khi đọc được null,
             // ném exception, Service dừng, hoặc idle quá 120 giây.
             //
-            // IDLE TIMEOUT BẰNG DISPOSE (sửa 17/11/2026): mẫu cũ dùng
-            // CancelAfter(120s) + ReadLineAsync(token) KHÔNG hoạt động —
-            // log thật ngày 17/11 cho thấy handler đọc kẹt 28 phút không
-            // dòng nào mà timeout không bao giờ kích hoạt: hủy token
-            // không abort được lần đọc pipe đang chờ qua StreamReader.
-            // Mẫu mới: đua Task.WhenAny giữa lần đọc và Task.Delay; quá
-            // hạn thì dispose stream (việc này giải phóng lần đọc đang
-            // chờ) rồi chờ lần đọc bị bỏ kết thúc trước khi thoát vòng.
-            // Stream được dispose lại ở finally — dispose hai lần an toàn.
-            while (!ct.IsCancellationRequested)
+            // ĐỌC BẰNG THREAD RIÊNG (sửa 17/11/2026): mẫu WhenAny giữa
+            // ReadLineAsync và Task.Delay KHÔNG hoạt động trên máy thật —
+            // log bản 0.1.122 cho thấy cả hai phía kẹt mãi sau khi nối,
+            // timeout 120s không bao giờ kích hoạt dù Task.Delay ở vòng
+            // kiểm tra rules vẫn chạy đúng chu kỳ. Mẫu mới: một thread đọc
+            // đồng bộ (ReadLine chặn) đẩy dòng vào Channel; vòng xử lý
+            // async đọc Channel; watchdog riêng dispose stream khi im lặng
+            // quá 120s để giải phóng lần đọc đang chặn. Không còn WhenAny
+            // nào dính tới lần đọc pipe.
+            Channel<string> channel = Channel.CreateUnbounded<string>(
+                new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+            long lastActivityTicks = DateTimeOffset.UtcNow.UtcTicks;
+
+            Task readerTask = Task.Run(() =>
             {
-                Task<string?> readTask = reader.ReadLineAsync();
-                Task timeoutTask = Task.Delay(IdleTimeout, ct);
-                Task done = await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false);
-                if (done == timeoutTask)
+                try
                 {
-                    if (!ct.IsCancellationRequested)
+                    while (true)
                     {
-                        _log.Warning("IPC: handler #" + handlerId + " idle quá 120 giây không có dòng nào, thu hồi kết nối (giải phóng pipe instance).");
-                    }
+                        string? readLine = reader.ReadLine();
+                        if (readLine is null)
+                        {
+                            _log.Info("IPC: handler #" + handlerId + " — Tray App đã đóng kết nối (EOF).");
+                            break;
+                        }
 
-                    try
-                    {
-                        server.Dispose();
+                        channel.Writer.TryWrite(readLine);
                     }
-                    catch
-                    {
-                        // Bỏ qua lỗi đóng stream cũ.
-                    }
-
-                    try
-                    {
-                        await readTask.ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Lần đọc bị bỏ kết thúc bằng lỗi sau khi dispose.
-                    }
-
-                    break;
                 }
-
-                string? line = await readTask.ConfigureAwait(false);
-                if (line is null)
+                catch (Exception ex) when (ex is IOException or ObjectDisposedException)
                 {
-                    _log.Info("IPC: handler #" + handlerId + " — Tray App đã đóng kết nối (EOF).");
-                    break;
+                    // Pipe đóng/gãy (kể cả do watchdog dispose khi idle):
+                    // thoát thread đọc, vòng xử lý kết thúc khi Channel đóng.
                 }
+                catch (Exception ex)
+                {
+                    _log.Error("IPC: handler #" + handlerId + " lỗi thread đọc.", ex);
+                }
+                finally
+                {
+                    channel.Writer.TryComplete();
+                }
+            }, ct);
+
+            // Watchdog idle: kiểm tra mỗi 30s, im lặng quá 120s thì dispose
+            // stream (giải phóng ReadLine đang chặn) rồi thoát. Dùng CTS
+            // riêng nối với ct để vòng xử lý hủy watchdog ngay khi Channel
+            // đóng (không chờ tới kỳ kiểm tra 30s sau).
+            using var watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // Chụp token trước Task.Run: getter Token ném ObjectDisposedException
+            // sau khi CTS bị dispose (review batch #5) — token đã chụp thì an toàn.
+            CancellationToken watchdogToken = watchdogCts.Token;
+            Task watchdogTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!watchdogToken.IsCancellationRequested)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), watchdogToken).ConfigureAwait(false);
+                        long idleTicks = DateTimeOffset.UtcNow.UtcTicks - Volatile.Read(ref lastActivityTicks);
+                        if (TimeSpan.FromTicks(idleTicks) > IdleTimeout)
+                        {
+                            _log.Warning("IPC: handler #" + handlerId + " idle quá 120 giây không có dòng nào, thu hồi kết nối (giải phóng pipe instance).");
+                            try
+                            {
+                                server.Dispose();
+                            }
+                            catch
+                            {
+                                // Bỏ qua lỗi đóng stream cũ.
+                            }
+
+                            break;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Service dừng hoặc Channel đã đóng: watchdog thoát.
+                }
+            }, watchdogToken);
+
+            await foreach (string line in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                Volatile.Write(ref lastActivityTicks, DateTimeOffset.UtcNow.UtcTicks);
+                receivedCount++;
 
                 IpcMessage? message = IpcMessage.FromLine(line);
                 if (message is not null)
                 {
                     // Xử lý message có giới hạn chờ 15 giây: một lần ghi DB
-                    // kẹt không được treo vòng đọc của handler mãi (vòng đọc
-                    // treo thì idle timeout không bao giờ tới và pipe instance
-                    // không bao giờ được giải phóng). Quá hạn thì bỏ chờ,
+                    // kẹt không được treo vòng xử lý mãi. Quá hạn thì bỏ chờ,
                     // ghi log và đọc tiếp — tác vụ nền vẫn chạy, lỗi muộn
                     // của nó vẫn được ghi log.
                     Task handleTask = HandleMessageAsync(message, ct);
-                    Task finished = await Task.WhenAny(handleTask, Task.Delay(TimeSpan.FromSeconds(15)));
+                    Task finished = await Task.WhenAny(handleTask, Task.Delay(TimeSpan.FromSeconds(15), ct)).ConfigureAwait(false);
                     if (ct.IsCancellationRequested)
                     {
                         break;
@@ -404,9 +454,43 @@ public sealed class IpcPipeServer : BackgroundService
                     else
                     {
                         // Ném lại exception (nếu có) vào catch của handler.
-                        await handleTask;
+                        await handleTask.ConfigureAwait(false);
                     }
                 }
+            }
+
+            // Channel đã đóng (thread đọc thoát): hủy watchdog, dispose
+            // stream để giải phóng ReadLine đang chặn (đường break khi
+            // Service dừng: không có gì dispose stream trước lần await này
+            // thì await readerTask treo mãi — review batch #5), rồi chờ cả
+            // hai task kết thúc hẳn trước khi finally dọn writer/stream.
+            // Dispose lại ở finally là an toàn.
+            watchdogCts.Cancel();
+            try
+            {
+                server.Dispose();
+            }
+            catch
+            {
+                // Bỏ qua lỗi đóng stream cũ.
+            }
+
+            try
+            {
+                await readerTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Thread đọc đã ghi log lỗi của nó; không ném thêm.
+            }
+
+            try
+            {
+                await watchdogTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Watchdog dừng theo yêu cầu khi Service dừng.
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -421,10 +505,14 @@ public sealed class IpcPipeServer : BackgroundService
         {
             if (writer is not null)
             {
+                int remainingWriters;
                 lock (_writersLock)
                 {
                     _clientWriters.Remove(writer);
+                    remainingWriters = _clientWriters.Count;
                 }
+
+                _log.Info("IPC: handler #" + handlerId + " đã gỡ writer #" + writer.GetHashCode() + " (còn " + remainingWriters + " writer).");
 
                 try
                 {
@@ -447,7 +535,7 @@ public sealed class IpcPipeServer : BackgroundService
                 // Bỏ qua lỗi đóng pipe đã gãy.
             }
 
-            _log.Info("IPC: handler #" + handlerId + " — Tray App đã ngắt kết nối.");
+            _log.Info("IPC: handler #" + handlerId + " — Tray App đã ngắt kết nối (đã nhận " + receivedCount + " message).");
         }
     }
 
