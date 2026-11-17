@@ -4,8 +4,7 @@ import { useAuth } from '../context/AuthContext'
 
 const NAV_ITEMS = [
   { to: '/hom-nay', label: 'Hôm nay' },
-  { to: '/thiet-bi', label: 'Thiết bị' },
-  { to: '/quy-tac', label: 'Quy tắc' },
+  { to: '/ho-so', label: 'Hồ sơ' },
   { to: '/yeu-cau', label: 'Yêu cầu' },
 ]
 
@@ -22,6 +21,12 @@ function TabIcon({ to }: { to: string }) {
       <>
         <rect x="3" y="5" width="18" height="16" rx="2" />
         <path d="M8 3v4M16 3v4M3 10h18" />
+      </>
+    ),
+    '/ho-so': (
+      <>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5" />
       </>
     ),
     '/thiet-bi': (
@@ -152,7 +157,7 @@ export default function Layout() {
         aria-label="Điều hướng chính"
         className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
       >
-        <ul className="grid grid-cols-4">
+        <ul className="grid grid-cols-3">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
               <NavLink to={item.to} className={tabLinkClassName}>
