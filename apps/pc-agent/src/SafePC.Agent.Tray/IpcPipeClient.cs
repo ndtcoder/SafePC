@@ -156,6 +156,11 @@ public sealed class IpcPipeClient : IDisposable
 
         _log.Info("IPC: đã kết nối tới Service (client #" + GetHashCode() + ").");
         _writer = new StreamWriter(pipe, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+        // Breadcrumb mịn (run CI #127/#129/#131: client im lặng giữa "đã kết
+        // nối" và "writer đã sẵn sàng" — khoảng giữa chỉ có ctor
+        // StreamWriter, về lý thuyết không thể chặn. Dòng này xác định ctor
+        // có hoàn tất hay điểm treo nằm ở lần ghi log sau đó.)
+        _log.Info("IPC: writer đã tạo (client #" + GetHashCode() + ").");
 
         // Chẩn đoán 17/11/2026: dòng này chứng minh writer đã được gán —
         // log bản 0.1.122 cho thấy "đã kết nối" nhưng ngay sau đó sampler
