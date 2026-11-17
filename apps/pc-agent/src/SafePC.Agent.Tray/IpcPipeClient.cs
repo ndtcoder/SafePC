@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Channels;
@@ -171,6 +174,26 @@ public sealed class IpcPipeClient : IDisposable
         // log bản 0.1.122 cho thấy "đã kết nối" nhưng ngay sau đó sampler
         // vẫn báo "chưa kết nối" (writer null) mà không có dòng dọn nào.
         _log.Info("IPC: writer đã sẵn sàng (client #" + GetHashCode() + ").");
+
+        // HELLO: giới thiệu phiên/tài khoản/quyền admin để Service chỉ giao
+        // lệnh khóa/cảnh báo tới phiên của con (phiên admin được miễn).
+        // FlushAsync chờ thread đọc của Service, vốn chạy độc lập sau khi
+        // handler đăng ký, nên không chết chéo. Hello lỗi thì bỏ qua:
+        // Service coi phiên này như chưa rõ và vẫn giao lệnh khóa như
+        // thường (fail-closed).
+        try
+        {
+            int sessionId = Process.GetCurrentProcess().SessionId;
+            (string helloUserName, bool helloIsAdmin, string elevationType) = DescribeCurrentUser();
+            await SendAsync(IpcMessage.Create(
+                IpcMessageTypes.Hello,
+                new HelloPayload(sessionId, helloUserName, helloIsAdmin))).ConfigureAwait(false);
+            _log.Info("IPC: đã gửi hello (phiên #" + sessionId + ", " + helloUserName + ", admin=" + helloIsAdmin + ", elevation=" + elevationType + ").");
+        }
+        catch (Exception ex)
+        {
+            _log.Error("IPC: gửi hello lỗi (bỏ qua, vẫn nhận lệnh khóa như thường).", ex);
+        }
 
         using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
         // KHÔNG kiểm tra pipe.IsConnected ở đây (xem ghi chú ở đầu file):
@@ -360,6 +383,89 @@ public sealed class IpcPipeClient : IDisposable
         finally
         {
             _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Tên tài khoản (DOMAIN\user), quyền admin và loại elevation của phiên
+    /// Tray đang chạy. QUAN TRỌNG: KHÔNG dùng riêng
+    /// IsInRole(Administrator) — Tray chạy qua Run key nên không elevated,
+    /// token đã lọc bởi UAC, IsInRole luôn trả false kể cả khi tài khoản
+    /// thuộc nhóm Administrators (Microsoft Learn: "The code returns false
+    /// if you are in the standard user role, even if you are in the
+    /// Built-in Administrators group"). Kiểm tra tư cách TÀI KHOẢN qua
+    /// TokenElevationType: Full/Limited (có split token) nghĩa là admin;
+    /// Default nghĩa là standard user. Lỗi thì trả về không admin
+    /// (fail-closed: phiên chưa rõ vẫn nhận lệnh khóa).
+    /// </summary>
+    private static (string UserName, bool IsAdmin, string ElevationType) DescribeCurrentUser()
+    {
+        try
+        {
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            string name = identity.Name;
+            if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+            {
+                // Đã elevated: chắc chắn là admin, khỏi hỏi token. Nhãn
+                // "elevated" (không phải "Full"): khi UAC tắt, token của
+                // admin thực chất là Default nhưng vẫn elevated.
+                return (name, true, "elevated");
+            }
+
+            string elevationType = GetTokenElevationType();
+            bool isAdmin = elevationType is "Full" or "Limited";
+            return (name, isAdmin, elevationType);
+        }
+        catch
+        {
+            return (Environment.UserName, false, "unknown");
+        }
+    }
+
+    private const uint TokenQueryAccess = 0x0008;
+    private const int TokenElevationTypeClass = 18;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(IntPtr tokenHandle, int tokenInformationClass, out int tokenInformation, uint tokenInformationLength, out uint returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    /// <summary>
+    /// Loại elevation của token process hiện tại: "Default" (1, không split
+    /// token — standard user), "Full" (2) hoặc "Limited" (3, admin chạy
+    /// token thường) — "unknown" khi P/Invoke lỗi.
+    /// </summary>
+    private static string GetTokenElevationType()
+    {
+        using var proc = Process.GetCurrentProcess();
+        IntPtr processHandle = proc.Handle;
+        if (!OpenProcessToken(processHandle, TokenQueryAccess, out IntPtr tokenHandle))
+        {
+            return "unknown";
+        }
+
+        try
+        {
+            if (!GetTokenInformation(tokenHandle, TokenElevationTypeClass, out int elevation, (uint)sizeof(int), out _))
+            {
+                return "unknown";
+            }
+
+            return elevation switch
+            {
+                1 => "Default",
+                2 => "Full",
+                3 => "Limited",
+                _ => "unknown",
+            };
+        }
+        finally
+        {
+            CloseHandle(tokenHandle);
         }
     }
 

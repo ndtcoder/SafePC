@@ -49,6 +49,7 @@ public partial class App : System.Windows.Application
     private ForegroundSampler? _sampler;
     private LocalLogger? _log;
     private LockWindow? _lockWindow;
+    private WarningWindow? _warningWindow;
     private RemainingTimeWindow? _remainingWindow;
     private ExtraTimeWindow? _extraTimeWindow;
     private System.Windows.Window? _anchor;
@@ -266,6 +267,17 @@ public partial class App : System.Windows.Application
                 Check("IPC: Tray nối tới pipe server giả", connected);
                 if (connected)
                 {
+                    // Cảnh báo trước (giai đoạn chờ khóa có độ trễ): cửa sổ
+                    // nhỏ hiện lên, không full màn.
+                    bool warningSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(2, "Self-test cảnh báo.")));
+                    _log?.Info("SELF-TEST: đã gửi message warning qua pipe giả: " + warningSent + ".");
+                    for (int i = 0; i < 10 && _warningWindow is not { IsVisible: true }; i++)
+                    {
+                        await Task.Delay(500);
+                    }
+
+                    Check("IPC: nhận warning thì hiện cửa sổ cảnh báo nhỏ", warningSent && _warningWindow is { IsVisible: true });
+
                     bool lockSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Self-test khóa/mở.")));
                     _log?.Info("SELF-TEST: đã gửi message lock qua pipe giả: " + lockSent + ".");
                     for (int i = 0; i < 10 && _lockWindow is not { IsVisible: true }; i++)
@@ -274,6 +286,7 @@ public partial class App : System.Windows.Application
                     }
 
                     Check("IPC: nhận lock thì hiện màn hình khóa", lockSent && _lockWindow is { IsVisible: true });
+                    Check("IPC: nhận lock thì đóng cửa sổ cảnh báo", _warningWindow is null or { IsVisible: false });
                     Check("IPC: hit-test nút trong màn hình khóa", _lockWindow is not null && HitTestFirstButton(_lockWindow));
 
                     bool unlockSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }));
@@ -287,7 +300,9 @@ public partial class App : System.Windows.Application
                 }
                 else
                 {
+                    Check("IPC: nhận warning thì hiện cửa sổ cảnh báo nhỏ", false);
                     Check("IPC: nhận lock thì hiện màn hình khóa", false);
+                    Check("IPC: nhận lock thì đóng cửa sổ cảnh báo", false);
                     Check("IPC: hit-test nút trong màn hình khóa", false);
                     Check("IPC: nhận unlock thì đóng màn hình khóa", false);
                 }
@@ -302,6 +317,17 @@ public partial class App : System.Windows.Application
                 // Không bao giờ để màn hình khóa còn hiện khi test kết thúc:
                 // đếm ngược 60s của nó sẽ gọi LockWorkStation trên máy CI.
                 // Unlock thật đã đóng thì _lockWindow đã null, lệnh này vô hại.
+                // Cửa sổ cảnh báo cũng dọn sạch để không còn cửa sổ lạ sau test.
+                try
+                {
+                    _warningWindow?.Close();
+                }
+                catch
+                {
+                    // Bỏ qua lỗi dọn dẹp cuối test.
+                }
+
+                _warningWindow = null;
                 try
                 {
                     _lockWindow?.Close();
@@ -463,10 +489,31 @@ public partial class App : System.Windows.Application
                             {
                                 try
                                 {
-                                    var window = new WarningWindow(warning.Reason, warning.MinutesLeft);
-                                    window.Closed += (_, _) => _log?.Info("Tray: cửa sổ cảnh báo đã đóng.");
-                                    window.Show();
-                                    _log?.Info("Tray: cửa sổ cảnh báo đã hiện.");
+                                    if (_warningWindow is { IsVisible: true })
+                                    {
+                                        // Cảnh báo nhắc lại (VD: mỗi phút trong
+                                        // lúc chờ khóa có độ trễ): cập nhật cửa
+                                        // sổ đang hiện thay vì mở thêm cửa sổ mới.
+                                        _warningWindow.Update(warning.Reason, warning.MinutesLeft);
+                                        _warningWindow.Activate();
+                                        _log?.Info("Tray: cửa sổ cảnh báo đã cập nhật.");
+                                    }
+                                    else
+                                    {
+                                        var window = new WarningWindow(warning.Reason, warning.MinutesLeft);
+                                        window.Closed += (_, _) =>
+                                        {
+                                            if (ReferenceEquals(_warningWindow, window))
+                                            {
+                                                _warningWindow = null;
+                                            }
+
+                                            _log?.Info("Tray: cửa sổ cảnh báo đã đóng.");
+                                        };
+                                        _warningWindow = window;
+                                        window.Show();
+                                        _log?.Info("Tray: cửa sổ cảnh báo đã hiện.");
+                                    }
                                 }
                                 catch (Exception ex)
                                 {
@@ -480,6 +527,19 @@ public partial class App : System.Windows.Application
 
                         case IpcMessageTypes.Lock:
                             LockPayload? lockPayload = message.GetPayload<LockPayload>();
+
+                            // Khóa thật thì đóng cửa sổ cảnh báo (giai đoạn
+                            // chờ) trước khi hiện màn hình khóa full màn.
+                            try
+                            {
+                                _warningWindow?.Close();
+                            }
+                            catch (Exception ex)
+                            {
+                                _log?.Error("Tray: đóng WarningWindow lỗi.", ex);
+                            }
+
+                            _warningWindow = null;
                             try
                             {
                                 if (_lockWindow is { IsVisible: true })
@@ -524,6 +584,16 @@ public partial class App : System.Windows.Application
                             break;
 
                         case IpcMessageTypes.Unlock:
+                            try
+                            {
+                                _warningWindow?.Close();
+                            }
+                            catch (Exception ex)
+                            {
+                                _log?.Error("Tray: đóng WarningWindow lỗi.", ex);
+                            }
+
+                            _warningWindow = null;
                             try
                             {
                                 _lockWindow?.Close();
