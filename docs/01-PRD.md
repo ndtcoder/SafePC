@@ -13,8 +13,10 @@ Bản v0.1.136 đã kiểm chứng trên máy thật: ghép nối, đồng bộ 
 | Khóa có độ trễ + khóa theo phiên | 🔨 Đã đẩy code ngày 17/11, đang chờ cổng kiểm tra CI, chưa kiểm chứng trên máy thật |
 | PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại | 🔨 Đang làm (đợt tiếp theo) |
 | Chặn/cho phép domain qua extension | ✅ Code đã xong, ⏳ chưa từng kiểm chứng đầu-cuối (extension chưa cài trên máy thật) |
-| Báo cáo tuần | ⏳ Chưa làm (đang đề xuất nội dung — xem roadmap) |
-| App Android | ⏳ Chưa làm (thảo luận sau khi chốt tính năng nâng cao) |
+| Tính năng nâng cao + giao diện chuyên nghiệp | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.8) |
+| Flow cài đặt cho phụ huynh khác | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.9) |
+| Báo cáo tuần | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.10) |
+| App Android | ⏳ Chưa làm (tính năng nâng cao đã chốt 17/11 — sẵn sàng thảo luận khi bắt đầu) |
 
 ## 1. Người dùng và vai trò
 
@@ -38,7 +40,7 @@ Một gia đình: 1-2 phụ huynh, 1-3 con, 1-3 máy PC (MVP: 1 phụ huynh, 1 c
 - [x] Ghi nhận app đang chạy ở foreground (tên process, thời lượng), tổng hợp theo mẫu 15 giây. — Đã triển khai; Service lưu SQLite local, đẩy batch lên server mỗi 5 phút.
 - [x] Ghi nhận thời gian online/offline (heartbeat 60s, trạng thái thiết bị trên Dashboard). — Đã triển khai. Thời gian khóa màn hình chưa tách riêng.
 - [x] Gửi dữ liệu lên server theo batch, có hàng đợi offline (SQLite local), đồng bộ khi có mạng. — Đã triển khai.
-- [ ] Dashboard hiển thị: tổng thời gian hôm nay/tuần, top app, biểu đồ theo giờ. — Trang Hôm nay hiện dữ liệu cơ bản; biểu đồ và báo cáo tuần chưa làm (đang đề xuất).
+- [ ] Dashboard hiển thị: tổng thời gian hôm nay/tuần, top app, biểu đồ theo giờ. — Trang Hôm nay hiện dữ liệu cơ bản; tổng quan thật + biểu đồ đã phê duyệt 17/11/2026 (xem §2.8).
 
 ### 2.3. Giới hạn thời gian (Screen Time)
 - [x] Giới hạn tổng thời gian/ngày theo thứ trong tuần (VD: T2-T6: 2h, T7-CN: 3h). — Xong Sprint 2 đợt 1 (Dashboard + Agent, xem 2.3.1).
@@ -98,12 +100,61 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 
 ### 2.7. Báo cáo
 - [x] Trạng thái thi hành realtime trên Dashboard: luật nào đang khóa máy/khóa app/khóa domain, chip "Đang thi hành", thời gian cập nhật. — Đã triển khai (snapshot enforcement, migration 6).
-- [ ] Báo cáo ngày/tuần: tổng giờ, giờ theo app, số lần bị chặn, số lần xin thêm giờ. — Chưa làm; nội dung báo cáo tuần đang đề xuất (xem roadmap).
+- [ ] Báo cáo ngày/tuần: tổng giờ, giờ theo app, số lần bị chặn, số lần xin thêm giờ. — Đã phê duyệt 17/11/2026 (xem §2.10).
 - [ ] Xuất CSV (giai đoạn 1.5).
+
+### 2.8. Tính năng nâng cao + giao diện chuyên nghiệp (đã phê duyệt 17/11/2026, thực hiện dần theo thứ tự)
+
+- [ ] Trang Hôm nay thành tổng quan thật: thẻ trạng thái máy, giờ còn lại, biểu đồ giờ dùng trong ngày, top app/domain. Dữ liệu đã có sẵn, chỉ thiếu giao diện.
+- [ ] Thông báo cho phụ huynh: email khi con xin thêm giờ, khi phát hiện can thiệp (đổi giờ, agent offline bất thường). Đẩy thông báo (push) để sau cùng app Android.
+- [ ] Nhật ký hoạt động: ai đổi rule nào, khóa/mở lúc nào, duyệt yêu cầu nào. Bảng dữ liệu đã có, chưa có giao diện xem.
+- [ ] Ngân hàng giờ: phụ huynh thưởng thêm giờ kèm lý do và lịch sử, con thấy được giờ thưởng của mình.
+- [ ] Chặn theo danh mục domain (người lớn, cờ bạc, mạng xã hội) từ danh sách công khai, thay vì gõ từng domain.
+- [ ] Mời phụ huynh thứ hai cùng quản lý gia đình. Cấu trúc dữ liệu đã hỗ trợ sẵn.
+- [ ] Xuất dữ liệu và xóa toàn bộ dữ liệu của con (theo cam kết riêng tư ở `03-SECURITY.md` mục 5).
+- [ ] Giao diện chuyên nghiệp: chuẩn hóa trạng thái rỗng/đang tải/lỗi/mất mạng; hướng dẫn lần đầu (tạo con, ghép nối, chọn mẫu quy tắc).
+- [ ] Xác thực 2 lớp (MFA) cho tài khoản phụ huynh (Supabase đã hỗ trợ sẵn).
+
+Ranh giới giữ nguyên (quyết định 17/11/2026): không chụp màn hình, không ghi phím, không đọc nội dung chat hay file của con. Mục chụp màn hình opt-in ở §4 đã loại khỏi kế hoạch.
+
+### 2.9. Cài đặt cho phụ huynh khác — không cần biết code (đã phê duyệt 17/11/2026)
+
+Luồng mục tiêu, từ góc nhìn phụ huynh mới:
+
+1. Vào website, đăng ký, tạo gia đình và hồ sơ con.
+2. Bấm Thêm máy, tải 1 file cài đặt, chạy, nhập mã 6 số hiện trên web. Không còn bước PowerShell. Máy hiện Online là xong.
+3. Bấm link cài extension trên Dashboard, 1 click từ cửa hàng của Chrome/Edge, tự nối với agent.
+4. Chọn mẫu quy tắc Ngày học hoặc Cuối tuần, dùng ngay.
+5. Sau này: tải app Android từ Play Store, đăng nhập cùng tài khoản, khóa/mở và duyệt yêu cầu.
+
+Việc cần làm để đạt luồng này:
+
+- [ ] Một bản triển khai dùng chung cho mọi gia đình (1 Supabase + 1 web), dữ liệu tách nhau bằng RLS. Người vận hành giữ khóa quản trị.
+- [ ] Bộ cài có giao diện nhập mã ghép nối, thay cho lệnh PowerShell hiện tại.
+- [ ] Extension đăng lên cửa hàng Chrome/Edge (Chrome phí đăng ký 5 USD một lần, Edge miễn phí) để có ID thật và tự cập nhật.
+- [ ] Ký số bộ cài. Chưa có chứng chỉ thì Windows hiện cảnh báo SmartScreen, cần hướng dẫn phụ huynh bấm "vẫn chạy". Chứng chỉ ký số có phí, để sau cũng được.
+- [ ] Agent tự cập nhật khi có bản mới, có kiểm tra hash.
+- [ ] Trang hướng dẫn + chính sách riêng tư tiếng Việt, bắt buộc có trước khi mời gia đình ngoài dùng thử. Domain riêng là tùy chọn.
+
+Quyết định còn mở (chưa chốt): ai vận hành bản dùng chung, có mua domain không, tài khoản đăng ký cửa hàng extension đứng tên ai, có mua chứng chỉ ký số không.
+
+### 2.10. Báo cáo tuần (đã phê duyệt 17/11/2026)
+
+Nội dung 7 mục:
+
+1. Tổng quan: tổng giờ dùng tuần, tăng/giảm so với tuần trước, số ngày dùng máy.
+2. Giờ dùng theo từng ngày, kèm đường giới hạn để thấy ngày nào vượt.
+3. Top 5 app và top 5 domain, kèm giờ và tỉ lệ.
+4. Quy tắc đã thi hành: số lần khóa theo từng loại, số lần chặn app/domain, số cảnh báo, số giờ nghỉ bắt buộc.
+5. Yêu cầu xin thêm giờ: bao nhiêu yêu cầu, đã duyệt/từ chối/chờ bao nhiêu.
+6. Cảnh báo: đổi giờ, agent khởi động lại, extension mất tín hiệu, offline bất thường.
+7. Gợi ý tự động, ví dụ "Thứ 7 con dùng gấp đôi ngày thường" hay "YouTube chiếm 60% thời gian".
+
+Hình thức đã chốt: trang Báo cáo ngay trên Dashboard với biểu đồ (thư viện Recharts, miễn phí, cùng công nghệ hiện tại) kèm email tóm tắt gửi mỗi tuần (Edge Function + Resend gói free). KHÔNG dùng Power BI làm hướng chính: cần gói trả phí, phải xuất dữ liệu trẻ em ra khỏi Supabase, phức tạp mà không hơn biểu đồ trong Dashboard. Xuất PDF để sau; in trực tiếp từ trang báo cáo là đủ. Toàn bộ dữ liệu đã có trong các bảng `app_usage`, `web_visits`, `audit_logs`, `requests`.
 
 ## 3. Giai đoạn 2: App Android cho phụ huynh
 
-Thảo luận sau khi chốt danh sách tính năng nâng cao và giao diện chuyên nghiệp (theo yêu cầu ngày 17/11/2026) — không bắt đầu khi chưa chốt, để khỏi làm lại.
+Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng thảo luận Android khi bắt đầu, để khỏi làm lại.
 
 - [ ] Đóng gói Dashboard PWA bằng Capacitor -> APK/AAB, thêm push notification (Supabase + FCM free).
 - [ ] Hoặc xây Flutter app riêng nếu cần UX native tốt hơn — quyết định sau khi Dashboard Web ổn định.
@@ -111,15 +162,16 @@ Thảo luận sau khi chốt danh sách tính năng nâng cao và giao diện ch
 
 ## 4. Giai đoạn 3: Nâng cao (chỉ làm khi giai đoạn 1-2 ổn định)
 
-- [ ] Chụp màn hình theo lịch (opt-in, phụ huynh bật rõ ràng, ảnh mã hóa, tự xóa sau 7 ngày) — mặc định TẮT.
-- [ ] Giới hạn theo website (thời gian cho từng domain).
+- [ ] ~~Chụp màn hình theo lịch (opt-in, phụ huynh bật rõ ràng, ảnh mã hóa, tự xóa sau 7 ngày)~~ — **ĐÃ LOẠI KHỎI KẾ HOẠCH ngày 17/11/2026** theo quyết định giữ ranh giới riêng tư (không chụp màn hình, không ghi phím, không đọc nội dung).
+- [x] Giới hạn theo website (thời gian cho từng domain). — Đã triển khai (chế độ giới hạn thời gian theo domain của extension, Sprint 2 đợt 2); chờ kiểm chứng đầu-cuối cùng extension.
 - [ ] Nhiều con/nhiều máy, quy tắc theo nhóm tuổi.
-- [ ] Cảnh báo nội dung nguy hiểm theo từ khóa trên tiêu đề cửa sổ (không đọc nội dung) — cần đánh giá quyền riêng tư kỹ.
+- [ ] Cảnh báo nội dung nguy hiểm theo từ khóa trên tiêu đề cửa sổ — **CẦN ĐÁNH GIÁ LẠI**: đọc tiêu đề cửa sổ mâu thuẫn với nguyên tắc thu thập tối thiểu hiện tại (Agent cố tình không đọc tiêu đề cửa sổ, không gọi `GetWindowText`); chỉ làm khi có quyết định riêng, sau khi đánh giá quyền riêng tư kỹ.
 - [ ] Báo cáo AI tóm tắt tuần (dùng API free/low-cost, dữ liệu đã ẩn danh hóa).
 
 ## 5. Không làm (Non-goals)
 
 - Không ghi phím (keylogger), không đọc tin nhắn/email/file, không nghe mic/bật camera.
+- Không chụp màn hình (đã loại khỏi kế hoạch ngày 17/11/2026, xem §4).
 - Không quản lý điện thoại Android/iOS của con trong MVP (chỉ PC).
 - Không thanh toán trong MVP.
 - Không hỗ trợ macOS/Linux trong MVP.

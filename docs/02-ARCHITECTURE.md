@@ -147,3 +147,10 @@ Cứng hóa Tray (nguyên nhân Tray chết sớm vẫn chưa rõ, đang chờ E
 - Vercel Free: Dashboard + landing, subdomain `*.vercel.app` cho tới khi có domain riêng.
 - GitHub Free: Private repo + Actions (2000 phút/tháng cho private, đủ cho dự án này).
 - Không cần mua domain/Figma ở giai đoạn này. Domain mua sau (~250k-350k/năm cho .com qua Cloudflare Registrar) khi muốn thương hiệu riêng.
+
+### 7.1. Mô hình dùng chung cho nhiều gia đình (đã phê duyệt 17/11/2026, xem PRD §2.9)
+
+- Một bản triển khai duy nhất (1 project Supabase + 1 web app) phục vụ mọi gia đình; dữ liệu tách nhau bằng RLS theo `family_id` — cùng cơ chế đã dùng từ Sprint 0, không thay đổi kiến trúc dữ liệu.
+- Phân phối: bộ cài 1 file (ghép nối bằng giao diện nhập mã, không còn PowerShell), extension qua cửa hàng Chrome/Edge (ID thật, tự cập nhật), Agent tự cập nhật kèm kiểm tra hash.
+- Báo cáo tuần chạy trong Dashboard (Recharts) + email tóm tắt qua Edge Function + Resend gói free; không dùng Power BI.
+- Quyết định còn mở: ai vận hành, domain, tài khoản cửa hàng extension, chứng chỉ ký số.

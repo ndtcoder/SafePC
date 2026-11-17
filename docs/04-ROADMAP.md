@@ -2,7 +2,7 @@
 
 ## Trạng thái tổng quan (17/11/2026)
 
-Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy thật. Dashboard đã live. Còn lại: hoàn thiện Tray (PIN/xin giờ/xem giờ), kiểm chứng chặn domain đầu-cuối, báo cáo tuần, app Android, và flow cài đặt cho phụ huynh khác. Chi tiết từng hạng mục trong PRD (`01-PRD.md` mục 0).
+Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy thật. Dashboard đã live. Còn lại: hoàn thiện Tray (PIN/xin giờ/xem giờ), kiểm chứng chặn domain đầu-cuối, và các hạng mục đã phê duyệt ngày 17/11/2026 (tính năng nâng cao, flow cài đặt cho phụ huynh khác, báo cáo tuần) thực hiện dần, rồi app Android. Chi tiết từng hạng mục trong PRD (`01-PRD.md` mục 0).
 
 ## Lộ trình thực tế
 
@@ -42,14 +42,35 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [ ] Beta: anh Tiến dùng thật 1-2 tuần, ghi lại lỗi/cải tiến.
 - [ ] Kiểm thử RLS truy cập chéo gia đình (2 tài khoản).
 
-### Đề xuất đang thảo luận (chưa phê duyệt — ghi vào đây sau khi chốt)
-- Tính năng nâng cao + giao diện chuyên nghiệp: đang đề xuất, thảo luận trước khi chuyển sang Android.
-- Flow cài đặt đơn giản cho phụ huynh khác (không cần biết code): đang đề xuất.
-- Báo cáo tuần (nội dung + biểu đồ): đang đề xuất.
-- Các đề xuất sau khi phê duyệt sẽ thành mục theo dõi trong roadmap này và PRD.
+### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
+
+**Tính năng nâng cao + giao diện chuyên nghiệp (theo thứ tự ưu tiên):**
+- [ ] Trang Hôm nay thành tổng quan thật (thẻ trạng thái, giờ còn lại, biểu đồ ngày, top app/domain).
+- [ ] Thông báo email cho phụ huynh (xin thêm giờ, can thiệp, offline bất thường); push để sau cùng Android.
+- [ ] Nhật ký hoạt động (ai đổi rule, khóa/mở, duyệt yêu cầu).
+- [ ] Ngân hàng giờ (thưởng thêm giờ kèm lý do + lịch sử).
+- [ ] Chặn theo danh mục domain từ danh sách công khai.
+- [ ] Mời phụ huynh thứ hai cùng quản lý.
+- [ ] Xuất dữ liệu + xóa toàn bộ dữ liệu của con.
+- [ ] Chuẩn hóa giao diện (trạng thái rỗng/tải/lỗi/mất mạng) + hướng dẫn lần đầu.
+- [ ] MFA cho tài khoản phụ huynh.
+
+**Flow cài đặt cho phụ huynh khác (không cần biết code):**
+- [ ] Bản triển khai dùng chung cho mọi gia đình (1 Supabase + 1 web, tách dữ liệu bằng RLS).
+- [ ] Bộ cài có giao diện nhập mã ghép nối (bỏ bước PowerShell).
+- [ ] Extension lên cửa hàng Chrome/Edge (ID thật, tự cập nhật).
+- [ ] Ký số bộ cài (hoặc hướng dẫn vượt cảnh báo SmartScreen cho tới khi có chứng chỉ).
+- [ ] Agent tự cập nhật kèm kiểm tra hash.
+- [ ] Trang hướng dẫn + chính sách riêng tư tiếng Việt trước khi mời gia đình ngoài.
+- [ ] Quyết định còn mở: ai vận hành, domain, tài khoản cửa hàng extension, chứng chỉ ký số.
+
+**Báo cáo tuần:**
+- [ ] Trang Báo cáo trên Dashboard (Recharts) + email tóm tắt mỗi tuần (Edge Function + Resend free). Không dùng Power BI (xem PRD §2.10).
+- [ ] 7 mục nội dung: tổng quan so với tuần trước, giờ theo ngày kèm giới hạn, top 5 app/domain, số lần thi hành, yêu cầu xin giờ, cảnh báo, gợi ý tự động.
+- [ ] Xuất PDF để sau.
 
 ### Giai đoạn 2 — Android cho phụ huynh ⏳
-- [ ] Thảo luận sau khi chốt tính năng nâng cao (theo yêu cầu 17/11/2026).
+- [ ] Tính năng nâng cao đã chốt ngày 17/11/2026 — sẵn sàng thảo luận khi bắt đầu.
 - [ ] Capacitor wrapper, push notification, màn hình nhanh (khóa/mở, duyệt yêu cầu).
 - [ ] Build APK thử nghiệm, sau đó AAB lên Play Console (khi anh Tiến sẵn sàng, phí đăng ký Play Console 25 USD một lần — ngoài phạm vi free, để sau).
 

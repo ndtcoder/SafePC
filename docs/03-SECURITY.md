@@ -82,7 +82,9 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 ## 5. Quyền riêng tư & tuân thủ
 
 - Viết Privacy Policy + Terms ngắn gọn, tiếng Việt, trước khi mời user ngoài gia đình dùng thử: thu thập gì, giữ bao lâu, xóa thế nào, liên hệ ai.
-- Tính năng "Xóa toàn bộ dữ liệu của con" + "Xuất dữ liệu" (GDPR-style) — làm ở giai đoạn 1.5.
+- Tính năng "Xóa toàn bộ dữ liệu của con" + "Xuất dữ liệu" (GDPR-style) — đã phê duyệt 17/11/2026, thực hiện dần (xem PRD §2.8).
+- MFA cho tài khoản phụ huynh — đã phê duyệt 17/11/2026 (Supabase đã hỗ trợ sẵn).
+- Chụp màn hình đã LOẠI KHỎI KẾ HOẠCH ngày 17/11/2026: không chụp màn hình, không ghi phím, không đọc nội dung chat/file của con (xem PRD §4–§5).
 - Dữ liệu trẻ em: không bán, không chia sẻ cho bên thứ ba quảng cáo, không dùng để train AI. Supabase/Vercel chỉ là hạ tầng lưu trữ/xử lý theo hợp đồng của họ.
 - Lưu ý pháp lý Việt Nam: Luật Bảo vệ dữ liệu cá nhân 2023 + Luật Trẻ em — phụ huynh là người giám hộ, nhưng vẫn cần minh bạch và chỉ dùng trong phạm vi gia đình. Khi mở rộng trên 100 user / thương mại hóa, cần tư vấn pháp lý riêng.
 
