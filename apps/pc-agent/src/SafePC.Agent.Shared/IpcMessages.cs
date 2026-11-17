@@ -22,6 +22,9 @@ public static class IpcMessageTypes
 
     /// <summary>Tray -> Service: con gửi yêu cầu xin thêm giờ.</summary>
     public const string ExtraTimeRequest = "extra-time-request";
+
+    /// <summary>Tray -> Service: Tray tự giới thiệu khi nối (phiên, tài khoản, quyền admin) để Service chỉ giao lệnh khóa/cảnh báo tới phiên của con.</summary>
+    public const string Hello = "hello";
 }
 
 /// <summary>
@@ -82,3 +85,12 @@ public sealed record LockPayload(string Reason);
 
 /// <summary>Payload của <see cref="IpcMessageTypes.ExtraTimeRequest"/>.</summary>
 public sealed record ExtraTimeRequestPayload(int Minutes, string Reason, DateTimeOffset RequestedAt);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.Hello"/>: Tray báo phiên Windows,
+/// tên tài khoản và quyền admin của mình. Service dùng <c>IsAdmin</c> để
+/// MIỄN lệnh khóa/cảnh báo cho phiên admin (phụ huynh); phiên chưa giới
+/// thiệu (chưa nhận hello) vẫn nhận lệnh như thường — miễn trừ chỉ áp dụng
+/// khi đã biết chắc phiên đó là admin.
+/// </summary>
+public sealed record HelloPayload(int SessionId, string UserName, bool IsAdmin);
