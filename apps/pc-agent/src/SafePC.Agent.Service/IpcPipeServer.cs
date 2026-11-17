@@ -361,7 +361,14 @@ public sealed class IpcPipeServer : BackgroundService
             // về lý thuyết không thể chặn. Dòng này xác định ctor nào là
             // điểm treo.)
             _log.Info("IPC: handler #" + handlerId + " — đã tạo reader, đang tạo writer.");
-            writer = new StreamWriter(server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            // KHÔNG dùng AutoFlush trên pipe (bài học run CI #133): setter
+            // AutoFlush gọi Flush() → FlushFileBuffers, chặn tới khi đầu kia
+            // ĐỌC — hai bên cùng đặt AutoFlush trước khi thread đọc nào chạy
+            // thì chết chéo vĩnh viễn (cả 3 luồng kẹt đúng tại ctor
+            // StreamWriter, 4 run liên tiếp). Mọi lần ghi đã FlushAsync
+            // tường minh ở SendToTrayAsync, nên bỏ AutoFlush không đổi hành
+            // vi ghi — chỉ bỏ lần flush lúc khởi tạo gây chết chéo.
+            writer = new StreamWriter(server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true);
             // Breadcrumb (run #129: handler im lặng sau "bắt đầu đọc", không
             // tới được dòng đăng ký writer): dòng này phân biệt "chết khi
             // tạo reader/writer" với "chết khi đăng ký/vào vòng đọc".

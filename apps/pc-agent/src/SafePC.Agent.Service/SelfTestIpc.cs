@@ -101,7 +101,12 @@ public static class SelfTestIpc
             Trace("sau check 1, sắp tạo StreamReader...");
             using var reader = new StreamReader(client, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
             Trace("đã tạo StreamReader, sắp tạo StreamWriter...");
-            using var writer = new StreamWriter(client, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            // KHÔNG dùng AutoFlush trên pipe (xem ghi chú ở IpcPipeServer):
+            // setter gọi Flush() → FlushFileBuffers chặn tới khi handler
+            // phía server ĐỌC — chết chéo vì handler cũng đang kẹt ở ctor
+            // StreamWriter của nó (run CI #133). Lần ghi sample dưới đây
+            // FlushAsync tường minh.
+            using var writer = new StreamWriter(client, Encoding.UTF8, bufferSize: 1024, leaveOpen: true);
             Trace("đã tạo StreamWriter.");
 
             // Gửi một usage-sample lên để chạy đường đọc của server (thread
@@ -113,6 +118,12 @@ public static class SelfTestIpc
             await writer.WriteLineAsync(IpcMessage.Create(
                 IpcMessageTypes.UsageSample,
                 new UsageSamplePayload("self-test", null, DateTimeOffset.UtcNow)).ToLine());
+            // Flush tường minh (thay cho AutoFlush đã bỏ): không flush thì
+            // dòng sample nằm trong buffer, thread đọc của server không bao
+            // giờ thấy. Flush lúc này an toàn vì thread đọc của handler chạy
+            // độc lập, không phụ thuộc vào lần flush này — nó đọc dòng
+            // sample rồi flush mới hoàn tất.
+            await writer.FlushAsync();
             Trace("đã gửi usage-sample, đang poll bảng usage_samples...");
             bool sampleProcessed = false;
             for (int i = 0; i < 10 && !sampleProcessed; i++)
