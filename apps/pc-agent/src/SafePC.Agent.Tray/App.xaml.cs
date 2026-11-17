@@ -173,7 +173,8 @@ public partial class App : System.Windows.Application
 
     /// <summary>
     /// Tự kiểm tra giao diện Tray trên Windows thật: mở menu, hit-test nút,
-    /// mở/đóng hộp thoại, đếm dispatcher exception. Chạy trên UI thread,
+    /// mở/đóng hộp thoại, kiểm tra khóa/mở qua pipe server giả, đếm
+    /// dispatcher exception. Chạy trên UI thread,
     /// dùng await Task.Delay để vòng lặp message bơm bình thường giữa các
     /// bước (layout/activation cần message thật). Ghi từng check PASS/FAIL
     /// vào log rồi thoát với exit code 0 (đạt) hoặc 1 (trượt) để CI đọc.
@@ -250,7 +251,70 @@ public partial class App : System.Windows.Application
             await Task.Delay(300);
             Check("hộp thoại đóng được", _remainingWindow is null);
 
-            // 5. Không có dispatcher exception nào trong suốt quá trình test
+            // 5. IPC khóa/mở qua pipe server giả (bản #6): chứng minh đường
+            // nối Service→Tray — Tray nhận lock thì hiện màn hình khóa, nhận
+            // unlock thì đóng. Chạy khi KHÔNG có Service thật: server giả
+            // đóng vai Service, còn IpcPipeClient + OnIpcMessage + LockWindow
+            // đều là code thật. Lỗi "lệnh khóa không tới Tray" (bản 0.1.122)
+            // phải bị bắt ở đây thay vì trên máy phụ huynh.
+            try
+            {
+                using var fakeServer = new SelfTestPipeServer(_log);
+                fakeServer.Start();
+                // Tray nối lại mỗi ~15s (10s chờ + 5s nghỉ) nên chờ tối đa 30s.
+                bool connected = await fakeServer.WaitForClientAsync(TimeSpan.FromSeconds(30));
+                Check("IPC: Tray nối tới pipe server giả", connected);
+                if (connected)
+                {
+                    bool lockSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Self-test khóa/mở.")));
+                    _log?.Info("SELF-TEST: đã gửi message lock qua pipe giả: " + lockSent + ".");
+                    for (int i = 0; i < 10 && _lockWindow is not { IsVisible: true }; i++)
+                    {
+                        await Task.Delay(500);
+                    }
+
+                    Check("IPC: nhận lock thì hiện màn hình khóa", lockSent && _lockWindow is { IsVisible: true });
+                    Check("IPC: hit-test nút trong màn hình khóa", _lockWindow is not null && HitTestFirstButton(_lockWindow));
+
+                    bool unlockSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }));
+                    _log?.Info("SELF-TEST: đã gửi message unlock qua pipe giả: " + unlockSent + ".");
+                    for (int i = 0; i < 10 && _lockWindow is not null; i++)
+                    {
+                        await Task.Delay(500);
+                    }
+
+                    Check("IPC: nhận unlock thì đóng màn hình khóa", unlockSent && _lockWindow is null);
+                }
+                else
+                {
+                    Check("IPC: nhận lock thì hiện màn hình khóa", false);
+                    Check("IPC: hit-test nút trong màn hình khóa", false);
+                    Check("IPC: nhận unlock thì đóng màn hình khóa", false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Error("SELF-TEST: kiểm tra IPC lỗi ngoài dự kiến.", ex);
+                Check("IPC: không lỗi ngoài dự kiến", false);
+            }
+            finally
+            {
+                // Không bao giờ để màn hình khóa còn hiện khi test kết thúc:
+                // đếm ngược 60s của nó sẽ gọi LockWorkStation trên máy CI.
+                // Unlock thật đã đóng thì _lockWindow đã null, lệnh này vô hại.
+                try
+                {
+                    _lockWindow?.Close();
+                }
+                catch
+                {
+                    // Bỏ qua lỗi dọn dẹp cuối test.
+                }
+
+                _lockWindow = null;
+            }
+
+            // 6. Không có dispatcher exception nào trong suốt quá trình test
             // (bão Win32Exception 1816 trên máy thật sẽ bị bắt ở đây).
             _log?.Info("SELF-TEST: dispatcher exception trong lúc test: " + dispatcherExceptions + ".");
             Check("không có dispatcher exception", dispatcherExceptions == 0);
