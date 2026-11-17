@@ -71,6 +71,12 @@
       color: #9ca3af;
       margin: 14px 0 0;
     }
+    .note.off {
+      color: #b45309;
+    }
+    .note.dnr {
+      margin-top: 6px;
+    }
   </style>
 </head>
 <body>
@@ -80,6 +86,9 @@
   <ul id="limits"></ul>
   <p id="empty" class="empty" hidden>Không có trang nào bị giới hạn thời gian.</p>
   <p id="sync" class="note"></p>
+  <p id="dnr-blocked" class="note dnr"></p>
+  <p id="dnr-applied" class="note dnr" hidden></p>
+  <p id="dnr-error" class="note dnr" hidden></p>
   <p class="note">Quy tắc do phụ huynh đặt trên Dashboard SafePC.</p>
   <script src="domainUtils.js"></script>
   <script src="popup.js"></script>

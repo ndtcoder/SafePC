@@ -16,6 +16,9 @@ async function render() {
   const listEl = document.getElementById("limits");
   const emptyEl = document.getElementById("empty");
   const syncEl = document.getElementById("sync");
+  const dnrBlockedEl = document.getElementById("dnr-blocked");
+  const dnrAppliedEl = document.getElementById("dnr-applied");
+  const dnrErrorEl = document.getElementById("dnr-error");
 
   let stored;
   try {
@@ -23,6 +26,7 @@ async function render() {
       "safepc_status",
       "safepc_limits",
       "safepc_usage",
+      "safepc_dnr",
     ]);
   } catch {
     if (statusEl) {
@@ -53,6 +57,38 @@ async function render() {
           " hôm nay.";
     } else {
       syncEl.textContent = "Chưa đồng bộ quy tắc lần nào.";
+    }
+  }
+
+  // Chẩn đoán DNR (đợt sửa 17/11/2026): số domain đang chặn + số rule thực
+  // tế trình duyệt đang áp dụng + lỗi của lần áp quy tắc gần nhất (nếu có).
+  // Dữ liệu do background.js ghi sau mỗi lần rebuild; chưa có dữ liệu thì
+  // báo chưa áp quy tắc lần nào, không suy đoán.
+  const dnr = stored.safepc_dnr;
+  const dnrOk =
+    dnr &&
+    typeof dnr === "object" &&
+    Number.isInteger(dnr.blockedCount) &&
+    Number.isInteger(dnr.appliedCount);
+  if (dnrBlockedEl) {
+    dnrBlockedEl.textContent = dnrOk
+      ? "Đang chặn: " + dnr.blockedCount + " domain."
+      : "Chưa áp quy tắc chặn lần nào.";
+  }
+  if (dnrAppliedEl) {
+    dnrAppliedEl.textContent = dnrOk
+      ? "Quy tắc trình duyệt đang áp dụng: " + dnr.appliedCount + "."
+      : "";
+    dnrAppliedEl.hidden = !dnrOk;
+  }
+  if (dnrErrorEl) {
+    if (dnrOk && typeof dnr.error === "string" && dnr.error) {
+      dnrErrorEl.textContent = "Lỗi áp quy tắc chặn: " + dnr.error;
+      dnrErrorEl.className = "note dnr off";
+      dnrErrorEl.hidden = false;
+    } else {
+      dnrErrorEl.textContent = "";
+      dnrErrorEl.hidden = true;
     }
   }
 

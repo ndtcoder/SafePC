@@ -32,6 +32,7 @@ const STORE_KEYS = {
   pending: "safepc_pending",
   limits: "safepc_limits",
   status: "safepc_status",
+  dnr: "safepc_dnr",
 };
 const MAX_PENDING = 1000;
 const MAX_DNR_RULES = 4500;
@@ -479,14 +480,89 @@ function buildDnrRules(rules, usageSeconds, now) {
   return rulesOut;
 }
 
+// Rule redirect SafeSearch/YouTube là nhóm duy nhất dùng regexSubstitution
+// (xem safeSearchRule/youtubeRestrictedRule); mọi rule chặn/cho phép khác
+// dùng redirect { url } tới trang chặn hoặc action block/allow. Dấu hiệu
+// này dùng để tách 2 nhóm khi áp rule (xem rebuildDynamicRules), không
+// đổi logic dựng rule.
+function isSafeSearchRedirectRule(rule) {
+  return (
+    rule &&
+    rule.action &&
+    rule.action.type === "redirect" &&
+    rule.action.redirect &&
+    typeof rule.action.redirect.regexSubstitution === "string"
+  );
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function rebuildDynamicRules() {
+  const now = new Date();
+  let error = null;
   try {
-    const rules = buildDnrRules(currentRules, usage.seconds, new Date());
+    const rules = buildDnrRules(currentRules, usage.seconds, now);
+    const mainRules = rules.filter((rule) => !isSafeSearchRedirectRule(rule));
+    const redirectRules = rules.filter(isSafeSearchRedirectRule);
     const existing = await chrome.declarativeNetRequest.getDynamicRules();
     const removeRuleIds = existing.map((r) => r.id);
-    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: rules });
-  } catch (error) {
-    console.warn("[SafePC] Không rebuild được dynamic rules:", error);
+    // Áp thành 2 lần gọi riêng (đợt sửa 17/11/2026): updateDynamicRules
+    // là nguyên tử theo từng lần gọi, nên 1 rule hỏng trong nhóm redirect
+    // không còn kéo sập cả nhóm chặn. Nhóm chặn/cho phép áp trước, kèm
+    // xóa rule cũ; nhóm redirect chỉ áp khi nhóm chặn đã đứng.
+    try {
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds,
+        addRules: mainRules,
+      });
+    } catch (groupError) {
+      error = errorMessage(groupError);
+      console.warn("[SafePC] Không áp được nhóm rule chặn/cho phép:", groupError);
+    }
+    if (error === null && redirectRules.length > 0) {
+      try {
+        await chrome.declarativeNetRequest.updateDynamicRules({ addRules: redirectRules });
+      } catch (groupError) {
+        error = errorMessage(groupError);
+        console.warn("[SafePC] Không áp được nhóm rule redirect SafeSearch/YouTube:", groupError);
+      }
+    }
+  } catch (buildError) {
+    error = errorMessage(buildError);
+    console.warn("[SafePC] Không rebuild được dynamic rules:", buildError);
+  }
+
+  // Chẩn đoán cho popup (đợt sửa 17/11/2026): số rule thực tế trình duyệt
+  // đang áp dụng (đọc lại sau khi cập nhật), số domain đang chặn (hợp các
+  // domain chặn + chặn tạm thời chưa hết hạn, sau chuẩn hóa), lỗi của lần
+  // rebuild gần nhất. Chỉ ghi storage + console.warn, không throw, không
+  // hiện gì khác cho user.
+  let appliedCount = 0;
+  try {
+    appliedCount = (await chrome.declarativeNetRequest.getDynamicRules()).length;
+  } catch (readError) {
+    console.warn("[SafePC] Không đọc lại được dynamic rules:", readError);
+    if (error === null) error = errorMessage(readError);
+  }
+  const blockedDomains = normalizeDomainSet(currentRules ? currentRules.blocked : null);
+  const tempBlocked = unexpiredTempDomains(
+    currentRules ? currentRules.tempBlock : null,
+    now.getTime(),
+  );
+  const blockedCount = new Set([...blockedDomains, ...tempBlocked]).size;
+  try {
+    await chrome.storage.local.set({
+      [STORE_KEYS.dnr]: {
+        appliedCount,
+        blockedCount,
+        error,
+        updatedAt: now.toISOString(),
+      },
+    });
+  } catch (storeError) {
+    console.warn("[SafePC] Không lưu được chẩn đoán DNR:", storeError);
   }
 }
 
