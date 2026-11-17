@@ -77,9 +77,9 @@ jobs:
       - name: Publish agent (self-contained win-x64)
         if: steps.check.outputs.exists == 'true'
         run: |
-          dotnet publish apps/pc-agent/src/SafePC.Agent.Service/SafePC.Agent.Service.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/Service
-          dotnet publish apps/pc-agent/src/SafePC.Agent.Tray/SafePC.Agent.Tray.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/Tray
-          dotnet publish apps/pc-agent/src/SafePC.Agent.NativeHost/SafePC.Agent.NativeHost.csproj -c Release -r win-x64 --self-contained true -o apps/pc-agent/publish/NativeHost
+          dotnet publish apps/pc-agent/src/SafePC.Agent.Service/SafePC.Agent.Service.csproj -c Release -r win-x64 --self-contained true -p:Version=0.1.${{ github.run_number }} -o apps/pc-agent/publish/Service
+          dotnet publish apps/pc-agent/src/SafePC.Agent.Tray/SafePC.Agent.Tray.csproj -c Release -r win-x64 --self-contained true -p:Version=0.1.${{ github.run_number }} -o apps/pc-agent/publish/Tray
+          dotnet publish apps/pc-agent/src/SafePC.Agent.NativeHost/SafePC.Agent.NativeHost.csproj -c Release -r win-x64 --self-contained true -p:Version=0.1.${{ github.run_number }} -o apps/pc-agent/publish/NativeHost
       - name: Check publish contents (diagnostic)
         if: steps.check.outputs.exists == 'true'
         shell: pwsh
@@ -88,6 +88,21 @@ jobs:
           if (Test-Path apps/pc-agent/publish/Tray/UIAutomationTypes.dll) { Write-Host 'UIAutomationTypes.dll: PRESENT' } else { Write-Host 'UIAutomationTypes.dll: MISSING' }
           if (Test-Path apps/pc-agent/publish/Service/appsettings.json) { Write-Host 'Service appsettings.json: PRESENT' } else { throw 'Service appsettings.json: MISSING - sync config would not ship' }
           if (Test-Path apps/pc-agent/publish/NativeHost/SafePC.Agent.NativeHost.exe) { Write-Host 'NativeHost exe: PRESENT' } else { throw 'NativeHost exe: MISSING - extension native messaging would not work' }
+      - name: Tray self-test (GUI smoke test on Windows runner)
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          $exe = 'apps/pc-agent/publish/Tray/SafePC.Agent.Tray.exe'
+          $proc = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -NoNewWindow
+          if (-not $proc.WaitForExit(60000)) { $proc.Kill(); throw 'Tray self-test timed out after 60s' }
+          if ($proc.ExitCode -ne 0) { throw "Tray self-test FAILED (exit $($proc.ExitCode)) - see tray log in the next step" }
+          Write-Host 'Tray self-test PASSED'
+      - name: Show tray self-test log
+        if: always() && steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          $logDir = Join-Path $env:LOCALAPPDATA 'SafePC\logs'
+          if (Test-Path $logDir) { Get-ChildItem $logDir -Filter *.log | ForEach-Object { Write-Host "=== $($_.Name) ==="; Get-Content $_.FullName -Tail 150 } } else { Write-Host 'No tray log dir found' }
       - name: Install Inno Setup
         if: steps.check.outputs.exists == 'true'
         run: choco install innosetup -y --no-progress
@@ -97,7 +112,7 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = 'ISCC.exe' }
-          & $iscc apps/pc-agent/installer/SafePCAgent.iss
+          & $iscc /DAppVersion=0.1.${{ github.run_number }} apps/pc-agent/installer/SafePCAgent.iss
       - name: Upload installer artifact
         if: steps.check.outputs.exists == 'true'
         uses: actions/upload-artifact@v6
