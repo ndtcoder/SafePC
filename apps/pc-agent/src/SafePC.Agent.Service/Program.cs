@@ -54,6 +54,19 @@ builder.ConfigureServices((context, services) =>
 });
 
 var host = builder.Build();
+
+// Tự kiểm tra đường gửi IPC (chỉ dùng trên CI):
+//   SafePC.Agent.Service.exe --self-test-ipc
+// Khởi động CHỈ IpcPipeServer (không chạy AgentWorker, không chạm Supabase),
+// nối client giả vào và khẳng định lock/unlock giao được — xem SelfTestIpc.
+foreach (string arg in args)
+{
+    if (arg.Equals("--self-test-ipc", StringComparison.OrdinalIgnoreCase))
+    {
+        return await SelfTestIpc.RunAsync(host);
+    }
+}
+
 await host.RunAsync();
 
 // Nhánh "pair" ở trên trả về int, nên mọi đường đi của top-level statements
