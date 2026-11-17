@@ -26,11 +26,12 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [x] Bản sửa lỗi: báo cáo thi hành realtime, cứng hóa Tray + IPC, Dashboard gom theo con + đếm ngược mở khóa + xóa thiết bị.
 - [x] Gốc rễ lỗi IPC (deadlock AutoFlush) đã tìm ra và sửa; cổng kiểm tra khóa/mở trên CI đã xanh; khóa/mở đã kiểm chứng trên máy thật (v0.1.136, 17/11/2026).
 - [x] Tối ưu CI: job lọc thay đổi (đẩy không chạm code agent thì bỏ qua job Windows), cache NuGet + Inno Setup.
-- [ ] Xin thêm giờ đầu-cuối (đang làm — xem đợt hiện tại).
+- [x] Xin thêm giờ đầu-cuối (xong đợt 17/11/2026 — xem đợt hiện tại).
 
 ### Đợt hiện tại — theo yêu cầu ngày 17/11/2026 🔨
-- [x] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (CI xanh run #150, chưa kiểm chứng trên máy thật).
-- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (CI xanh run #150, chưa kiểm chứng trên máy thật; migration 7 chờ áp).
+- [x] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (CI xanh run #159, v0.1.159, chưa kiểm chứng trên máy thật).
+- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (CI xanh run #159; yêu cầu xin giờ + khóa nhập PIN đã thấy trong log máy thật; migration 8 chờ áp).
+- [x] Đợt sửa theo 7 yêu cầu test máy thật 17/11: PIN chỉ dùng một lần, đồng bộ trạng thái khi Tray nối lại, duyệt xin giờ mở khóa luôn, lệnh khóa sau thắng ghi đè mở khóa trước, hết độ trễ khóa ngay không đếm ngược, hồ sơ theo con (Tổng quan / Hồ sơ / Yêu cầu), mã ghép nối 5 phút (CI xanh run #159, v0.1.159, chưa kiểm chứng trên máy thật).
 - [ ] Kiểm chứng chặn domain đầu-cuối: cài extension lên trình duyệt máy thật, sửa `allowed_origins` theo ID thật, thử chặn/cho phép thật.
 - [ ] Rule mẫu URL có đường dẫn (`bing.com/videos`) bên cạnh rule domain.
 
