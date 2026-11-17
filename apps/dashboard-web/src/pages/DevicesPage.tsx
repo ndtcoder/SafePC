@@ -43,6 +43,7 @@ const ENFORCEMENT_BADGE: Record<EnforcementDecision, string> = {
 
 /** Các thời lượng mở khóa tạm thời (phút), cùng bộ với ghi đè tạm thời ở trang Quy tắc. */
 const UNLOCK_DURATIONS = [15, 30, 60, 120]
+const LOCK_DELAYS = [0, 1, 2, 3, 4, 5]
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -166,6 +167,7 @@ export default function DevicesPage() {
 
   // Mở khóa ngay: thời lượng đã chọn theo từng máy (mặc định 30 phút).
   const [unlockMinutesByDevice, setUnlockMinutesByDevice] = useState<Record<string, number>>({})
+  const [lockDelayByDevice, setLockDelayByDevice] = useState<Record<string, number>>({})
   const [sendingUnlockId, setSendingUnlockId] = useState<string | null>(null)
   const [cancellingUnlockId, setCancellingUnlockId] = useState<string | null>(null)
 
@@ -366,17 +368,20 @@ export default function DevicesPage() {
     setLockingId(device.id)
     setActionError(null)
     setActionMessage(null)
+    const delayMinutes = lockDelayByDevice[device.id] ?? 0
     try {
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
         type: 'lock_now',
-        payload: {},
+        payload: { delay_minutes: delayMinutes },
         status: 'pending',
       })
       if (insertError) throw insertError
       setActionMessage(
-        `Đã gửi lệnh khóa máy tới "${device.hostname}". Agent trên máy con sẽ nhận lệnh khi online (polling/Realtime, Sprint 1).`,
+        delayMinutes > 0
+          ? `Đã gửi lệnh khóa máy tới "${device.hostname}" sau ${delayMinutes} phút. Trong lúc chờ, máy con hiện cửa sổ cảnh báo nhỏ để lưu bài làm.`
+          : `Đã gửi lệnh khóa máy tới "${device.hostname}". Agent trên máy con sẽ nhận lệnh khi online (polling/Realtime, Sprint 1).`,
       )
     } catch (err) {
       setActionError(toVietnameseError(err))
@@ -658,6 +663,7 @@ export default function DevicesPage() {
                   !Number.isNaN(enforcementUpdatedMs) && Date.now() - enforcementUpdatedMs > 5 * 60 * 1000
                 const activeUnlockExpiresAt = getActiveUnlock(overrideCommands, device.id, Date.now())
                 const unlockMinutes = unlockMinutesByDevice[device.id] ?? 30
+                const lockDelay = lockDelayByDevice[device.id] ?? 0
                 const confirmingDeleteDevice = confirmDeleteDeviceId === device.id
                 return (
                 <Card key={device.id}>
@@ -744,16 +750,34 @@ export default function DevicesPage() {
                     </div>
                   </dl>
                   <div className="mt-4 border-t border-slate-100 pt-4">
+                    <p className="mb-2 text-sm font-medium text-slate-700">Khóa máy ngay</p>
+                    <div className="flex flex-wrap gap-2" role="group" aria-label="Độ trễ trước khi khóa">
+                      {LOCK_DELAYS.map((delay) => (
+                        <button
+                          key={delay}
+                          type="button"
+                          onClick={() =>
+                            setLockDelayByDevice((prev) => ({ ...prev, [device.id]: delay }))
+                          }
+                          aria-pressed={lockDelay === delay}
+                          className={chipClassName(lockDelay === delay)}
+                        >
+                          {delay === 0 ? 'Khóa ngay' : `${delay} phút`}
+                        </button>
+                      ))}
+                    </div>
                     <button
                       type="button"
                       onClick={() => void handleLockNow(device)}
                       disabled={lockingId === device.id}
-                      className={dangerButtonClassName}
+                      className={`${dangerButtonClassName} mt-3`}
                     >
                       {lockingId === device.id ? 'Đang gửi lệnh…' : 'Khóa ngay'}
                     </button>
                     <p className="mt-2 text-xs text-slate-500">
-                      Lệnh khóa được ghi vào bảng commands để Agent trên máy con nhận và thi hành.
+                      {lockDelay > 0
+                        ? `Máy con sẽ hiện cửa sổ cảnh báo nhỏ trong ${lockDelay} phút để lưu bài làm, sau đó mới khóa.`
+                        : 'Lệnh khóa được ghi vào bảng commands để Agent trên máy con nhận và thi hành.'}
                     </p>
                   </div>
                   <div className="mt-4 border-t border-slate-100 pt-4">
