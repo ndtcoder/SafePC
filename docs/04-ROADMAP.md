@@ -29,8 +29,8 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [ ] Xin thêm giờ đầu-cuối (đang làm — xem đợt hiện tại).
 
 ### Đợt hiện tại — theo yêu cầu ngày 17/11/2026 🔨
-- [ ] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (đã đẩy code, đang chờ cổng kiểm tra CI, chưa kiểm chứng trên máy thật).
-- [ ] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật.
+- [x] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (CI xanh run #150, chưa kiểm chứng trên máy thật).
+- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (CI xanh run #150, chưa kiểm chứng trên máy thật; migration 7 chờ áp).
 - [ ] Kiểm chứng chặn domain đầu-cuối: cài extension lên trình duyệt máy thật, sửa `allowed_origins` theo ID thật, thử chặn/cho phép thật.
 - [ ] Rule mẫu URL có đường dẫn (`bing.com/videos`) bên cạnh rule domain.
 

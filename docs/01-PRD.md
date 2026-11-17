@@ -10,8 +10,8 @@ Bản v0.1.136 đã kiểm chứng trên máy thật: ghép nối, đồng bộ 
 | Theo dõi thời gian dùng app + web | ✅ Đã triển khai (app đã kiểm chứng; web chờ extension được cài) |
 | Quy tắc giờ giấc, theo app, focus, nghỉ bắt buộc | ✅ Đã triển khai; khóa theo quy tắc đã kiểm chứng (giờ ngủ), các mode app chờ kiểm chứng thêm |
 | Khóa/mở từ xa, ghi đè tạm thời | ✅ Đã triển khai, đã kiểm chứng trên máy thật |
-| Khóa có độ trễ + khóa theo phiên | 🔨 Đã đẩy code ngày 17/11, đang chờ cổng kiểm tra CI, chưa kiểm chứng trên máy thật |
-| PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại | 🔨 Đang làm (đợt tiếp theo) |
+| Khóa có độ trễ + khóa theo phiên | 🔨 Đã triển khai, CI xanh (run #150, 17/11), chưa kiểm chứng trên máy thật |
+| PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại | 🔨 Đã triển khai, CI xanh (run #150, 17/11), chưa kiểm chứng trên máy thật; migration 7 chờ áp lên Supabase |
 | Chặn/cho phép domain qua extension | ✅ Code đã xong, ⏳ chưa từng kiểm chứng đầu-cuối (extension chưa cài trên máy thật) |
 | Tính năng nâng cao + giao diện chuyên nghiệp | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.8) |
 | Flow cài đặt cho phụ huynh khác | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.9) |
@@ -71,7 +71,7 @@ Quy tắc lưu trong bảng `rules` (cột `config` JSONB). Mọi giờ giấc t
 
 Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khung giờ → giới hạn ngày. Các loại quy tắc khác (theo app, website/domain, giờ học, nghỉ bắt buộc, cảnh báo chống phá, mẫu sẵn) thuộc các đợt tiếp theo theo thứ tự đã chốt với phụ huynh.
 
-#### 2.3.2. Khóa có độ trễ + khóa theo phiên (đợt 17/11/2026 — đã đẩy code, đang chờ cổng kiểm tra CI)
+#### 2.3.2. Khóa có độ trễ + khóa theo phiên (đợt 17/11/2026 — đã triển khai, CI xanh run #150, chưa kiểm chứng trên máy thật)
 
 - Phụ huynh chọn độ trễ 0–5 phút khi bấm "Khóa ngay" trên Dashboard (`delay_minutes` trong payload lệnh `lock_now`). Độ trễ > 0: Tray chỉ hiện cửa sổ cảnh báo nhỏ (không full màn, con vẫn làm việc/lưu bài), hết đếm ngược mới hiện màn hình khóa full màn kèm nút xin thêm giờ. Độ trễ 0: khóa ngay như trước.
 - Lệnh khóa/cảnh báo chỉ giao tới phiên Windows của con: Tray tự giới thiệu (phiên, tài khoản, quyền admin qua `TokenElevationType`); Service miễn trừ phiên admin. Ghép nối vẫn ở mức máy (cài một lần bằng quyền Admin, Service chạy quyền SYSTEM); chỉ phần giao lệnh là theo phiên. Phiên chưa giới thiệu vẫn nhận lệnh (fail-closed).
@@ -92,11 +92,11 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 - [ ] **Ngoài phạm vi MVP:** lọc HTTPS toàn hệ thống bằng MITM proxy, chặn VPN, chặn mọi trình duyệt lạ. Các mục này cần đánh giá riêng ở giai đoạn 2 vì rủi ro bảo mật/pháp lý và bị antivirus chặn.
 
 ### 2.6. Yêu cầu từ con & thông báo
-- [ ] Con bấm "Xin thêm giờ" / "Xin mở app" từ màn hình khóa/tray, nhập lý do. — Form trên Tray đã có (gửi message IPC); đầu Service → Supabase → Dashboard **chưa xây** (đang làm, đợt tiếp theo).
-- [ ] Phụ huynh nhận yêu cầu trên Dashboard (Realtime), Duyệt/Từ chối + ghi chú. — Trang Yêu cầu đã có route; pipeline duyệt → lệnh mở máy chưa xây.
+- [x] Con bấm "Xin thêm giờ" / "Xin mở app" từ màn hình khóa/tray, nhập lý do. — Đã triển khai đầu-cuối (Tray → IPC → outbox Service → RPC Supabase → Dashboard); CI xanh run #150, chưa kiểm chứng trên máy thật. Yêu cầu xin mở app chưa có thông tin app trong yêu cầu nên duyệt mới chỉ đổi trạng thái.
+- [x] Phụ huynh nhận yêu cầu trên Dashboard (Realtime), Duyệt/Từ chối + ghi chú. — Đã triển khai: duyệt xin thêm giờ gửi lệnh cộng giờ tới máy (tới hết ngày), rồi mới đổi trạng thái; CI xanh run #150, chưa kiểm chứng trên máy thật. Ghi chú khi duyệt chưa có.
 - [x] Agent nhận lệnh trong vòng < 30 giây khi online (polling 15s). — Đã triển khai và kiểm chứng (lệnh khóa/mở tới trong ~15s).
-- [ ] PIN thoát Tray (mã PIN riêng của phụ huynh, khác mật khẩu đăng nhập). — Chưa xây (đang làm, đợt tiếp theo); hiện hộp PIN luôn từ chối vì chưa cấu hình.
-- [ ] Xem thời gian còn lại thật trên Tray. — Chưa xây (đang làm, đợt tiếp theo); hiện hộp thoại chỉ hiện chữ chờ.
+- [x] PIN thoát Tray (mã PIN riêng của phụ huynh, khác mật khẩu đăng nhập). — Đã triển khai: PIN đặt trên Dashboard (băm PBKDF2 tại trình duyệt), Service giữ hash và xác thực, sai 5 lần khóa 5 phút; CI xanh run #150, chưa kiểm chứng trên máy thật. Cần migration 7 áp lên Supabase thì PIN mới có hiệu lực.
+- [x] Xem thời gian còn lại thật trên Tray. — Đã triển khai: Tray hỏi Service qua IPC, Service trả quyết định mới nhất kèm số phút còn lại thật (giới hạn ngày/khung giờ/giờ ngủ); CI xanh run #150, chưa kiểm chứng trên máy thật.
 
 ### 2.7. Báo cáo
 - [x] Trạng thái thi hành realtime trên Dashboard: luật nào đang khóa máy/khóa app/khóa domain, chip "Đang thi hành", thời gian cập nhật. — Đã triển khai (snapshot enforcement, migration 6).
