@@ -356,6 +356,11 @@ public sealed class IpcPipeServer : BackgroundService
         try
         {
             using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            // Breadcrumb mịn (run #131: handler im lặng giữa "bắt đầu đọc"
+            // và dòng "đã tạo reader/writer" — khoảng giữa chỉ có 2 ctor,
+            // về lý thuyết không thể chặn. Dòng này xác định ctor nào là
+            // điểm treo.)
+            _log.Info("IPC: handler #" + handlerId + " — đã tạo reader, đang tạo writer.");
             writer = new StreamWriter(server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
             // Breadcrumb (run #129: handler im lặng sau "bắt đầu đọc", không
             // tới được dòng đăng ký writer): dòng này phân biệt "chết khi

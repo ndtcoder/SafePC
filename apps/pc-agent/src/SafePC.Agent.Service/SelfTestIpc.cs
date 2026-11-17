@@ -94,8 +94,15 @@ public static class SelfTestIpc
             // sau khi nối thành công; xem ghi chú ở IpcPipeClient).
             Check("client giả nối tới IpcPipeServer", true);
 
+            // Breadcrumb mịn (run #131: main task im lặng giữa check 1 và
+            // Trace gửi sample — khoảng giữa chỉ có 2 ctor StreamReader/
+            // StreamWriter, về lý thuyết không thể chặn. Các dòng này xác
+            // định chính xác ctor nào (nếu có) là điểm treo.)
+            Trace("sau check 1, sắp tạo StreamReader...");
             using var reader = new StreamReader(client, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            Trace("đã tạo StreamReader, sắp tạo StreamWriter...");
             using var writer = new StreamWriter(client, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            Trace("đã tạo StreamWriter.");
 
             // Gửi một usage-sample lên để chạy đường đọc của server (thread
             // đọc + Channel + HandleMessageAsync + ghi SQLite), rồi KHẲNG
