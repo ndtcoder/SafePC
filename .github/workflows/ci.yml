@@ -104,7 +104,11 @@ jobs:
           $logDir = Join-Path $env:LOCALAPPDATA 'SafePC\logs'
           if (Test-Path $logDir) { Get-ChildItem $logDir -Filter *.log | ForEach-Object { Write-Host "=== $($_.Name) ==="; Get-Content $_.FullName -Tail 150 } } else { Write-Host 'No tray log dir found' }
       - name: Service IPC self-test (lock/unlock delivery)
-        if: steps.check.outputs.exists == 'true'
+        # if: always(): cổng Service phải chạy và báo cáo độc lập ngay cả khi
+        # cổng Tray rớt (run #127: bước này bị bỏ qua nên không có tín hiệu
+        # nào từ phía Service). Job vẫn đỏ nếu bước Tray đã rớt; bước cài
+        # đặt/upload bên dưới không có always() nên run đỏ không tạo artifact.
+        if: always() && steps.check.outputs.exists == 'true'
         shell: pwsh
         run: |
           $exe = 'apps/pc-agent/publish/Service/SafePC.Agent.Service.exe'
