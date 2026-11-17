@@ -53,9 +53,9 @@ Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 ; giá trị mặc định của khóa này để tìm file manifest com.safepc.agent.json.
 ; Bộ cài chạy ở chế độ 64-bit (ArchitecturesInstallIn64BitMode) nên khóa ghi
 ; vào registry view 64-bit mà Chrome/Edge 64-bit đọc. uninsdeletekey: gỡ cài
-; đặt thì xóa cả khóa. ID extension trong manifest hiện là placeholder
-; "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" (32 ký tự, đúng định dạng); ID thật lấy
-; từ lúc đăng extension lên store (xem apps/browser-extension/README.md).
+; đặt thì xóa cả khóa. ID extension trong manifest là ID thật của
+; extension SafePC trên Edge (djcgbhjbmcccdgedbmfihdpeeanmldbd), lấy từ
+; máy test 17/11/2026.
 Root: HKLM; Subkey: "SOFTWARE\Google\Chrome\NativeMessagingHosts\com.safepc.agent"; ValueType: string; ValueName: ""; ValueData: "{app}\NativeHost\com.safepc.agent.json"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Edge\NativeMessagingHosts\com.safepc.agent"; ValueType: string; ValueName: ""; ValueData: "{app}\NativeHost\com.safepc.agent.json"; Flags: uninsdeletekey
 
@@ -151,10 +151,10 @@ end;
 // com.safepc.agent.json sau khi cài đặt xong, vì trường "path" trong manifest
 // phải là đường dẫn TUYỆT ĐỐI tới exe. Cài đè cũng sinh lại (ghi đè) nên
 // manifest luôn khớp vị trí cài đặt hiện tại.
-// Extension ID "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" là placeholder 32 ký tự
-// đúng định dạng; ID thật lấy từ lúc đăng extension lên Chrome Web Store /
-// Edge Add-ons (hoặc key cố định khi đóng gói), rồi cập nhật cả chỗ này và
-// README của extension.
+// Extension ID "djcgbhjbmcccdgedbmfihdpeeanmldbd" là ID thật của extension
+// SafePC trên Edge, lấy từ máy test 17/11/2026 (xem
+// apps/browser-extension/README.md). Nướng ID này vào bộ cài để cài đè
+// không ghi đè manifest bằng placeholder và phá native messaging.
 // Nhân đôi backslash trong đường dẫn Windows để đưa vào JSON.
 // KHÔNG dùng StringChange/StringChangeEx: cả hai đều làm ISCC 6.7.1 báo
 // "Type mismatch" (CI run #80/#81). Vòng lặp thủ công chỉ dùng Length,
@@ -188,7 +188,7 @@ begin
     '  "path": "' + ExePath + '",' + #13#10 +
     '  "type": "stdio",' + #13#10 +
     '  "allowed_origins": [' + #13#10 +
-    '    "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"' + #13#10 +
+    '    "chrome-extension://djcgbhjbmcccdgedbmfihdpeeanmldbd/"' + #13#10 +
     '  ]' + #13#10 +
     '}' + #13#10;
   SaveStringToFile(ExpandConstant('{app}\NativeHost\com.safepc.agent.json'), Manifest, False);
