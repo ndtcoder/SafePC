@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace SafePC.Agent.Shared;
 
 /// <summary>
@@ -6,8 +8,41 @@ namespace SafePC.Agent.Shared;
 /// </summary>
 public static class AgentConstants
 {
-    /// <summary>Phiên bản Agent, gửi kèm heartbeat và ghi vào bảng devices (cột agent_version).</summary>
-    public const string AgentVersion = "0.1.0";
+    /// <summary>
+    /// Phiên bản Agent, gửi kèm heartbeat và ghi vào bảng devices (cột agent_version).
+    /// Lấy từ AssemblyInformationalVersion của file .exe đang chạy — CI đóng dấu
+    /// version 0.1.&lt;số run&gt; khi publish (vd: bản #111 là 0.1.111), nên log,
+    /// Dashboard và tooltip tray luôn cho biết đúng bản đang chạy. Build tại chỗ
+    /// không qua CI thì rơi về "0.1.0-dev".
+    /// </summary>
+    public static string AgentVersion { get; } = ResolveAgentVersion();
+
+    private static string ResolveAgentVersion()
+    {
+        try
+        {
+            System.Reflection.Assembly? entry = System.Reflection.Assembly.GetEntryAssembly();
+            string? informational = entry?.GetCustomAttribute<System.Reflection.AssemblyInformationalAttribute>()?.InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(informational))
+            {
+                // InformationalVersion có thể kèm hậu tố "+commit" — chỉ lấy phần trước '+'.
+                int plus = informational.IndexOf('+');
+                return plus >= 0 ? informational.Substring(0, plus) : informational;
+            }
+
+            string? fileVersion = entry?.GetCustomAttribute<System.Reflection.AssemblyFileVersionAttribute>()?.Version;
+            if (!string.IsNullOrWhiteSpace(fileVersion))
+            {
+                return fileVersion;
+            }
+        }
+        catch
+        {
+            // Đọc version thất bại thì dùng giá trị dự phòng, không được làm hỏng khởi động.
+        }
+
+        return "0.1.0-dev";
+    }
 
     /// <summary>Chu kỳ gửi heartbeat lên server (60 giây).</summary>
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(60);
