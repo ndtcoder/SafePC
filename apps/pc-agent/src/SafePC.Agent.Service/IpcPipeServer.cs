@@ -65,6 +65,7 @@ public sealed class IpcPipeServer : BackgroundService
     private readonly LocalLogger _log;
     private readonly ForegroundState _foregroundState;
     private readonly TrayQueryState _queryState;
+    private readonly SupabaseApiClient _api;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     /// <summary>
@@ -114,12 +115,13 @@ public sealed class IpcPipeServer : BackgroundService
     /// <summary>Thời gian khóa nhập PIN sau khi sai quá số lần cho phép.</summary>
     private static readonly TimeSpan PinLockoutDuration = TimeSpan.FromMinutes(5);
 
-    public IpcPipeServer(OutboxStore outbox, LocalLogger log, ForegroundState foregroundState, TrayQueryState queryState)
+    public IpcPipeServer(OutboxStore outbox, LocalLogger log, ForegroundState foregroundState, TrayQueryState queryState, SupabaseApiClient api)
     {
         _outbox = outbox;
         _log = log;
         _foregroundState = foregroundState;
         _queryState = queryState;
+        _api = api;
     }
 
     /// <summary>
@@ -274,6 +276,52 @@ public sealed class IpcPipeServer : BackgroundService
         finally
         {
             _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Gửi trạng thái thi hành hiện tại cho MỘT Tray vừa giới thiệu (xem
+    /// trường hợp hello trong <see cref="HandleMessageAsync"/>): Service
+    /// chưa đánh giá lần nào thì không gửi gì (vòng kiểm tra rules sẽ gửi
+    /// khi có quyết định); đang khóa thì gửi khóa, đang cảnh báo thì gửi
+    /// cảnh báo — cả hai đều MIỄN phiên admin như
+    /// <see cref="SendToTrayAsync"/>; đang cho phép thì gửi mở tới mọi
+    /// phiên để đóng màn hình khóa/cảnh báo cũ còn sót. Khóa đồng bộ luôn
+    /// có đếm ngược (Immediate = false): Tray mới chưa từng thấy cảnh báo
+    /// trong phiên này nên vẫn cần thời gian lưu bài.
+    /// </summary>
+    private async Task SyncStateToWriterAsync(WriterEntry entry, CancellationToken ct)
+    {
+        if (!_queryState.TryGetDecision(out RuleDecision decision, out _))
+        {
+            return;
+        }
+
+        bool isAdmin;
+        lock (_writersLock)
+        {
+            isAdmin = entry.IsAdmin;
+        }
+
+        switch (decision.Kind)
+        {
+            case RuleDecisionKind.Lock when !isAdmin:
+                _log.Info("IPC: đồng bộ trạng thái cho Tray mới nối: đang khóa, gửi lệnh khóa.");
+                await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason)), ct);
+                break;
+
+            case RuleDecisionKind.Warn when !isAdmin:
+                _log.Info("IPC: đồng bộ trạng thái cho Tray mới nối: đang cảnh báo, gửi cảnh báo.");
+                await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(decision.MinutesLeft, decision.Reason)), ct);
+                break;
+
+            case RuleDecisionKind.Allowed:
+                await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                break;
+
+            default:
+                // Phiên admin đang khóa/cảnh báo: miễn, không gửi gì.
+                break;
         }
     }
 
@@ -705,6 +753,18 @@ public sealed class IpcPipeServer : BackgroundService
 
                     _log.Info("IPC: Tray phiên #" + hello.SessionId + " (" + hello.UserName + ") đã giới thiệu, admin=" + hello.IsAdmin
                         + " — lệnh khóa/cảnh báo " + (hello.IsAdmin ? "sẽ MIỄN phiên này." : "sẽ giao tới phiên này."));
+
+                    // ĐỒNG BỘ TRẠNG THÁI KHI TRAY MỚI NỐI (sửa 17/11/2026
+                    // theo yêu cầu test máy thật): Tray thoát rồi chạy lại
+                    // (hoặc đăng nhập lại sau khi thoát bằng PIN) mà Service
+                    // vẫn giữ cờ "đã gửi khóa" thì Tray mới không bao giờ
+                    // nhận lại lệnh khóa — máy hiện "đang khóa" trên web
+                    // nhưng thực tế không khóa. Gửi ngay trạng thái hiện
+                    // tại cho writer vừa giới thiệu: đang khóa thì gửi khóa,
+                    // đang cảnh báo thì gửi cảnh báo, đang cho phép thì gửi
+                    // mở (đóng màn hình khóa cũ nếu còn). Không chờ tới kỳ
+                    // kiểm tra rules sau, không cần Tray hỏi lại định kỳ.
+                    await SyncStateToWriterAsync(entry, ct);
                 }
                 break;
 
@@ -798,7 +858,10 @@ public sealed class IpcPipeServer : BackgroundService
     /// đều trả lời "không xác thực" (fail-closed).
     /// Ghi nhận (review đợt này): đọc-sửa-ghi PinFailCount không nguyên tử —
     /// hai phiên kiểm tra cùng lúc có thể làm mất một lần đếm, hậu quả chỉ
-    /// là khóa chậm hơn một lần thử; chấp nhận, không khóa thêm.
+    /// là khóa chậm hơn một lần thử; chấp nhận, không khóa thêm. Tương tự,
+    /// hai phiên gửi đúng PIN cùng một mili-giây có thể cùng đọc được hash
+    /// trước khi bên kia kịp tiêu thụ — cửa sổ mili-giây, cùng một máy, mã
+    /// vẫn bị gỡ ngay sau đó; chấp nhận, không khóa thêm.
     /// </summary>
     private async Task HandlePinVerifyAsync(IpcMessage message, WriterEntry entry, CancellationToken ct)
     {
@@ -839,7 +902,43 @@ public sealed class IpcPipeServer : BackgroundService
             {
                 await _outbox.SetStateAsync(StateKeys.PinFailCount, "0", ct);
                 await _outbox.DeleteStateAsync(StateKeys.PinLockoutUntil, ct);
-                _log.Info("IPC: mã PIN thoát đúng, cho phép thoát Tray.");
+
+                // MÃ PIN CHỈ DÙNG MỘT LẦN (yêu cầu test máy thật 17/11/2026):
+                // nhập đúng thì mã bị gỡ khỏi hệ thống ngay. Ghi cờ
+                // hash-đã-dùng TRƯỚC khi xóa khỏi bộ nhớ: ghi cờ lỗi thì
+                // catch ngoài trả lời "không xác thực" và mã vẫn còn nguyên
+                // để thử lại (không để lại trạng thái nửa vời). Xóa khỏi bộ
+                // nhớ xong thì mọi phiên khác hết dùng được mã này ngay lập
+                // tức. Lệnh gỡ lên server lỗi (mất mạng, migration 8 chưa
+                // áp) thì cờ còn lại và chu kỳ heartbeat thử lại cho tới khi
+                // server xác nhận — không bao giờ chặn câu trả lời "được
+                // phép thoát" vì lỗi gỡ. RPC chỉ gỡ khi hash trên server
+                // đúng bằng hash vừa dùng nên mã PIN mới không bị xóa nhầm.
+                await _outbox.SetStateAsync(StateKeys.PinConsumedHash, storedHash, ct);
+                _queryState.UpdatePinHash(null);
+                try
+                {
+                    bool? cleared = await _api.ClearExitPinAsync(storedHash, ct);
+                    if (cleared is not null)
+                    {
+                        // true = đã gỡ; false = hash trên server đã đổi/mất
+                        // (mã đã dùng không còn đó nữa) — cả hai đều không
+                        // cần thử lại.
+                        await _outbox.DeleteStateAsync(StateKeys.PinConsumedHash, ct);
+                        _log.Info(cleared.Value
+                            ? "IPC: mã PIN thoát đúng, cho phép thoát Tray; mã PIN đã gỡ khỏi server (dùng một lần)."
+                            : "IPC: mã PIN thoát đúng, cho phép thoát Tray; mã PIN trên server đã đổi/gỡ rồi, không cần gỡ lại.");
+                    }
+                    else
+                    {
+                        _log.Warning("IPC: mã PIN thoát đúng, cho phép thoát Tray; lệnh gỡ mã trên server chưa thành công, sẽ thử lại ở chu kỳ heartbeat sau.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Error("IPC: gỡ mã PIN thoát trên server lỗi (mã vẫn bị gỡ khỏi bộ nhớ Service, sẽ thử lại sau).", ex);
+                }
+
                 await ReplyAsync(verified: true, lockedOut: false, remainingAttempts: MaxPinAttempts, pinConfigured: true);
                 return;
             }

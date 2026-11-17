@@ -227,11 +227,44 @@ public sealed class AgentWorker : BackgroundService
                     // Đồng bộ hash mã PIN thoát (migration 7): Service giữ
                     // hash trong bộ nhớ để kiểm tra PIN cho Tray qua IPC.
                     // Chỉ ghi log khi giá trị ĐỔI; không bao giờ ghi hash.
-                    if (_queryState.UpdatePinHash(result.ExitPinHash))
+                    // MÃ PIN DÙNG MỘT LẦN: nếu có cờ hash-đã-dùng mà server
+                    // vẫn trả đúng hash đó (lệnh gỡ lần trước chưa tới) thì
+                    // thử gỡ lại và KHÔNG khôi phục hash vào bộ nhớ — mã đã
+                    // dùng rồi thì không dùng lại được. Server trả null
+                    // (đã gỡ) hoặc hash khác (phụ huynh đã đặt mã mới) thì
+                    // xóa cờ và đồng bộ bình thường.
+                    string? consumedHash = await _outbox.GetStateAsync(StateKeys.PinConsumedHash, ct);
+                    if (consumedHash is not null && string.Equals(result.ExitPinHash, consumedHash, StringComparison.Ordinal))
                     {
-                        _log.Info(result.ExitPinHash is null
-                            ? "Mã PIN thoát đã được gỡ (phụ huynh chưa đặt PIN)."
-                            : "Mã PIN thoát đã được đặt/cập nhật từ server.");
+                        _queryState.UpdatePinHash(null);
+                        bool? cleared = await _api.ClearExitPinAsync(consumedHash, ct);
+                        if (cleared is not null)
+                        {
+                            // true = đã gỡ; false = hash trên server đã đổi
+                            // sau lần đọc heartbeat (phụ huynh đặt mã mới) —
+                            // RPC đối sánh hash nên mã mới không bị xóa, và
+                            // cờ thử lại cũng không còn cần nữa.
+                            await _outbox.DeleteStateAsync(StateKeys.PinConsumedHash, ct);
+                            _log.Info("Mã PIN thoát đã dùng không còn trên server, xóa cờ thử lại.");
+                        }
+                        else
+                        {
+                            _log.Warning("Thử gỡ mã PIN thoát đã dùng trên server chưa thành công, sẽ thử lại ở chu kỳ sau.");
+                        }
+                    }
+                    else
+                    {
+                        if (consumedHash is not null)
+                        {
+                            await _outbox.DeleteStateAsync(StateKeys.PinConsumedHash, ct);
+                        }
+
+                        if (_queryState.UpdatePinHash(result.ExitPinHash))
+                        {
+                            _log.Info(result.ExitPinHash is null
+                                ? "Mã PIN thoát đã được gỡ (phụ huynh chưa đặt PIN)."
+                                : "Mã PIN thoát đã được đặt/cập nhật từ server.");
+                        }
                     }
 
                     // Kiểm tra extension còn sống (chỉ sau khi heartbeat
@@ -862,7 +895,10 @@ public sealed class AgentWorker : BackgroundService
                         // Khóa có độ trễ đang chờ: chưa tới hẹn thì chỉ gửi
                         // cảnh báo (khi số phút còn lại đổi), chưa gửi lệnh
                         // khóa. Tới hẹn thì xóa hẹn và rơi xuống gửi khóa
-                        // như thường ở dưới.
+                        // như thường ở dưới — khóa này là Immediate (con đã
+                        // có cả thời gian chờ để lưu bài nên màn hình khóa
+                        // không đếm ngược 60 giây nữa).
+                        bool delayJustExpired = false;
                         if (_pendingLockAt.HasValue)
                         {
                             if (now < _pendingLockAt.Value)
@@ -883,6 +919,7 @@ public sealed class AgentWorker : BackgroundService
                             }
 
                             _pendingLockAt = null;
+                            delayJustExpired = true;
                         }
 
                         bool firstLock = !_lockSent;
@@ -907,7 +944,7 @@ public sealed class AgentWorker : BackgroundService
                             // Gửi thất bại thì cờ vẫn false, lần kiểm tra
                             // sau gửi lại.
                             int sent = await _ipc.SendToTrayAsync(
-                                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason)), ct);
+                                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason, delayJustExpired)), ct);
                             if (firstLock)
                             {
                                 _lockSent = sent > 0;
@@ -962,7 +999,12 @@ public sealed class AgentWorker : BackgroundService
                 if (decision.Kind == RuleDecisionKind.Allowed)
                 {
                     int remainingMinutes = _ruleEngine.GetRemainingMinutes(rules, usedToday, now, activeOverride);
-                    displayDecision = new RuleDecision(RuleDecisionKind.Allowed, string.Empty, remainingMinutes);
+
+                    // Đang trong thời gian mở khóa tạm thời thì nói rõ điều
+                    // đó thay vì "không còn giới hạn" (yêu cầu test máy thật
+                    // 17/11/2026): Tray hiển thị lý do khi không có số phút.
+                    string displayReason = unlockOverride ? "Đang mở khóa tạm thời theo lệnh của phụ huynh." : string.Empty;
+                    displayDecision = new RuleDecision(RuleDecisionKind.Allowed, displayReason, remainingMinutes);
                 }
 
                 _queryState.UpdateDecision(displayDecision, now);
@@ -1712,6 +1754,21 @@ public sealed class AgentWorker : BackgroundService
                 // Lưu bền vững: khóa cưỡng chế sống sót qua khởi động lại
                 // Service, chỉ hết khi có lệnh unlock.
                 await _outbox.SetStateAsync(StateKeys.ForcedLock, "1", ct);
+
+                // HÀNH ĐỘNG SAU THẮNG HÀNH ĐỘNG TRƯỚC (sửa 17/11/2026 theo
+                // yêu cầu test máy thật): đang "mở khóa ngay" mà phụ huynh
+                // bấm "khóa máy ngay" thì máy phải khóa — ghi đè mở khóa
+                // còn hạn trước đây thắng cả khóa cưỡng chế nên lệnh khóa
+                // bị nuốt. Lệnh khóa mới nhất hủy ghi đè MỞ KHÓA đang hiệu
+                // lực (chỉ ghi đè mở khóa — ghi đè cộng giờ/chặn app/
+                // domain không xung đột với lệnh khóa nên giữ nguyên).
+                TemporaryOverride? conflictingOverride = await _outbox.GetActiveOverrideAsync(ct);
+                if (conflictingOverride is not null && conflictingOverride.ExpiresAt > DateTimeOffset.UtcNow
+                    && conflictingOverride.Action == OverrideActions.Unlock)
+                {
+                    await _outbox.ClearOverrideAsync(ct);
+                    _log.Info("Lệnh khóa mới hủy ghi đè mở khóa đang hiệu lực (hành động sau thắng hành động trước).");
+                }
 
                 // Độ trễ khóa (Dashboard cho chọn 0–5 phút): delay > 0 và
                 // chưa khóa thì CHƯA gửi lệnh khóa — đặt hẹn giờ, gửi cảnh

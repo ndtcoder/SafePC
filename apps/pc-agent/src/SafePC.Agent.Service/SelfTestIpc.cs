@@ -15,10 +15,12 @@ namespace SafePC.Agent.Service;
 /// ≥1 writer và client nhận đủ cả hai dòng; khẳng định extra-time-request
 /// được xếp vào outbox; khẳng định pin-verify (đúng thì đạt, sai thì trượt
 /// và trừ lần thử) và remaining-time-request trả về quyết định mới nhất;
-/// cuối cùng client gửi hello IsAdmin=true và khẳng định lệnh lock không
-/// còn giao tới writer nào (miễn trừ phiên admin). Lỗi "handler đã nối
-/// nhưng danh sách writer rỗng" (bản 0.1.122) phải bị bắt ở đây.
-/// Tổng 11 check.
+/// khẳng định hello từ phiên không phải admin thì nhận ngay lệnh khóa đang
+/// hiệu lực (đồng bộ trạng thái khi Tray mới nối); cuối cùng client gửi
+/// hello IsAdmin=true và khẳng định lệnh lock không còn giao tới writer nào
+/// (miễn trừ phiên admin). Lỗi "handler đã nối nhưng danh sách writer rỗng"
+/// (bản 0.1.122) phải bị bắt ở đây.
+/// Tổng 12 check.
 ///
 /// Ghi kết quả ra CẢ log file (LocalLogger) lẫn console để CI đọc trực tiếp.
 /// Thoát 0 khi mọi check đạt, 1 khi có check trượt.
@@ -248,6 +250,13 @@ public static class SelfTestIpc
             PinVerifyResponsePayload? pinOk = pinOkLine is null ? null : IpcMessage.FromLine(pinOkLine)?.GetPayload<PinVerifyResponsePayload>();
             Check("pin-verify PIN đúng thì được xác thực", pinOk is { Verified: true, PinConfigured: true, RequestId: "self-test-pin-ok" });
 
+            // Mã PIN dùng một lần: lần đúng vừa rồi đã tiêu thụ hash (bộ
+            // nhớ Service đã xóa; lệnh gỡ lên server thất bại vì self-test
+            // không có thông tin ghép nối, cờ thử lại còn lại trong
+            // device_state — vô hại trên DB mới của runner). Đặt lại hash
+            // để kiểm tra lần sai trên cùng một mã: bộ đếm sai vẫn là 0 vì
+            // lần đúng đã đặt lại, nên lần sai này còn đúng 4 lần thử.
+            queryState.UpdatePinHash(PinHash.Hash("123456"));
             Trace("đang kiểm tra pin-verify PIN sai...");
             Task<string?> pinBadReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
             await writer.WriteLineAsync(IpcMessage.Create(
@@ -272,6 +281,22 @@ public static class SelfTestIpc
             string? remainingLine = await remainingReadTask;
             RemainingTimeResponsePayload? remaining = remainingLine is null ? null : IpcMessage.FromLine(remainingLine)?.GetPayload<RemainingTimeResponsePayload>();
             Check("remaining-time-request trả về quyết định mới nhất", remaining is { Decision: "lock", MinutesLeft: 0, RequestId: "self-test-remaining" });
+
+            // Đồng bộ trạng thái khi Tray mới nối (đợt sửa 17/11/2026):
+            // client giả gửi hello KHÔNG phải admin trong lúc quyết định
+            // mới nhất đang là Lock thì server phải gửi ngay lệnh khóa
+            // xuống writer vừa giới thiệu, không chờ vòng kiểm tra rules.
+            // Đọc phải chạy đồng thời với gửi (FlushAsync của lệnh khóa
+            // chặn tới khi đầu kia đọc).
+            Trace("đang kiểm tra đồng bộ trạng thái khi hello...");
+            Task<string?> helloSyncReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            await writer.WriteLineAsync(IpcMessage.Create(
+                IpcMessageTypes.Hello,
+                new HelloPayload(0, "self-test-child", false)).ToLine());
+            await writer.FlushAsync();
+            string? helloSyncLine = await helloSyncReadTask;
+            IpcMessage? helloSyncMessage = helloSyncLine is null ? null : IpcMessage.FromLine(helloSyncLine);
+            Check("hello từ phiên không admin thì nhận ngay lệnh khóa đang hiệu lực", helloSyncMessage?.Type == IpcMessageTypes.Lock);
 
             // Miễn trừ admin (đợt khóa theo phiên): client giả gửi hello
             // IsAdmin=true, rồi khẳng định lệnh lock KHÔNG còn giao tới

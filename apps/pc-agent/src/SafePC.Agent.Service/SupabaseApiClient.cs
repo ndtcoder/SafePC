@@ -370,6 +370,52 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Gỡ mã PIN thoát khỏi server sau khi mã đã dùng đúng một lần (migration
+    /// 8, RPC <c>safepc_clear_exit_pin</c>): đặt <c>devices.exit_pin_hash</c>
+    /// về NULL, nhưng CHỈ khi hash trên server đúng bằng
+    /// <paramref name="expectedHash"/> (hash của mã vừa dùng) — mã PIN mới
+    /// phụ huynh đặt sau đó không bao giờ bị xóa nhầm. Trả về 3 trạng thái:
+    /// true = đã gỡ; false = hash trên server đã đổi/mất (mã đã dùng không
+    /// còn đó nữa); null = lỗi mạng/server/chưa áp migration (nơi gọi giữ cờ
+    /// thử lại). Hash không bao giờ được ghi log.
+    /// </summary>
+    public async Task<bool?> ClearExitPinAsync(string expectedHash, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(expectedHash);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? notReadyReason))
+        {
+            LogThrottled("not-ready", "Gỡ mã PIN thoát bỏ qua: " + notReadyReason + ".");
+            return null;
+        }
+
+        JsonElement? result = await PostRpcAsync<JsonElement>(
+            "safepc_clear_exit_pin",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_expected_hash = expectedHash,
+            },
+            ct);
+        if (result is null)
+        {
+            return null;
+        }
+
+        // Kết quả không đúng dạng thì coi như lỗi (giữ cờ thử lại) thay vì
+        // kết luận đã gỡ — an toàn hơn khi server trả về điều bất ngờ.
+        if (result.Value.ValueKind == JsonValueKind.Object
+            && result.Value.TryGetProperty("cleared", out JsonElement cleared)
+            && cleared.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return cleared.GetBoolean();
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Báo server biết extension trình duyệt còn sống: cập nhật cột
     /// <c>devices.last_extension_seen_at</c> (migration 5). RPC trả về void
     /// nên PostgREST trả 204/không có body — dùng
