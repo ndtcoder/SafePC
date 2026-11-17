@@ -1,10 +1,17 @@
-# SafePC — Quy hoạch dự án (Bản nháp v0.1)
+# SafePC — Quản lý máy tính của con
 
 **Ngày tạo:** 16/11/2026
 **Chủ dự án:** Anh Tiến (Hà Nội)
 **Mục tiêu:** App quản lý máy tính của con, tương tự Microsoft Family Safety / Google Family Link, ưu tiên PC trước, sau đó thêm Android cho phụ huynh.
 **Quy mô:** Dưới 100 user, dùng dịch vụ free.
-**Trạng thái:** Đã chốt ngày 16/11/2026 — Tên app SafePC, backend Supabase, máy con Windows 10 (tương thích cả Windows 11). Đang ở Sprint 0.
+
+## Trạng thái hiện tại (17/11/2026)
+
+- **Dashboard đã live:** https://safe-pc.vercel.app (Vercel Free, deploy tự động từ `main`).
+- **Backend:** Supabase Free (project SafePC, region Singapore). Đã áp 6 migration: schema 12 bảng + RLS, RPC thiết bị, web usage, cảnh báo can thiệp, báo cáo thi hành.
+- **PC Agent:** C# .NET 8 (Service + Tray + NativeHost), bộ cài Inno Setup do CI đóng gói (phiên bản `0.1.<số run CI>`). **Khóa/mở máy từ Dashboard đã kiểm chứng trên máy thật** (bản v0.1.136, ngày 17/11/2026). Quy tắc giờ giấc, theo app, giờ học tập trung, nghỉ bắt buộc, cảnh báo can thiệp và báo cáo thi hành đã triển khai; xem chi tiết trong `docs/01-PRD.md` và `docs/04-ROADMAP.md`.
+- **Đang làm tiếp (theo yêu cầu ngày 17/11):** khóa có độ trễ + cảnh báo nhỏ + khóa theo phiên (đã đẩy code, đang chờ cổng kiểm tra CI); PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại thật; kiểm chứng chặn domain đầu-cuối (extension chưa từng cài thử trên máy thật); rule mẫu URL có đường dẫn.
+- **Chưa làm:** app Android cho phụ huynh (thảo luận sau khi chốt tính năng nâng cao), báo cáo tuần, flow cài đặt cho phụ huynh khác.
 
 ## 1. Tóm tắt sản phẩm
 
@@ -31,13 +38,14 @@ Phụ huynh cài 1 Agent lên máy tính của con (Windows). Agent theo dõi th
 5. **PC Agent:** C# .NET 8 (Windows Service + Tray App). Lý do: tích hợp sâu Windows, ổn định, dễ chống gỡ.
 6. **Domain/Figma:** Chưa cần mua domain. Dùng subdomain free của Vercel/Supabase. Figma dùng gói Free Starter, thiết kế sau khi chốt luồng chính.
 
-## 4. Cấu trúc repo dự kiến (monorepo)
+## 4. Cấu trúc repo (monorepo)
 
 ```
 safepc/
   apps/
-    pc-agent/        # C# .NET 8: Service + Tray + Installer
-    dashboard-web/   # React + TS + Vite PWA
+    pc-agent/        # C# .NET 8: Service + Tray + NativeHost + Installer (Inno Setup)
+    dashboard-web/   # React + TS + Vite PWA (deploy Vercel)
+    browser-extension/ # Extension MV3: lọc domain, báo cáo lượt thăm
     parent-android/  # Giai đoạn 2: Capacitor wrapper / Flutter (quyết sau)
   packages/
     shared-types/    # Type contract dùng chung
