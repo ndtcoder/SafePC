@@ -9,7 +9,7 @@
             <TextBlock x:Name="ReasonText" Margin="0,16,0,0" FontSize="18" Foreground="#E5E7EB" TextAlignment="Center" TextWrapping="Wrap" />
             <Button x:Name="ExtraTimeButton" Content="Xin thêm giờ" Width="200" Height="44" Margin="0,32,0,0" FontSize="16" Click="ExtraTimeButton_Click" />
             <TextBlock x:Name="CountdownText" Margin="0,20,0,0" FontSize="16" FontWeight="Bold" Foreground="#FBBF24" TextAlignment="Center" />
-            <TextBlock Margin="0,12,0,0" FontSize="13" Foreground="#9CA3AF" TextAlignment="Center" TextWrapping="Wrap"
+            <TextBlock x:Name="HintText" Margin="0,12,0,0" FontSize="13" Foreground="#9CA3AF" TextAlignment="Center" TextWrapping="Wrap"
                        Text="Hãy lưu bài làm của bạn trước khi máy khóa." />
         </StackPanel>
     </Grid>

@@ -313,6 +313,36 @@ public partial class App : System.Windows.Application
 
                     Check("IPC: nhận unlock thì đóng màn hình khóa", unlockSent && _lockWindow is null);
 
+                    // Khóa Immediate (khóa sau khi độ trễ cảnh báo đã hết):
+                    // màn hình khóa hiện nhưng dòng đếm ngược bị ẩn, lời
+                    // nhắc đổi. Bật cờ chặn LockWorkStation thật trong lúc
+                    // kiểm tra để không khóa phiên của runner CI; process
+                    // self-test thoát ngay sau đó nên cờ không rò ra ngoài.
+                    LockWindow.SuppressWorkstationLockForTest = true;
+                    try
+                    {
+                        bool immediateLockSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Self-test khóa Immediate.", Immediate: true)));
+                        _log?.Info("SELF-TEST: đã gửi message lock Immediate qua pipe giả: " + immediateLockSent + ".");
+                        for (int i = 0; i < 10 && _lockWindow is not { IsVisible: true }; i++)
+                        {
+                            await Task.Delay(500);
+                        }
+
+                        Check("IPC: nhận lock Immediate thì hiện màn hình khóa nhưng ẩn đếm ngược", immediateLockSent && _lockWindow is { IsVisible: true } && !_lockWindow.CountdownVisible);
+
+                        bool immediateUnlockSent = await fakeServer.SendAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }));
+                        for (int i = 0; i < 10 && _lockWindow is not null; i++)
+                        {
+                            await Task.Delay(500);
+                        }
+
+                        Check("IPC: nhận unlock thì đóng màn hình khóa Immediate", immediateUnlockSent && _lockWindow is null);
+                    }
+                    finally
+                    {
+                        LockWindow.SuppressWorkstationLockForTest = false;
+                    }
+
                     // Hỏi/đáp qua pipe (đợt PIN/xin giờ/xem giờ): server giả
                     // trả lời canned cho câu hỏi của Tray, khẳng định đường
                     // hỏi-đáp chạy được cả hai chiều bằng đúng code thật
@@ -329,6 +359,8 @@ public partial class App : System.Windows.Application
                     Check("IPC: nhận lock thì đóng cửa sổ cảnh báo", false);
                     Check("IPC: hit-test nút trong màn hình khóa", false);
                     Check("IPC: nhận unlock thì đóng màn hình khóa", false);
+                    Check("IPC: nhận lock Immediate thì hiện màn hình khóa nhưng ẩn đếm ngược", false);
+                    Check("IPC: nhận unlock thì đóng màn hình khóa Immediate", false);
                     Check("IPC: hỏi thời gian còn lại thì nhận được câu trả lời", false);
                     Check("IPC: kiểm tra PIN thì nhận được câu trả lời", false);
                 }
@@ -584,12 +616,24 @@ public partial class App : System.Windows.Application
                             _warningWindow = null;
                             try
                             {
+                                bool immediate = lockPayload?.Immediate ?? false;
                                 if (_lockWindow is { IsVisible: true })
                                 {
-                                    // Màn hình khóa đã hiện: nhắc lại lệnh khóa (VD: giờ
-                                    // nghỉ bắt buộc nhắc mỗi 15 giây) thì khóa lại ngay
-                                    // nếu đã hết đếm ngược, không khởi động lại đếm ngược.
-                                    _lockWindow.ReassertLock();
+                                    if (immediate)
+                                    {
+                                        // Lệnh khóa Immediate tới trong lúc cửa sổ
+                                        // thường đang đếm ngược: chuyển sang khóa
+                                        // ngay (dừng đếm ngược, khóa phiên).
+                                        _lockWindow.LockImmediately();
+                                    }
+                                    else
+                                    {
+                                        // Màn hình khóa đã hiện: nhắc lại lệnh khóa (VD: giờ
+                                        // nghỉ bắt buộc nhắc mỗi 15 giây) thì khóa lại ngay
+                                        // nếu đã hết đếm ngược, không khởi động lại đếm ngược.
+                                        _lockWindow.ReassertLock();
+                                    }
+
                                     _lockWindow.Activate();
                                     _log?.Info("Tray: màn hình khóa đã hiện, nhắc lại lệnh khóa.");
                                 }
@@ -597,7 +641,7 @@ public partial class App : System.Windows.Application
                                 {
                                     if (_lockWindow is null)
                                     {
-                                        var created = new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime);
+                                        var created = new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime, immediate);
                                         created.Closed += (_, _) =>
                                         {
                                             if (ReferenceEquals(_lockWindow, created))
@@ -799,7 +843,7 @@ public partial class App : System.Windows.Application
                 : "Sắp hết thời gian dùng máy." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason),
             "allow" => response.MinutesLeft.HasValue
                 ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút."
-                : "Hôm nay không còn giới hạn thời gian.",
+                : (string.IsNullOrWhiteSpace(response.Reason) ? "Hôm nay không còn giới hạn thời gian." : response.Reason),
             _ => "Chưa có dữ liệu thi hành. Hãy thử lại sau.",
         };
     }
