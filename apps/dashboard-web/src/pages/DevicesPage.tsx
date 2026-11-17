@@ -111,15 +111,25 @@ function extensionStatus(seenAt: string | null | undefined, nowMs: number): {
 
 /**
  * Thời điểm hết hạn của ghi đè "mở khóa" đang hiệu lực trên một máy, suy
- * ra từ các lệnh temporary_override mới nhất theo luật mới-nhất-thắng
- * (cùng luật với getActiveOverride ở trang Quy tắc): lệnh mới nhất cho
- * máy đó quyết định — cancel hoặc đã hết hạn nghĩa là không còn ghi đè,
- * ghi đè khác loại (khóa, cộng giờ, chặn/mở website/ứng dụng) nghĩa là
- * ghi đè mở khóa đã bị thay thế. `commands` phải xếp mới nhất trước.
+ * ra từ các lệnh mới nhất theo luật mới-nhất-thắng (cùng luật với
+ * getActiveOverride ở trang Quy tắc): lệnh mới nhất cho máy đó quyết
+ * định — lock_now (đã hủy ghi đè mở khóa phía Service), cancel hoặc đã
+ * hết hạn nghĩa là không còn ghi đè; ghi đè khác loại (khóa, cộng giờ,
+ * chặn/mở website/ứng dụng) nghĩa là ghi đè mở khóa đã bị thay thế.
+ * Lệnh unlock trần không tạo ghi đè nên bỏ qua. `commands` phải xếp mới
+ * nhất trước và gồm cả lệnh lock_now (đợt sửa 17/11/2026: truy vấn cũ
+ * chỉ lấy temporary_override nên lệnh khóa tàng hình với hàm này).
  */
 function getActiveUnlock(commands: Command[], deviceId: string, nowMs: number): Date | null {
   for (const command of commands) {
     if (command.device_id !== deviceId) continue
+    // Lệnh khóa mới nhất đã hủy ghi đè mở khóa phía Service (luật
+    // hành-động-sau-thắng) nên không còn mở khóa nữa, dù lệnh ghi đè
+    // cũ vẫn nằm trong danh sách và chưa hết hạn.
+    if (command.type === 'lock_now') return null
+    // Lệnh unlock trần không tạo ghi đè, không ảnh hưởng trạng thái
+    // mở khóa — bỏ qua, xét lệnh tiếp theo.
+    if (command.type !== 'temporary_override') continue
     const action = command.payload['action']
     if (action === 'cancel') return null
     if (
@@ -221,7 +231,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
         supabase
           .from('commands')
           .select('id, family_id, device_id, type, payload, status, created_at')
-          .eq('type', 'temporary_override')
+          .in('type', ['temporary_override', 'lock_now'])
           .order('created_at', { ascending: false })
           .limit(50),
       ])
@@ -421,6 +431,10 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
           ? `Đã gửi lệnh khóa máy tới "${device.hostname}" sau ${delayMinutes} phút. Trong lúc chờ, máy con hiện cửa sổ cảnh báo nhỏ để lưu bài làm.`
           : `Đã gửi lệnh khóa máy tới "${device.hostname}". Agent trên máy con sẽ nhận lệnh khi online (polling/Realtime, Sprint 1).`,
       )
+      // Tải lại như 2 handler mở khóa/hủy ghi đè: lệnh lock_now mới phải
+      // vào danh sách commands ngay để getActiveUnlock thôi báo "đang mở
+      // khóa" (đợt sửa 17/11/2026).
+      await load()
     } catch (err) {
       setActionError(toVietnameseError(err))
     } finally {

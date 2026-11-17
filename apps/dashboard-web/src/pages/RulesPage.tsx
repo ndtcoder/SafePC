@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -97,7 +97,6 @@ import {
 } from '../lib/ruleConfig'
 import {
   describeRuleConfig,
-  formatDateTimeVi,
   formatDurationVi,
   formatTimeVi,
   overrideActionLabel,
@@ -105,6 +104,20 @@ import {
   ruleTypeLabel,
   toVietnameseError,
 } from '../lib/format'
+import {
+  EDGE_ONLY_TEMPLATE_NAME,
+  KNOWN_BROWSERS,
+  RULE_CATEGORY_OF,
+  RULE_CATEGORY_ORDER,
+  RULE_CATEGORY_THEME,
+  buildEdgeOnlyTemplateItems,
+  parseRuleTemplateRow,
+  ruleDisplayName,
+  ruleToTemplateItem,
+  type RuleCategoryKey,
+  type RuleTemplate,
+  type RuleTemplateItem,
+} from '../lib/ruleTemplates'
 import {
   AllowlistByTimeForm,
   AllowlistForm,
@@ -127,6 +140,7 @@ import {
   TimeKindPicker,
   TimeWindowForm,
 } from '../components/RuleForms'
+import { RuleCard } from '../components/RuleCard'
 import {
   Card,
   EmptyState,
@@ -171,16 +185,27 @@ interface ActiveOverride {
 }
 
 /**
- * Suy ra ghi đè đang hiệu lực của một máy từ các lệnh temporary_override
- * mới nhất (mới nhất thắng — kể cả khác loại: ghi đè website mới nhất sẽ
- * thay thế ghi đè giờ giấc trước đó và ngược lại; lệnh cancel hoặc lệnh
- * đã hết hạn nghĩa là không còn ghi đè nào hiệu lực). `commands` phải xếp
- * mới nhất trước. Đây là hiển thị tham khảo — Agent trên máy con mới là
- * nơi thi hành thật, dựa trên bản ghi đè nó đã lưu local và thời gian hết hạn.
+ * Suy ra ghi đè đang hiệu lực của một máy từ các lệnh mới nhất (mới nhất
+ * thắng — kể cả khác loại: ghi đè website mới nhất sẽ thay thế ghi đè
+ * giờ giấc trước đó và ngược lại; lệnh cancel hoặc lệnh đã hết hạn nghĩa
+ * là không còn ghi đè nào hiệu lực). `commands` phải xếp mới nhất trước
+ * và phải gồm cả lệnh `lock_now`: Service hủy ghi đè MỞ KHÓA khi nhận
+ * lock_now, nên một lệnh lock_now mới hơn ghi đè mở khóa nghĩa là ghi đè
+ * đó đã chết (các ghi đè khác — cộng giờ, chặn/mở domain/app — lock_now
+ * không hủy nên vẫn hiệu lực). Đây là hiển thị tham khảo — Agent trên
+ * máy con mới là nơi thi hành thật, dựa trên bản ghi đè nó đã lưu local
+ * và thời gian hết hạn.
  */
 function getActiveOverride(commands: Command[], deviceId: string, nowMs: number): ActiveOverride | null {
+  // Có lệnh lock_now mới hơn ghi đè đang xét hay không (duyệt mới nhất
+  // trước nên lock_now gặp trước ghi đè nghĩa là mới hơn ghi đè đó).
+  let sawNewerLockNow = false
   for (const command of commands) {
     if (command.device_id !== deviceId) continue
+    if (command.type === 'lock_now') {
+      sawNewerLockNow = true
+      continue
+    }
     const action = command.payload['action']
     if (action === 'cancel') return null
     if (
@@ -193,6 +218,9 @@ function getActiveOverride(commands: Command[], deviceId: string, nowMs: number)
       action !== 'allow_app'
     )
       continue
+    // Ghi đè mở khóa đã bị lock_now mới hơn hủy phía Service thì không
+    // còn hiệu lực — không hiển thị ghi đè đã chết.
+    if (action === 'unlock' && sawNewerLockNow) return null
     const expiresRaw = command.payload['expires_at']
     const expiresAt = typeof expiresRaw === 'string' ? new Date(expiresRaw) : null
     if (!expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= nowMs) return null
@@ -279,6 +307,56 @@ function TempOverrideTargetFields({
   )
 }
 
+/**
+ * Một nhóm trong accordion "Tạo quy tắc mới": tiêu đề màu theo nhóm
+ * (kèm nhãn chữ + mô tả, không dùng màu làm kênh duy nhất), click để
+ * mở/đóng; nội dung form chỉ render khi mở.
+ */
+function CreateSection({
+  category,
+  description,
+  open,
+  disabled,
+  onToggle,
+  children,
+}: {
+  category: RuleCategoryKey
+  description: string
+  open: boolean
+  disabled: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  const theme = RULE_CATEGORY_THEME[category]
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200">
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={disabled}
+        aria-expanded={open}
+        className={`flex min-h-[56px] w-full items-center justify-between gap-3 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60 ${
+          open ? theme.accordionOpen : theme.accordionClosed
+        }`}
+      >
+        <span className="min-w-0">
+          <span className={`block text-sm font-semibold ${theme.headingText}`}>{theme.label}</span>
+          <span className="block truncate text-xs font-normal text-slate-500">{description}</span>
+        </span>
+        <span
+          aria-hidden="true"
+          className={`shrink-0 text-lg leading-none text-slate-400 transition-transform motion-reduce:transition-none ${
+            open ? 'rotate-90' : ''
+          }`}
+        >
+          ›
+        </span>
+      </button>
+      {open && <div className="space-y-4 border-t border-slate-100 p-4">{children}</div>}
+    </div>
+  )
+}
+
 export default function RulesPage({ childIdFilter }: { childIdFilter?: string } = {}) {
   const { configured, user } = useAuth()
   const [state, setState] = useState<LoadState>('loading')
@@ -299,6 +377,17 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   const [editingRule, setEditingRule] = useState<Rule | null>(null)
   const [formChildId, setFormChildId] = useState('')
   const [formType, setFormType] = useState<EditableRuleType>('daily_limit')
+  // Tên quy tắc do phụ huynh đặt (không bắt buộc; trống thì hiển thị tên
+  // tự sinh từ loại rule). Chỉ lưu được khi cột rules.name đã có
+  // (migration 9) — xem namesAvailable.
+  const [ruleName, setRuleName] = useState('')
+  // Nhóm form tạo mới đang mở trong accordion; null = tất cả đóng (mặc
+  // định). Mở một nhóm thì các nhóm khác đóng. Khi sửa rule thì nhóm của
+  // rule đó tự mở và không chuyển nhóm được.
+  const [createOpen, setCreateOpen] = useState<RuleCategoryKey | null>(null)
+  // Cột rules.name có tồn tại không (truy vấn best-effort trong load()).
+  // Chưa áp migration 9 thì ô tên rule ẩn đi, trang vẫn chạy bình thường.
+  const [namesAvailable, setNamesAvailable] = useState(false)
   const [dailyDraft, setDailyDraft] = useState<DailyLimitDraft>(emptyDailyLimitDraft())
   const [windowDraft, setWindowDraft] = useState<TimeWindowDraft>(emptyTimeWindowDraft())
   const [bedtimeDraft, setBedtimeDraft] = useState<BedtimeDraft>(emptyBedtimeDraft())
@@ -352,6 +441,33 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   const [confirmPresetId, setConfirmPresetId] = useState<PresetId | null>(null)
   const [applyingPreset, setApplyingPreset] = useState(false)
 
+  // Mẫu của phụ huynh (bảng rule_templates, migration 9): truy vấn
+  // best-effort — bảng chưa tồn tại thì templatesState = 'unavailable'
+  // và mục mẫu ẩn đi kèm ghi chú, trang không vỡ.
+  const [templates, setTemplates] = useState<RuleTemplate[]>([])
+  const [templatesState, setTemplatesState] = useState<'loading' | 'ready' | 'unavailable'>('loading')
+  // Form tạo mẫu mới từ các rule hiện có (mặc định đóng).
+  const [showTemplateForm, setShowTemplateForm] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [templateDescription, setTemplateDescription] = useState('')
+  const [templateSelectedIds, setTemplateSelectedIds] = useState<ReadonlySet<string>>(new Set())
+  const [savingTemplate, setSavingTemplate] = useState(false)
+  // Sửa mẫu: bản làm việc của các mục trong mẫu (xóa mục / thêm rule
+  // hiện có), lưu đè lên mẫu khi bấm Lưu.
+  const [editingTemplate, setEditingTemplate] = useState<RuleTemplate | null>(null)
+  const [editingTemplateName, setEditingTemplateName] = useState('')
+  const [editingTemplateDescription, setEditingTemplateDescription] = useState('')
+  const [editingTemplateItems, setEditingTemplateItems] = useState<RuleTemplateItem[]>([])
+  const [editingTemplateAddRuleId, setEditingTemplateAddRuleId] = useState('')
+  // Xoá mẫu: bấm 2 lần như xoá rule.
+  const [confirmDeleteTemplateId, setConfirmDeleteTemplateId] = useState<string | null>(null)
+  const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
+  // Áp mẫu (mẫu của phụ huynh + mẫu "Chỉ cho phép Edge"): xác nhận 2
+  // bước với tóm tắt tên mẫu + số rule + con đích, như mẫu một chạm.
+  const [confirmTemplateId, setConfirmTemplateId] = useState<string | null>(null)
+  const [confirmEdgeTemplate, setConfirmEdgeTemplate] = useState(false)
+  const [applyingTemplate, setApplyingTemplate] = useState(false)
+
   // Xoá quy tắc: bấm 2 lần (bấm "Xoá" rồi "Xác nhận xoá") để tránh xoá nhầm.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -395,7 +511,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         supabase
           .from('commands')
           .select('id, family_id, device_id, type, payload, status, created_at')
-          .eq('type', 'temporary_override')
+          .in('type', ['temporary_override', 'lock_now'])
           .order('created_at', { ascending: false })
           .limit(50),
       ])
@@ -404,10 +520,50 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       if (devicesResult.error) throw devicesResult.error
       if (commandsResult.error) throw commandsResult.error
       setFamily(familyResult)
-      setRules((rulesResult.data ?? []) as Rule[])
       setChildren((childrenResult.data ?? []) as Child[])
       setDevices((devicesResult.data ?? []) as Device[])
       setOverrideCommands((commandsResult.data ?? []) as Command[])
+      // Truy vấn RIÊNG, best-effort: cột rules.name chỉ có sau migration
+      // 9. Truy vấn lỗi (cột chưa tồn tại) thì tên rule vắng mặt và ô đặt
+      // tên ẩn đi, KHÔNG làm hỏng cả trang.
+      let loadedRules = (rulesResult.data ?? []) as Rule[]
+      try {
+        const namesResult = await supabase.from('rules').select('id, name')
+        if (namesResult.error) {
+          setNamesAvailable(false)
+        } else {
+          const nameById = new Map(
+            (namesResult.data ?? []).map((row) => [row.id as string, row.name as string | null]),
+          )
+          loadedRules = loadedRules.map((rule) => ({ ...rule, name: nameById.get(rule.id) ?? null }))
+          setNamesAvailable(true)
+        }
+      } catch {
+        setNamesAvailable(false)
+      }
+      setRules(loadedRules)
+      // Truy vấn RIÊNG, best-effort: bảng rule_templates chỉ có sau
+      // migration 9. Truy vấn lỗi (bảng chưa tồn tại) thì mục "Mẫu của
+      // tôi" ẩn đi kèm ghi chú, KHÔNG làm hỏng cả trang.
+      try {
+        const templatesResult = await supabase
+          .from('rule_templates')
+          .select('id, family_id, name, description, rules, created_at, updated_at')
+          .order('created_at', { ascending: true })
+        if (templatesResult.error) {
+          setTemplates([])
+          setTemplatesState('unavailable')
+        } else {
+          const parsed = (templatesResult.data ?? [])
+            .map((row) => parseRuleTemplateRow(row))
+            .filter((template): template is RuleTemplate => template !== null)
+          setTemplates(parsed)
+          setTemplatesState('ready')
+        }
+      } catch {
+        setTemplates([])
+        setTemplatesState('unavailable')
+      }
       // Truy vấn RIÊNG, best-effort: cột enforcement_json chỉ có sau
       // migration 6. Truy vấn lỗi (cột chưa tồn tại) thì coi như chưa biết
       // rule nào đang thi hành, KHÔNG làm hỏng cả trang.
@@ -474,8 +630,10 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   // máy và lựa chọn của con đó; trang độc lập (/quy-tac) hiện mọi con.
   const visibleChildren = childIdFilter ? children.filter((c) => c.id === childIdFilter) : children
   const visibleDevices = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
+  const visibleRules = childIdFilter ? rules.filter((r) => r.child_id === childIdFilter) : rules
 
   const resetDrafts = () => {
+    setRuleName('')
     setDailyDraft(emptyDailyLimitDraft())
     setWindowDraft(emptyTimeWindowDraft())
     setBedtimeDraft(emptyBedtimeDraft())
@@ -520,7 +678,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         .eq('id', rule.id)
       if (updateError) throw updateError
       setActionMessage(
-        `Đã ${nextEnabled ? 'bật' : 'tắt'} quy tắc ${ruleTypeLabel(rule.type)} cho ${childNameById.get(rule.child_id) ?? 'con'}.`,
+        `Đã ${nextEnabled ? 'bật' : 'tắt'} quy tắc “${ruleDisplayName(rule)}” cho ${childNameById.get(rule.child_id) ?? 'con'}.`,
       )
     } catch (err) {
       // Khôi phục trạng thái cũ khi cập nhật thất bại.
@@ -588,10 +746,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       return
     }
     setFormChildId(rule.child_id)
+    setRuleName(rule.name ?? '')
     setEditingRule(rule)
+    // Mở đúng nhóm accordion của rule và cuộn tới form (danh sách hiện
+    // hành đang ở đầu trang, form tạo/sửa ở phía dưới).
+    setCreateOpen(RULE_CATEGORY_OF[rule.type])
     setActionError(null)
     setActionMessage(null)
     setConfirmDeleteId(null)
+    document.getElementById('rule-form-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   const cancelEdit = () => {
@@ -791,14 +954,20 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     setSavingRule(true)
     setActionError(null)
     try {
+      // Tên quy tắc: chỉ gửi lên khi cột rules.name đã có (migration 9);
+      // tên trống thì lưu NULL để hiển thị tên tự sinh.
+      const trimmedName = ruleName.trim()
+      const nameField = namesAvailable ? { name: trimmedName === '' ? null : trimmedName } : {}
       if (editingRule) {
         const { error: updateError } = await supabase
           .from('rules')
-          .update({ child_id: formChildId, config })
+          .update({ child_id: formChildId, config, ...nameField })
           .eq('id', editingRule.id)
         if (updateError) throw updateError
         setActionMessage('Đã cập nhật quy tắc.')
         setEditingRule(null)
+        // Sửa xong thì đóng accordion để phụ huynh nhìn lại danh sách.
+        setCreateOpen(null)
       } else {
         const { error: insertError } = await supabase.from('rules').insert({
           family_id: family.id,
@@ -806,6 +975,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
           type: formType,
           config,
           enabled: true,
+          ...nameField,
         })
         if (insertError) throw insertError
         setActionMessage('Đã thêm quy tắc mới.')
@@ -831,7 +1001,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         resetDrafts()
       }
       setConfirmDeleteId(null)
-      setActionMessage(`Đã xoá quy tắc ${ruleTypeLabel(rule.type)}.`)
+      setActionMessage(`Đã xoá quy tắc “${ruleDisplayName(rule)}”.`)
       await load()
     } catch (err) {
       setActionError(toVietnameseError(err))
@@ -870,6 +1040,148 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       setActionError(toVietnameseError(err))
     } finally {
       setApplyingPreset(false)
+    }
+  }
+
+  // Mẫu của phụ huynh chỉ THÊM quy tắc mới như mẫu một chạm. Chèn cả
+  // gói trong một lần gọi insert để không áp dụng dở dang. Tên của từng
+  // rule trong mẫu chỉ gửi lên khi cột rules.name đã có (migration 9).
+  const handleApplyTemplateItems = async (items: RuleTemplateItem[], templateLabel: string) => {
+    if (!supabase || !family || !presetChildId) return
+    if (items.length === 0) {
+      setActionError('Mẫu này không có quy tắc nào để áp dụng.')
+      return
+    }
+    setApplyingTemplate(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const { error: insertError } = await supabase.from('rules').insert(
+        items.map((item) => ({
+          family_id: family.id,
+          child_id: presetChildId,
+          type: item.type,
+          config: item.config,
+          enabled: true,
+          ...(namesAvailable && item.name ? { name: item.name } : {}),
+        })),
+      )
+      if (insertError) throw insertError
+      setConfirmTemplateId(null)
+      setConfirmEdgeTemplate(false)
+      setActionMessage(
+        `Đã áp dụng mẫu “${templateLabel}” cho ${childNameById.get(presetChildId) ?? 'con'}: thêm ${items.length} quy tắc mới.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setApplyingTemplate(false)
+    }
+  }
+
+  const handleSaveTemplate = async () => {
+    if (!supabase || !family) return
+    const name = templateName.trim()
+    if (name === '') {
+      setActionError('Hãy đặt tên cho mẫu (vd: Giờ học, Ngày nghỉ).')
+      return
+    }
+    const selected = rules.filter((rule) => templateSelectedIds.has(rule.id))
+    if (selected.length === 0) {
+      setActionError('Hãy chọn ít nhất một quy tắc hiện có để lưu thành mẫu.')
+      return
+    }
+    setSavingTemplate(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const { error: insertError } = await supabase.from('rule_templates').insert({
+        family_id: family.id,
+        name,
+        description: templateDescription.trim() === '' ? null : templateDescription.trim(),
+        rules: selected.map(ruleToTemplateItem),
+      })
+      if (insertError) throw insertError
+      setShowTemplateForm(false)
+      setTemplateName('')
+      setTemplateDescription('')
+      setTemplateSelectedIds(new Set())
+      setActionMessage(`Đã lưu mẫu “${name}” (${selected.length} quy tắc).`)
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setSavingTemplate(false)
+    }
+  }
+
+  const startEditTemplate = (template: RuleTemplate) => {
+    setEditingTemplate(template)
+    setEditingTemplateName(template.name)
+    setEditingTemplateDescription(template.description ?? '')
+    setEditingTemplateItems(template.rules)
+    setEditingTemplateAddRuleId('')
+    setActionError(null)
+    setActionMessage(null)
+  }
+
+  const cancelEditTemplate = () => {
+    setEditingTemplate(null)
+    setEditingTemplateItems([])
+  }
+
+  const handleUpdateTemplate = async () => {
+    if (!supabase || !editingTemplate) return
+    const name = editingTemplateName.trim()
+    if (name === '') {
+      setActionError('Tên mẫu không được để trống.')
+      return
+    }
+    if (editingTemplateItems.length === 0) {
+      setActionError('Mẫu phải còn ít nhất một quy tắc.')
+      return
+    }
+    setSavingTemplate(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const { error: updateError } = await supabase
+        .from('rule_templates')
+        .update({
+          name,
+          description: editingTemplateDescription.trim() === '' ? null : editingTemplateDescription.trim(),
+          rules: editingTemplateItems,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', editingTemplate.id)
+      if (updateError) throw updateError
+      setEditingTemplate(null)
+      setEditingTemplateItems([])
+      setActionMessage(`Đã cập nhật mẫu “${name}”.`)
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setSavingTemplate(false)
+    }
+  }
+
+  const handleDeleteTemplate = async (template: RuleTemplate) => {
+    if (!supabase) return
+    setDeletingTemplateId(template.id)
+    setActionError(null)
+    try {
+      const { error: deleteError } = await supabase.from('rule_templates').delete().eq('id', template.id)
+      if (deleteError) throw deleteError
+      if (editingTemplate?.id === template.id) cancelEditTemplate()
+      setConfirmDeleteTemplateId(null)
+      setActionMessage(`Đã xoá mẫu “${template.name}”.`)
+      await load()
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setDeletingTemplateId(null)
     }
   }
 
@@ -990,25 +1302,12 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   // Thứ tự: con theo thứ tự tạo hồ sơ, danh mục Giờ giấc → Website →
   // Ứng dụng, trong mỗi danh mục giữ nguyên thứ tự truy vấn (mới nhất
   // trước). Rule không gắn với hồ sơ con nào đã biết vẫn hiển thị ở
-  // nhóm "Không rõ con" cuối danh sách — không bỏ rule nào.
-  type RuleCategoryKey = 'time' | 'website' | 'app'
-  const RULE_CATEGORY_OF: Record<Rule['type'], RuleCategoryKey> = {
-    daily_limit: 'time',
-    time_window: 'time',
-    bedtime: 'time',
-    website: 'website',
-    app: 'app',
-  }
-  const RULE_CATEGORY_LABEL: Record<RuleCategoryKey, string> = {
-    time: 'Giờ giấc',
-    website: 'Website',
-    app: 'Ứng dụng',
-  }
-  const CATEGORY_ORDER: RuleCategoryKey[] = ['time', 'website', 'app']
+  // nhóm "Không rõ con" cuối danh sách — không bỏ rule nào. Nhãn + màu
+  // nhóm lấy từ RULE_CATEGORY_THEME (dùng chung cho cả trang).
   const groupRulesByCategory = (childRules: Rule[]) =>
-    CATEGORY_ORDER.map((key) => ({
+    RULE_CATEGORY_ORDER.map((key) => ({
       key,
-      label: RULE_CATEGORY_LABEL[key],
+      label: RULE_CATEGORY_THEME[key].label,
       rules: childRules.filter((rule) => RULE_CATEGORY_OF[rule.type] === key),
     })).filter((category) => category.rules.length > 0)
   const childSections = [
@@ -1042,6 +1341,36 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   }
   const expandAllRules = () => setExpandedRuleIds(new Set(rules.map((rule) => rule.id)))
   const collapseAllRules = () => setExpandedRuleIds(new Set())
+
+  const toggleTemplateRule = (ruleId: string) => {
+    setTemplateSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(ruleId)) next.delete(ruleId)
+      else next.add(ruleId)
+      return next
+    })
+  }
+
+  // Accordion tạo mới: bấm nhóm đang mở thì đóng; bấm nhóm khác thì mở
+  // nhóm đó (nhóm cũ tự đóng) và chuyển loại form sang nhóm đó. Khi đang
+  // sửa thì các tiêu đề nhóm bị khóa nên hàm này không chạy.
+  const toggleCreateSection = (category: RuleCategoryKey) => {
+    if (editingRule) return
+    if (createOpen === category) {
+      setCreateOpen(null)
+      return
+    }
+    setCreateOpen(category)
+    if (category === 'time') {
+      if (formType !== 'daily_limit' && formType !== 'time_window' && formType !== 'bedtime') {
+        setFormType('daily_limit')
+      }
+    } else if (category === 'website') {
+      setFormType('website')
+    } else {
+      setFormType('app')
+    }
+  }
 
   if (!configured) {
     return (
@@ -1091,7 +1420,96 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
 
       {state === 'ready' && family && (
         <div className="space-y-4 sm:space-y-6">
-          <Card title={editingRule ? 'Sửa quy tắc' : 'Thêm quy tắc'}>
+          {/* Quy tắc hiện hành lên ĐẦU trang: phụ huynh nhìn thấy ngay
+              những gì đang áp dụng, trước các form tạo mới và mẫu. Nhóm
+              theo con, trong mỗi con nhóm theo danh mục với màu riêng. */}
+          <section aria-label="Quy tắc hiện hành" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-semibold text-slate-900">
+                Quy tắc hiện hành
+                {visibleRules.length > 0 && (
+                  <span className="ml-2 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                    {visibleRules.length} quy tắc
+                  </span>
+                )}
+              </h2>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={expandAllRules} className={secondaryButtonClassName}>
+                  Mở rộng tất cả
+                </button>
+                <button type="button" onClick={collapseAllRules} className={secondaryButtonClassName}>
+                  Thu hẹp tất cả
+                </button>
+                <button type="button" onClick={() => void load()} className={secondaryButtonClassName}>
+                  Tải lại
+                </button>
+              </div>
+            </div>
+            {childSections.length === 0 ? (
+              <EmptyState
+                title="Chưa có quy tắc nào"
+                description={
+                  childIdFilter
+                    ? 'Chưa có quy tắc nào cho con này. Tạo quy tắc mới ở mục bên dưới hoặc áp dụng một mẫu sẵn để bắt đầu.'
+                    : 'Chưa có quy tắc nào cho gia đình của bạn. Tạo quy tắc mới ở mục bên dưới hoặc áp dụng một mẫu sẵn để bắt đầu.'
+                }
+              />
+            ) : (
+              childSections.map((section) => (
+                <section
+                  key={section.childId}
+                  className="space-y-3"
+                  aria-label={`Quy tắc của ${section.childName}`}
+                >
+                  <h3 className="text-base font-semibold text-slate-900">
+                    {section.childName}
+                    <span className="ml-2 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                      {section.categories.reduce((total, category) => total + category.rules.length, 0)}{' '}
+                      quy tắc
+                    </span>
+                  </h3>
+                  {section.categories.map((category) => {
+                    const theme = RULE_CATEGORY_THEME[category.key]
+                    return (
+                      <div key={category.key} className="space-y-2">
+                        <h4
+                          className={`border-l-4 py-0.5 pl-2 text-sm font-semibold ${theme.borderL} ${theme.headingText}`}
+                        >
+                          {category.label}
+                          <span
+                            className={`ml-2 rounded-full px-2 py-0.5 text-xs font-medium ${theme.badge}`}
+                          >
+                            {category.rules.length}
+                          </span>
+                        </h4>
+                        {category.rules.map((rule) => (
+                          <RuleCard
+                            key={rule.id}
+                            rule={rule}
+                            category={category.key}
+                            enforcing={enforcingRuleIds.has(rule.id)}
+                            expanded={expandedRuleIds.has(rule.id)}
+                            toggling={togglingId === rule.id}
+                            confirmingDelete={confirmDeleteId === rule.id}
+                            deleting={deletingId === rule.id}
+                            onToggleExpand={() => toggleRuleExpanded(rule.id)}
+                            onToggleEnabled={() => void handleToggle(rule)}
+                            onEdit={() => startEdit(rule)}
+                            onRequestDelete={() => setConfirmDeleteId(rule.id)}
+                            onConfirmDelete={() => void handleDeleteRule(rule)}
+                            onCancelDelete={() => setConfirmDeleteId(null)}
+                          />
+                        ))}
+                      </div>
+                    )
+                  })}
+                </section>
+              ))
+            )}
+          </section>
+
+          <div id="rule-form-card">
+          <Card title={editingRule ? 'Sửa quy tắc' : 'Tạo quy tắc mới'}>
             {children.length === 0 ? (
               <p className="text-sm text-slate-700">
                 Cần tạo hồ sơ con trước khi thêm quy tắc. Hãy tạo hồ sơ con tại trang{' '}
@@ -1118,45 +1536,71 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                       ))}
                     </select>
                   </Field>
-                  <Field
-                    label="Loại quy tắc"
-                    htmlFor="rule-type"
-                    hint={editingRule ? 'Không đổi được loại quy tắc khi sửa.' : undefined}
-                  >
-                    <select
-                      id="rule-type"
-                      value={formType}
-                      disabled={editingRule !== null}
-                      onChange={(e) => setFormType(e.target.value as EditableRuleType)}
-                      className={inputClassName}
-                    >
-                      <option value="daily_limit">Giới hạn giờ/ngày theo thứ</option>
-                      <option value="time_window">Khung giờ được dùng máy</option>
-                      <option value="bedtime">Giờ ngủ / giờ cấm</option>
-                      <option value="website">Quy tắc website</option>
-                      <option value="app">Quy tắc ứng dụng</option>
-                    </select>
-                  </Field>
-                  {formType === 'app' && (
+                  {namesAvailable ? (
                     <Field
-                      label="Loại quy tắc ứng dụng"
-                      htmlFor="rule-app-kind"
+                      label="Tên quy tắc"
+                      htmlFor="rule-name"
+                      hint="Không bắt buộc — để trống thì dùng tên tự sinh từ loại quy tắc."
+                    >
+                      <input
+                        id="rule-name"
+                        type="text"
+                        value={ruleName}
+                        maxLength={60}
+                        onChange={(e) => setRuleName(e.target.value)}
+                        placeholder="vd: Giờ học, Giờ ngủ"
+                        className={inputClassName}
+                      />
+                    </Field>
+                  ) : (
+                    <p className="text-sm text-slate-500 sm:self-center">
+                      Đặt tên quy tắc cần migration 9 (file 20261117230000_rule_names_templates.sql
+                      trong backend/supabase/migrations). Quy tắc vẫn tạo và chạy bình thường, chỉ
+                      chưa đặt tên được.
+                    </p>
+                  )}
+                </div>
+
+                {/* Accordion tạo mới: mặc định tất cả đóng; mở một nhóm
+                    thì các nhóm khác đóng. Khi sửa thì nhóm của rule tự
+                    mở và các tiêu đề nhóm bị khóa. */}
+                <div className="space-y-3">
+                  <CreateSection
+                    category="time"
+                    description="Giới hạn giờ mỗi ngày, khung giờ được dùng, giờ ngủ"
+                    open={createOpen === 'time'}
+                    disabled={editingRule !== null}
+                    onToggle={() => toggleCreateSection('time')}
+                  >
+                    <Field
+                      label="Loại quy tắc giờ giấc"
+                      htmlFor="rule-type"
                       hint={editingRule ? 'Không đổi được loại quy tắc khi sửa.' : undefined}
                     >
                       <select
-                        id="rule-app-kind"
-                        value={appFormKind}
+                        id="rule-type"
+                        value={formType}
                         disabled={editingRule !== null}
-                        onChange={(e) => setAppFormKind(e.target.value as AppFormKind)}
+                        onChange={(e) => setFormType(e.target.value as EditableRuleType)}
                         className={inputClassName}
                       >
-                        <option value="list">Danh sách ứng dụng (chặn / cho phép)</option>
-                        <option value="app_time_limit">Giới hạn thời gian theo ứng dụng</option>
-                        <option value="forced_break">Nghỉ bắt buộc</option>
+                        <option value="daily_limit">Giới hạn giờ/ngày theo thứ</option>
+                        <option value="time_window">Khung giờ được dùng máy</option>
+                        <option value="bedtime">Giờ ngủ / giờ cấm</option>
                       </select>
                     </Field>
-                  )}
-                  {formType === 'website' && (
+
+                {formType === 'daily_limit' && <DailyLimitForm draft={dailyDraft} onChange={setDailyDraft} />}
+                {formType === 'time_window' && <TimeWindowForm draft={windowDraft} onChange={setWindowDraft} />}
+                {formType === 'bedtime' && <BedtimeForm draft={bedtimeDraft} onChange={setBedtimeDraft} />}
+                  </CreateSection>
+                  <CreateSection
+                    category="website"
+                    description="Chặn/cho phép website, giới hạn giờ, SafeSearch, giờ học tập trung"
+                    open={createOpen === 'website'}
+                    disabled={editingRule !== null}
+                    onToggle={() => toggleCreateSection('website')}
+                  >
                     <Field
                       label="Loại quy tắc website"
                       htmlFor="rule-website-kind"
@@ -1175,8 +1619,6 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                         <option value="focus">Giờ học tập trung</option>
                       </select>
                     </Field>
-                  )}
-                </div>
 
                 {formType === 'website' && websiteFormKind === 'list' && (
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -1194,26 +1636,6 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                     />
                   </div>
                 )}
-                {formType === 'app' && appFormKind === 'list' && (
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <ListKindPicker
-                      value={appListKind}
-                      onChange={setAppListKind}
-                      disabled={editingRule !== null}
-                      hint={editingRule ? 'Không đổi được loại danh sách khi sửa.' : undefined}
-                    />
-                    <TimeKindPicker
-                      value={appTimeKind}
-                      onChange={setAppTimeKind}
-                      disabled={editingRule !== null}
-                      hint={editingRule ? 'Không đổi được thời gian khi sửa.' : undefined}
-                    />
-                  </div>
-                )}
-
-                {formType === 'daily_limit' && <DailyLimitForm draft={dailyDraft} onChange={setDailyDraft} />}
-                {formType === 'time_window' && <TimeWindowForm draft={windowDraft} onChange={setWindowDraft} />}
-                {formType === 'bedtime' && <BedtimeForm draft={bedtimeDraft} onChange={setBedtimeDraft} />}
                 {formType === 'website' &&
                   websiteFormKind === 'list' &&
                   websiteTimeKind === 'always' &&
@@ -1275,6 +1697,48 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                 {formType === 'website' && websiteFormKind === 'focus' && (
                   <FocusForm draft={focusDraft} onChange={setFocusDraft} />
                 )}
+                  </CreateSection>
+                  <CreateSection
+                    category="app"
+                    description="Chặn/cho phép ứng dụng, giới hạn giờ, nghỉ bắt buộc"
+                    open={createOpen === 'app'}
+                    disabled={editingRule !== null}
+                    onToggle={() => toggleCreateSection('app')}
+                  >
+                    <Field
+                      label="Loại quy tắc ứng dụng"
+                      htmlFor="rule-app-kind"
+                      hint={editingRule ? 'Không đổi được loại quy tắc khi sửa.' : undefined}
+                    >
+                      <select
+                        id="rule-app-kind"
+                        value={appFormKind}
+                        disabled={editingRule !== null}
+                        onChange={(e) => setAppFormKind(e.target.value as AppFormKind)}
+                        className={inputClassName}
+                      >
+                        <option value="list">Danh sách ứng dụng (chặn / cho phép)</option>
+                        <option value="app_time_limit">Giới hạn thời gian theo ứng dụng</option>
+                        <option value="forced_break">Nghỉ bắt buộc</option>
+                      </select>
+                    </Field>
+
+                {formType === 'app' && appFormKind === 'list' && (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <ListKindPicker
+                      value={appListKind}
+                      onChange={setAppListKind}
+                      disabled={editingRule !== null}
+                      hint={editingRule ? 'Không đổi được loại danh sách khi sửa.' : undefined}
+                    />
+                    <TimeKindPicker
+                      value={appTimeKind}
+                      onChange={setAppTimeKind}
+                      disabled={editingRule !== null}
+                      hint={editingRule ? 'Không đổi được thời gian khi sửa.' : undefined}
+                    />
+                  </div>
+                )}
                 {formType === 'app' &&
                   appFormKind === 'list' &&
                   appTimeKind === 'always' &&
@@ -1331,44 +1795,51 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                 {formType === 'app' && appFormKind === 'forced_break' && (
                   <ForcedBreakForm draft={forcedBreakDraft} onChange={setForcedBreakDraft} />
                 )}
-
-                <div className="flex flex-wrap gap-2">
-                  <button type="submit" disabled={savingRule} className={primaryButtonClassName}>
-                    {savingRule
-                      ? isTempFormSelection
-                        ? 'Đang gửi…'
-                        : 'Đang lưu…'
-                      : editingRule
-                        ? 'Lưu thay đổi'
-                        : isTempFormSelection
-                          ? 'Gửi ghi đè tạm thời'
-                          : 'Thêm quy tắc'}
-                  </button>
-                  {editingRule && (
-                    <button type="button" onClick={cancelEdit} className={secondaryButtonClassName}>
-                      Huỷ sửa
-                    </button>
-                  )}
+                  </CreateSection>
                 </div>
+
+                {/* Nút gửi chỉ hiện khi có nhóm đang mở (khi sửa thì nhóm
+                    của rule luôn mở) — tránh bấm gửi khi chưa thấy form. */}
+                {createOpen !== null && (
+                  <div className="flex flex-wrap gap-2">
+                    <button type="submit" disabled={savingRule} className={primaryButtonClassName}>
+                      {savingRule
+                        ? isTempFormSelection
+                          ? 'Đang gửi…'
+                          : 'Đang lưu…'
+                        : editingRule
+                          ? 'Lưu thay đổi'
+                          : isTempFormSelection
+                            ? 'Gửi ghi đè tạm thời'
+                            : 'Thêm quy tắc'}
+                    </button>
+                    {editingRule && (
+                      <button type="button" onClick={cancelEdit} className={secondaryButtonClassName}>
+                        Huỷ sửa
+                      </button>
+                    )}
+                  </div>
+                )}
               </form>
             )}
           </Card>
+          </div>
 
-          <Card title="Mẫu sẵn">
+          <Card title="Mẫu quy tắc">
             {children.length === 0 ? (
               <p className="text-sm text-slate-700">
-                Cần tạo hồ sơ con trước khi áp dụng mẫu sẵn. Hãy tạo hồ sơ con tại trang{' '}
+                Cần tạo hồ sơ con trước khi áp dụng mẫu. Hãy tạo hồ sơ con tại trang{' '}
                 <Link to="/thiet-bi" className="font-medium text-indigo-600 hover:underline">
                   Thiết bị
                 </Link>{' '}
                 (nút “Thêm hồ sơ con”).
               </p>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-5">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Áp dụng mẫu cho con" htmlFor="preset-child">
+                  <Field label="Áp dụng mẫu cho con" htmlFor="template-child">
                     <select
-                      id="preset-child"
+                      id="template-child"
                       value={presetChildId}
                       onChange={(e) => setPresetChildId(e.target.value)}
                       disabled={!!childIdFilter}
@@ -1383,53 +1854,501 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                   </Field>
                 </div>
                 <p className="text-sm text-slate-600">
-                  Mẫu sẵn chỉ THÊM quy tắc mới, không xóa hay sửa quy tắc hiện có — bạn có thể
-                  tắt/xóa từng quy tắc trong danh sách bên dưới.
+                  Mẫu chỉ THÊM quy tắc mới, không xóa hay sửa quy tắc hiện có — bạn có thể
+                  tắt/xóa từng quy tắc trong danh sách hiện hành ở đầu trang. Trước khi áp dụng,
+                  hệ thống luôn hiện tóm tắt để bạn xác nhận.
                 </p>
-                <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
-                  {PRESET_OPTIONS.map((preset) => {
-                    const confirming = confirmPresetId === preset.id
-                    return (
-                      <div key={preset.id} className="rounded-lg border border-slate-200 p-4">
-                        <h3 className="text-sm font-semibold text-slate-900">{preset.label}</h3>
-                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
-                          {preset.summary.map((line) => (
-                            <li key={line}>{line}</li>
-                          ))}
-                        </ul>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {confirming ? (
-                            <>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Mẫu có sẵn</h3>
+                  <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
+                    {PRESET_OPTIONS.map((preset) => {
+                      const confirming = confirmPresetId === preset.id
+                      const ruleCount = buildPresetRules(preset.id).length
+                      return (
+                        <div key={preset.id} className="rounded-lg border border-slate-200 p-4">
+                          <h4 className="text-sm font-semibold text-slate-900">{preset.label}</h4>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
+                            {preset.summary.map((line) => (
+                              <li key={line}>{line}</li>
+                            ))}
+                          </ul>
+                          {confirming && (
+                            <p className="mt-3 rounded-lg bg-slate-50 p-2 text-sm text-slate-700">
+                              Sẽ thêm {ruleCount} quy tắc cho{' '}
+                              {childNameById.get(presetChildId) ?? 'con'} (chỉ thêm mới, không xóa
+                              quy tắc cũ).
+                            </p>
+                          )}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {confirming ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleApplyPreset(preset.id)}
+                                  disabled={applyingPreset}
+                                  className={primaryButtonClassName}
+                                >
+                                  {applyingPreset ? 'Đang áp dụng…' : 'Xác nhận áp dụng'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmPresetId(null)}
+                                  disabled={applyingPreset}
+                                  className={secondaryButtonClassName}
+                                >
+                                  Huỷ
+                                </button>
+                              </>
+                            ) : (
                               <button
                                 type="button"
-                                onClick={() => void handleApplyPreset(preset.id)}
-                                disabled={applyingPreset}
-                                className={primaryButtonClassName}
-                              >
-                                {applyingPreset ? 'Đang áp dụng…' : 'Xác nhận áp dụng'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmPresetId(null)}
-                                disabled={applyingPreset}
+                                onClick={() => setConfirmPresetId(preset.id)}
                                 className={secondaryButtonClassName}
                               >
-                                Huỷ
+                                Áp dụng
                               </button>
-                            </>
-                          ) : (
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    <div className="rounded-lg border border-slate-200 p-4">
+                      <h4 className="text-sm font-semibold text-slate-900">{EDGE_ONLY_TEMPLATE_NAME}</h4>
+                      <p className="mt-2 text-sm text-slate-600">
+                        Chặn {KNOWN_BROWSERS.length} trình duyệt đã biết (
+                        {KNOWN_BROWSERS.map((browser) => browser.name).join(', ')}) để con chỉ duyệt
+                        web qua Edge — nơi đã cài extension SafePC.
+                      </p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Chỉ chặn được trình duyệt có tên trong danh sách; trình duyệt lạ hoặc đã
+                        đổi tên file không chặn được bằng cách này.
+                      </p>
+                      {confirmEdgeTemplate && (
+                        <p className="mt-3 rounded-lg bg-slate-50 p-2 text-sm text-slate-700">
+                          Sẽ thêm 1 quy tắc chặn ứng dụng cho{' '}
+                          {childNameById.get(presetChildId) ?? 'con'} (chỉ thêm mới, không xóa quy
+                          tắc cũ).
+                        </p>
+                      )}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {confirmEdgeTemplate ? (
+                          <>
                             <button
                               type="button"
-                              onClick={() => setConfirmPresetId(preset.id)}
+                              onClick={() =>
+                                void handleApplyTemplateItems(
+                                  buildEdgeOnlyTemplateItems(),
+                                  EDGE_ONLY_TEMPLATE_NAME,
+                                )
+                              }
+                              disabled={applyingTemplate}
+                              className={primaryButtonClassName}
+                            >
+                              {applyingTemplate ? 'Đang áp dụng…' : 'Xác nhận áp dụng'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmEdgeTemplate(false)}
+                              disabled={applyingTemplate}
                               className={secondaryButtonClassName}
                             >
-                              Áp dụng
+                              Huỷ
                             </button>
-                          )}
-                        </div>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmEdgeTemplate(true)}
+                            className={secondaryButtonClassName}
+                          >
+                            Áp dụng
+                          </button>
+                        )}
                       </div>
-                    )
-                  })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 border-t border-slate-100 pt-4">
+                  <h3 className="text-sm font-semibold text-slate-900">Mẫu của tôi</h3>
+                  {templatesState === 'unavailable' ? (
+                    <p className="text-sm text-slate-600">
+                      Mẫu của riêng bạn cần migration 9 (file 20261117230000_rule_names_templates.sql
+                      trong backend/supabase/migrations). Sau khi áp migration, bạn có thể lưu các
+                      quy tắc hiện có thành mẫu, sửa mẫu và áp dụng nhanh cho bất kỳ con nào.
+                    </p>
+                  ) : (
+                    <>
+                      {templates.length === 0 ? (
+                        <p className="text-sm text-slate-600">
+                          Chưa có mẫu nào. Lưu các quy tắc hiện có thành mẫu để áp dụng nhanh cho
+                          con khác hoặc lúc khác.
+                        </p>
+                      ) : (
+                        <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
+                          {templates.map((template) => {
+                            const isEditing = editingTemplate?.id === template.id
+                            const confirming = confirmTemplateId === template.id
+                            const confirmingDelete = confirmDeleteTemplateId === template.id
+                            return (
+                              <div
+                                key={template.id}
+                                className="rounded-lg border border-slate-200 p-4"
+                              >
+                                {isEditing ? (
+                                  <div className="space-y-3">
+                                    <Field
+                                      label="Tên mẫu"
+                                      htmlFor={`template-edit-name-${template.id}`}
+                                    >
+                                      <input
+                                        id={`template-edit-name-${template.id}`}
+                                        type="text"
+                                        value={editingTemplateName}
+                                        maxLength={60}
+                                        onChange={(e) => setEditingTemplateName(e.target.value)}
+                                        className={inputClassName}
+                                      />
+                                    </Field>
+                                    <Field
+                                      label="Ghi chú"
+                                      htmlFor={`template-edit-desc-${template.id}`}
+                                    >
+                                      <input
+                                        id={`template-edit-desc-${template.id}`}
+                                        type="text"
+                                        value={editingTemplateDescription}
+                                        maxLength={120}
+                                        onChange={(e) =>
+                                          setEditingTemplateDescription(e.target.value)
+                                        }
+                                        className={inputClassName}
+                                      />
+                                    </Field>
+                                    <div>
+                                      <span className="mb-1 block text-sm font-medium text-slate-700">
+                                        Quy tắc trong mẫu ({editingTemplateItems.length})
+                                      </span>
+                                      {editingTemplateItems.length === 0 ? (
+                                        <p className="text-sm text-slate-500">
+                                          Mẫu đang trống — hãy thêm ít nhất một quy tắc.
+                                        </p>
+                                      ) : (
+                                        <ul className="space-y-1">
+                                          {editingTemplateItems.map((item, index) => (
+                                            <li
+                                              key={`${item.type}-${index}`}
+                                              className="flex items-center gap-2 rounded-lg bg-slate-50 px-2 py-1.5"
+                                            >
+                                              <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+                                                {ruleTypeLabel(item.type)}
+                                                {item.name ? ` — ${item.name}` : ''}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setEditingTemplateItems((prev) =>
+                                                    prev.filter((_, i) => i !== index),
+                                                  )
+                                                }
+                                                aria-label={`Bỏ quy tắc ${ruleTypeLabel(item.type)} khỏi mẫu`}
+                                                className="inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2"
+                                              >
+                                                Bỏ
+                                              </button>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap items-end gap-2">
+                                      <div className="min-w-0 flex-1">
+                                        <Field
+                                          label="Thêm quy tắc hiện có"
+                                          htmlFor={`template-edit-add-${template.id}`}
+                                        >
+                                          <select
+                                            id={`template-edit-add-${template.id}`}
+                                            value={editingTemplateAddRuleId}
+                                            onChange={(e) =>
+                                              setEditingTemplateAddRuleId(e.target.value)
+                                            }
+                                            className={inputClassName}
+                                          >
+                                            <option value="">Chọn quy tắc…</option>
+                                            {visibleRules
+                                              .filter(
+                                                (rule) =>
+                                                  !editingTemplateItems.some(
+                                                    (item) =>
+                                                      item.type === rule.type &&
+                                                      (item.name ?? null) ===
+                                                        (rule.name ?? null) &&
+                                                      JSON.stringify(item.config) ===
+                                                        JSON.stringify(rule.config),
+                                                  ),
+                                              )
+                                              .map((rule) => (
+                                              <option key={rule.id} value={rule.id}>
+                                                {ruleDisplayName(rule)}
+                                                {!childIdFilter &&
+                                                  ` — ${childNameById.get(rule.child_id) ?? ''}`}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </Field>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        disabled={!editingTemplateAddRuleId}
+                                        onClick={() => {
+                                          const rule = rules.find(
+                                            (r) => r.id === editingTemplateAddRuleId,
+                                          )
+                                          if (rule) {
+                                            setEditingTemplateItems((prev) => [
+                                              ...prev,
+                                              ruleToTemplateItem(rule),
+                                            ])
+                                            setEditingTemplateAddRuleId('')
+                                          }
+                                        }}
+                                        className={secondaryButtonClassName}
+                                      >
+                                        Thêm
+                                      </button>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleUpdateTemplate()}
+                                        disabled={savingTemplate}
+                                        className={primaryButtonClassName}
+                                      >
+                                        {savingTemplate ? 'Đang lưu…' : 'Lưu mẫu'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={cancelEditTemplate}
+                                        disabled={savingTemplate}
+                                        className={secondaryButtonClassName}
+                                      >
+                                        Huỷ
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <h4 className="text-sm font-semibold text-slate-900">
+                                      {template.name}
+                                    </h4>
+                                    {template.description && (
+                                      <p className="mt-1 text-sm text-slate-600">
+                                        {template.description}
+                                      </p>
+                                    )}
+                                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
+                                      {template.rules.length === 0 ? (
+                                        <li>Mẫu trống (chưa có quy tắc nào).</li>
+                                      ) : (
+                                        template.rules.map((item, index) => (
+                                          <li key={`${item.type}-${index}`}>
+                                            {ruleTypeLabel(item.type)}
+                                            {item.name ? ` — ${item.name}` : ''}
+                                          </li>
+                                        ))
+                                      )}
+                                    </ul>
+                                    {confirming && (
+                                      <p className="mt-3 rounded-lg bg-slate-50 p-2 text-sm text-slate-700">
+                                        Sẽ thêm {template.rules.length} quy tắc cho{' '}
+                                        {childNameById.get(presetChildId) ?? 'con'} (chỉ thêm mới,
+                                        không xóa quy tắc cũ).
+                                      </p>
+                                    )}
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      {confirming ? (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void handleApplyTemplateItems(
+                                                template.rules,
+                                                template.name,
+                                              )
+                                            }
+                                            disabled={applyingTemplate}
+                                            className={primaryButtonClassName}
+                                          >
+                                            {applyingTemplate ? 'Đang áp dụng…' : 'Xác nhận áp dụng'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setConfirmTemplateId(null)}
+                                            disabled={applyingTemplate}
+                                            className={secondaryButtonClassName}
+                                          >
+                                            Huỷ
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => setConfirmTemplateId(template.id)}
+                                            disabled={template.rules.length === 0}
+                                            className={secondaryButtonClassName}
+                                          >
+                                            Áp dụng
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => startEditTemplate(template)}
+                                            className={secondaryButtonClassName}
+                                          >
+                                            Sửa
+                                          </button>
+                                          {confirmingDelete ? (
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => void handleDeleteTemplate(template)}
+                                                disabled={deletingTemplateId === template.id}
+                                                className={dangerButtonClassName}
+                                              >
+                                                {deletingTemplateId === template.id
+                                                  ? 'Đang xoá…'
+                                                  : 'Xác nhận xoá'}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => setConfirmDeleteTemplateId(null)}
+                                                className={secondaryButtonClassName}
+                                              >
+                                                Huỷ
+                                              </button>
+                                            </>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              onClick={() => setConfirmDeleteTemplateId(template.id)}
+                                              className={dangerOutlineButtonClassName}
+                                            >
+                                              Xoá
+                                            </button>
+                                          )}
+                                        </>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+
+                      {showTemplateForm ? (
+                        <div className="space-y-4 rounded-lg border border-slate-200 p-4">
+                          <Field
+                            label="Tên mẫu"
+                            htmlFor="template-name"
+                            hint="vd: Giờ học, Giờ ngủ, Ngày học, Ngày nghỉ."
+                          >
+                            <input
+                              id="template-name"
+                              type="text"
+                              value={templateName}
+                              maxLength={60}
+                              onChange={(e) => setTemplateName(e.target.value)}
+                              placeholder="vd: Giờ học"
+                              className={inputClassName}
+                            />
+                          </Field>
+                          <Field label="Ghi chú (không bắt buộc)" htmlFor="template-description">
+                            <input
+                              id="template-description"
+                              type="text"
+                              value={templateDescription}
+                              maxLength={120}
+                              onChange={(e) => setTemplateDescription(e.target.value)}
+                              placeholder="vd: Dùng cho các ngày đi học"
+                              className={inputClassName}
+                            />
+                          </Field>
+                          <fieldset>
+                            <legend className="mb-1 text-sm font-medium text-slate-700">
+                              Quy tắc đưa vào mẫu
+                            </legend>
+                            {visibleRules.length === 0 ? (
+                              <p className="text-sm text-slate-600">
+                                Chưa có quy tắc nào để lưu thành mẫu. Hãy tạo quy tắc ở mục bên
+                                trên trước.
+                              </p>
+                            ) : (
+                              <ul className="space-y-1">
+                                {visibleRules.map((rule) => (
+                                  <li key={rule.id}>
+                                    <label className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg px-2 py-2 hover:bg-slate-50">
+                                      <input
+                                        type="checkbox"
+                                        className="h-5 w-5 shrink-0 accent-indigo-600"
+                                        checked={templateSelectedIds.has(rule.id)}
+                                        onChange={() => toggleTemplateRule(rule.id)}
+                                      />
+                                      <span className="min-w-0">
+                                        <span className="block truncate text-sm font-medium text-slate-900">
+                                          {ruleDisplayName(rule)}
+                                          {!childIdFilter &&
+                                            ` — ${childNameById.get(rule.child_id) ?? ''}`}
+                                        </span>
+                                        <span className="block truncate text-xs text-slate-500">
+                                          {describeRuleConfig(rule)[0] ?? ''}
+                                        </span>
+                                      </span>
+                                    </label>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </fieldset>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleSaveTemplate()}
+                              disabled={savingTemplate}
+                              className={primaryButtonClassName}
+                            >
+                              {savingTemplate ? 'Đang lưu…' : 'Lưu mẫu'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTemplateForm(false)
+                                setTemplateName('')
+                                setTemplateDescription('')
+                                setTemplateSelectedIds(new Set())
+                              }}
+                              disabled={savingTemplate}
+                              className={secondaryButtonClassName}
+                            >
+                              Huỷ
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowTemplateForm(true)}
+                          className={secondaryButtonClassName}
+                        >
+                          Tạo mẫu từ quy tắc hiện có
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -1648,162 +2567,6 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
             )}
           </Card>
 
-          {childSections.length === 0 ? (
-            <EmptyState
-              title="Chưa có quy tắc nào"
-              description="Chưa có quy tắc nào cho gia đình của bạn. Thêm quy tắc ở trên hoặc áp dụng một mẫu sẵn để bắt đầu."
-            />
-          ) : (
-            <div className="space-y-4">
-              <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={expandAllRules} className={secondaryButtonClassName}>
-                  Mở rộng tất cả
-                </button>
-                <button type="button" onClick={collapseAllRules} className={secondaryButtonClassName}>
-                  Thu hẹp tất cả
-                </button>
-              </div>
-              {childSections.map((section) => (
-                <section
-                  key={section.childId}
-                  className="space-y-3"
-                  aria-label={`Quy tắc của ${section.childName}`}
-                >
-                  <h2 className="text-base font-semibold text-slate-900">{section.childName}</h2>
-                  {section.categories.map((category) => (
-                    <div key={category.key} className="space-y-2">
-                      <h3 className="text-sm font-medium text-slate-700">{category.label}</h3>
-                      {category.rules.map((rule) => {
-                        const confirmingDelete = confirmDeleteId === rule.id
-                        const expanded = expandedRuleIds.has(rule.id)
-                        const enforcing = enforcingRuleIds.has(rule.id)
-                        const summary = describeRuleConfig(rule)[0] ?? ''
-                        return (
-                          <div
-                            key={rule.id}
-                            className={`rounded-xl border bg-white shadow-sm ${
-                              enforcing ? 'border-slate-200 border-l-4 border-l-indigo-600' : 'border-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2 px-3 py-2">
-                              <button
-                                type="button"
-                                onClick={() => toggleRuleExpanded(rule.id)}
-                                aria-expanded={expanded}
-                                aria-label={`${expanded ? 'Thu hẹp' : 'Mở rộng'} quy tắc ${ruleTypeLabel(rule.type)}`}
-                                className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
-                              >
-                                <span
-                                  aria-hidden="true"
-                                  className={`inline-block shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${
-                                    expanded ? 'rotate-90' : ''
-                                  }`}
-                                >
-                                  ›
-                                </span>
-                                <span className="min-w-0 flex-1">
-                                  <span
-                                    className={`block truncate text-sm text-slate-900 ${
-                                      enforcing ? 'font-bold' : 'font-semibold'
-                                    }`}
-                                  >
-                                    {ruleTypeLabel(rule.type)}
-                                  </span>
-                                  <span className="block truncate text-xs text-slate-500">{summary}</span>
-                                </span>
-                              </button>
-                              {enforcing && (
-                                <span className="shrink-0 rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800">
-                                  Đang thi hành
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-checked={rule.enabled}
-                                aria-label={`${rule.enabled ? 'Tắt' : 'Bật'} quy tắc ${ruleTypeLabel(rule.type)}`}
-                                onClick={() => void handleToggle(rule)}
-                                disabled={togglingId === rule.id}
-                                className={`flex min-h-[44px] items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
-                                  rule.enabled
-                                    ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
-                                    : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                                }`}
-                              >
-                                <span
-                                  className={`inline-block h-2.5 w-2.5 rounded-full ${rule.enabled ? 'bg-emerald-600' : 'bg-slate-500'}`}
-                                />
-                                {rule.enabled ? 'Đang bật' : 'Đang tắt'}
-                              </button>
-                            </div>
-                            {expanded && (
-                              <div className="border-t border-slate-100 px-3 py-3">
-                                <ul className="space-y-0.5 text-sm text-slate-600">
-                                  {describeRuleConfig(rule).map((line) => (
-                                    <li key={line}>{line}</li>
-                                  ))}
-                                </ul>
-                                <p className="mt-2 text-xs text-slate-500">
-                                  Tạo lúc {formatDateTimeVi(rule.created_at)}
-                                </p>
-                                <details className="mt-2 text-xs">
-                                  <summary className="cursor-pointer py-3 text-indigo-600 hover:underline">
-                                    Xem cấu hình JSON gốc
-                                  </summary>
-                                  <pre className="mt-1 overflow-x-auto rounded-lg bg-slate-50 p-3 font-mono text-xs text-slate-700">
-                                    {JSON.stringify(rule.config, null, 2)}
-                                  </pre>
-                                </details>
-                                <div className="mt-3 flex flex-wrap items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => startEdit(rule)}
-                                    className={secondaryButtonClassName}
-                                  >
-                                    Sửa
-                                  </button>
-                                  {confirmingDelete ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => void handleDeleteRule(rule)}
-                                        disabled={deletingId === rule.id}
-                                        className={dangerButtonClassName}
-                                      >
-                                        {deletingId === rule.id ? 'Đang xoá…' : 'Xác nhận xoá'}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => setConfirmDeleteId(null)}
-                                        className={secondaryButtonClassName}
-                                      >
-                                        Huỷ
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => setConfirmDeleteId(rule.id)}
-                                      className={dangerOutlineButtonClassName}
-                                    >
-                                      Xoá
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ))}
-                </section>
-              ))}
-              <button type="button" onClick={() => void load()} className={secondaryButtonClassName}>
-                Tải lại danh sách
-              </button>
-            </div>
-          )}
         </div>
       )}
     </>
