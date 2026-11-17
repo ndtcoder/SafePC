@@ -52,6 +52,15 @@ public partial class App : System.Windows.Application
     private WarningWindow? _warningWindow;
     private RemainingTimeWindow? _remainingWindow;
     private ExtraTimeWindow? _extraTimeWindow;
+
+    // Câu hỏi đang chờ Service trả lời qua IPC (mỗi loại tối đa một câu
+    // đang chờ: một hộp PIN, một cửa sổ thời gian). Câu trả lời đến muộn
+    // của lần hỏi trước không được tính cho lần hỏi sau — đối chiếu bằng
+    // RequestId trong OnIpcMessage trước khi hoàn thành TCS.
+    private TaskCompletionSource<RemainingTimeResponsePayload?>? _remainingTimeTcs;
+    private string? _remainingTimeRequestId;
+    private TaskCompletionSource<PinVerifyResponsePayload?>? _pinVerifyTcs;
+    private string? _pinVerifyRequestId;
     private System.Windows.Window? _anchor;
     private Mutex? _singleInstanceMutex;
     private bool _ownsSingleInstanceMutex;
@@ -252,6 +261,12 @@ public partial class App : System.Windows.Application
             await Task.Delay(300);
             Check("hộp thoại đóng được", _remainingWindow is null);
 
+            // 4b. PinHash (thuần hàm, không cần IPC): băm một PIN rồi khẳng
+            // định PIN đúng thì đạt, PIN sai thì trượt.
+            string selfTestPinHash = PinHash.Hash("123456");
+            Check("PinHash: PIN đúng thì đạt, PIN sai thì trượt",
+                PinHash.Verify("123456", selfTestPinHash) && !PinHash.Verify("654321", selfTestPinHash));
+
             // 5. IPC khóa/mở qua pipe server giả (bản #6): chứng minh đường
             // nối Service→Tray — Tray nhận lock thì hiện màn hình khóa, nhận
             // unlock thì đóng. Chạy khi KHÔNG có Service thật: server giả
@@ -297,6 +312,15 @@ public partial class App : System.Windows.Application
                     }
 
                     Check("IPC: nhận unlock thì đóng màn hình khóa", unlockSent && _lockWindow is null);
+
+                    // Hỏi/đáp qua pipe (đợt PIN/xin giờ/xem giờ): server giả
+                    // trả lời canned cho câu hỏi của Tray, khẳng định đường
+                    // hỏi-đáp chạy được cả hai chiều bằng đúng code thật
+                    // (RequestRemainingTimeAsync / VerifyPinAsync).
+                    RemainingTimeResponsePayload? remainingReply = await RequestRemainingTimeAsync();
+                    Check("IPC: hỏi thời gian còn lại thì nhận được câu trả lời", remainingReply is { Decision: "warn", MinutesLeft: 42 });
+                    PinVerifyOutcome pinReply = await VerifyPinAsync("123456");
+                    Check("IPC: kiểm tra PIN thì nhận được câu trả lời", pinReply.Verified);
                 }
                 else
                 {
@@ -305,6 +329,8 @@ public partial class App : System.Windows.Application
                     Check("IPC: nhận lock thì đóng cửa sổ cảnh báo", false);
                     Check("IPC: hit-test nút trong màn hình khóa", false);
                     Check("IPC: nhận unlock thì đóng màn hình khóa", false);
+                    Check("IPC: hỏi thời gian còn lại thì nhận được câu trả lời", false);
+                    Check("IPC: kiểm tra PIN thì nhận được câu trả lời", false);
                 }
             }
             catch (Exception ex)
@@ -525,6 +551,22 @@ public partial class App : System.Windows.Application
                             }
                             break;
 
+                        case IpcMessageTypes.RemainingTimeResponse:
+                            RemainingTimeResponsePayload? remaining = message.GetPayload<RemainingTimeResponsePayload>();
+                            if (remaining is not null && remaining.RequestId == _remainingTimeRequestId)
+                            {
+                                _remainingTimeTcs?.TrySetResult(remaining);
+                            }
+                            break;
+
+                        case IpcMessageTypes.PinVerifyResponse:
+                            PinVerifyResponsePayload? pinResult = message.GetPayload<PinVerifyResponsePayload>();
+                            if (pinResult is not null && pinResult.RequestId == _pinVerifyRequestId)
+                            {
+                                _pinVerifyTcs?.TrySetResult(pinResult);
+                            }
+                            break;
+
                         case IpcMessageTypes.Lock:
                             LockPayload? lockPayload = message.GetPayload<LockPayload>();
 
@@ -646,6 +688,122 @@ public partial class App : System.Windows.Application
     [DllImport("user32.dll")]
     private static extern bool LockWorkStation();
 
+    /// <summary>
+    /// Hỏi Service về thời gian còn lại và chờ câu trả lời tối đa 5 giây.
+    /// Trả về null khi chưa nối Service hoặc quá hạn. Không bao giờ throw.
+    /// </summary>
+    private async Task<RemainingTimeResponsePayload?> RequestRemainingTimeAsync()
+    {
+        if (_ipc is null)
+        {
+            return null;
+        }
+
+        string requestId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<RemainingTimeResponsePayload?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _remainingTimeRequestId = requestId;
+        _remainingTimeTcs = tcs;
+        try
+        {
+            await _ipc.SendAsync(IpcMessage.Create(
+                IpcMessageTypes.RemainingTimeRequest,
+                new RemainingTimeRequestPayload(requestId)));
+            Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+            if (completed != tcs.Task)
+            {
+                _log?.Info("Tray: hỏi thời gian còn lại quá hạn 5 giây.");
+                return null;
+            }
+
+            return await tcs.Task;
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: hỏi thời gian còn lại lỗi.", ex);
+            return null;
+        }
+        finally
+        {
+            if (_remainingTimeRequestId == requestId)
+            {
+                _remainingTimeTcs = null;
+                _remainingTimeRequestId = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gửi PIN nhập vào lên Service để kiểm tra, chờ tối đa 5 giây. Không
+    /// nối được Service hoặc quá hạn thì trả về Error (fail-closed: hộp PIN
+    /// từ chối thoát). Không bao giờ throw, không ghi log PIN.
+    /// </summary>
+    private async Task<PinVerifyOutcome> VerifyPinAsync(string pin)
+    {
+        if (_ipc is null)
+        {
+            return new PinVerifyOutcome(Verified: false, LockedOut: false, RemainingAttempts: 0, PinConfigured: false, Error: "Chưa kết nối tới Service, không kiểm tra được mã PIN.");
+        }
+
+        string requestId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<PinVerifyResponsePayload?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pinVerifyRequestId = requestId;
+        _pinVerifyTcs = tcs;
+        try
+        {
+            await _ipc.SendAsync(IpcMessage.Create(
+                IpcMessageTypes.PinVerifyRequest,
+                new PinVerifyRequestPayload(pin, requestId)));
+            Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+            if (completed != tcs.Task)
+            {
+                _log?.Info("Tray: kiểm tra mã PIN quá hạn 5 giây.");
+                return new PinVerifyOutcome(Verified: false, LockedOut: false, RemainingAttempts: 0, PinConfigured: false, Error: "Service không trả lời, không kiểm tra được mã PIN.");
+            }
+
+            PinVerifyResponsePayload? response = await tcs.Task;
+            if (response is null)
+            {
+                return new PinVerifyOutcome(Verified: false, LockedOut: false, RemainingAttempts: 0, PinConfigured: false, Error: "Service trả lời không hợp lệ.");
+            }
+
+            return new PinVerifyOutcome(response.Verified, response.LockedOut, response.RemainingAttempts, response.PinConfigured, Error: null);
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: kiểm tra mã PIN lỗi.", ex);
+            return new PinVerifyOutcome(Verified: false, LockedOut: false, RemainingAttempts: 0, PinConfigured: false, Error: "Kiểm tra mã PIN lỗi, không thể thoát.");
+        }
+        finally
+        {
+            if (_pinVerifyRequestId == requestId)
+            {
+                _pinVerifyTcs = null;
+                _pinVerifyRequestId = null;
+            }
+        }
+    }
+
+    /// <summary>Định dạng câu trả lời thời gian còn lại thành chuỗi hiển thị cho con.</summary>
+    private static string FormatRemainingTime(RemainingTimeResponsePayload? response)
+    {
+        if (response is null)
+        {
+            return "Chưa lấy được dữ liệu từ Service. Hãy thử lại sau.";
+        }
+
+        return response.Decision switch
+        {
+            "lock" => "Máy đang bị khóa." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason),
+            "warn" => response.MinutesLeft.HasValue
+                ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút trước khi máy khóa." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason)
+                : "Sắp hết thời gian dùng máy." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason),
+            "allow" => response.MinutesLeft.HasValue
+                ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút."
+                : "Hôm nay không còn giới hạn thời gian.",
+            _ => "Chưa có dữ liệu thi hành. Hãy thử lại sau.",
+        };
+    }
+
     private void ShowRemainingTime()
     {
         _log?.Info("Tray: menu — Xem thời gian còn lại (bắt đầu).");
@@ -662,11 +820,10 @@ public partial class App : System.Windows.Application
                         return;
                     }
 
-                    // TODO Sprint 1: hỏi Service qua IPC để lấy thời gian còn lại thật
-                    // (từ cache rules + usage hôm nay) thay cho chuỗi placeholder này.
                     // Chỉ giữ một cửa sổ: bấm đúp nhiều lần thì đưa cửa sổ cũ lên
-                    // trước thay vì mở thêm cửa sổ mới.
-                    _remainingWindow = new RemainingTimeWindow("Đang tải... (skeleton: TODO lấy thời gian còn lại từ Service qua IPC ở Sprint 1.)");
+                    // trước thay vì mở thêm cửa sổ mới. Mở với chữ chờ, rồi
+                    // hỏi Service qua IPC và cập nhật khi có câu trả lời.
+                    _remainingWindow = new RemainingTimeWindow("Đang tải thời gian còn lại...");
                     _remainingWindow.Closed += (_, _) =>
                     {
                         _remainingWindow = null;
@@ -674,6 +831,7 @@ public partial class App : System.Windows.Application
                     };
                     _remainingWindow.Show();
                     _log?.Info("Tray: cửa sổ thời gian còn lại đã hiện.");
+                    _ = RefreshRemainingTimeAsync();
                 }
                 catch (Exception ex)
                 {
@@ -687,6 +845,33 @@ public partial class App : System.Windows.Application
         }
 
         _log?.Info("Tray: menu — Xem thời gian còn lại (xong).");
+    }
+
+    /// <summary>
+    /// Hỏi Service và cập nhật cửa sổ thời gian còn lại nếu nó vẫn đang hiện.
+    /// Chạy nền (fire-and-forget từ ShowRemainingTime), không chặn UI thread.
+    /// Chỉ cập nhật đúng instance cửa sổ đã chụp lúc bắt đầu: mở lại cửa sổ
+    /// mới trong lúc chờ thì câu trả lời cũ (kể cả timeout) không được ghi
+    /// đè lên cửa sổ mới (review đợt này).
+    /// </summary>
+    private async Task RefreshRemainingTimeAsync()
+    {
+        RemainingTimeWindow? window = _remainingWindow;
+        RemainingTimeResponsePayload? response = await RequestRemainingTimeAsync();
+        try
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (window is { IsVisible: true } && ReferenceEquals(_remainingWindow, window))
+                {
+                    window.Update(FormatRemainingTime(response));
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: cập nhật cửa sổ thời gian còn lại lỗi.", ex);
+        }
     }
 
     private void ShowExtraTime()
@@ -745,7 +930,7 @@ public partial class App : System.Windows.Application
             {
                 try
                 {
-                    var pinDialog = new PinDialog();
+                    var pinDialog = new PinDialog(VerifyPinAsync);
                     bool? result = pinDialog.ShowDialog();
                     if (result == true)
                     {

@@ -4,9 +4,9 @@ using System.Windows.Controls;
 namespace SafePC.Agent.Tray;
 
 /// <summary>
-/// Form "Xin thêm giờ": chọn 15/30/60 phút + nhập lý do, gửi qua IPC lên Service.
-/// TODO Sprint 2: gửi yêu cầu thật lên bảng requests (Supabase), hiển thị trạng
-/// thái chờ duyệt và kết quả Duyệt/Từ chối từ phụ huynh.
+/// Form "Xin thêm giờ": chọn 15/30/60 phút + nhập lý do, gửi qua IPC lên
+/// Service; Service xếp vào outbox và đẩy lên bảng requests để phụ huynh
+/// duyệt trên Dashboard. Duyệt thì Dashboard gửi lệnh cộng giờ về máy.
 /// </summary>
 public partial class ExtraTimeWindow : Window
 {
@@ -37,7 +37,7 @@ public partial class ExtraTimeWindow : Window
 
         await _sendRequest(minutes, reason);
         _ = System.Windows.MessageBox.Show(
-            "Đã gửi yêu cầu (bản skeleton — Sprint 2 mới gửi thật lên server để phụ huynh duyệt).",
+            "Đã gửi yêu cầu xin thêm " + minutes + " phút. Phụ huynh sẽ duyệt trên Dashboard, máy sẽ tự mở thêm giờ khi được duyệt.",
             "SafePC",
             MessageBoxButton.OK,
             MessageBoxImage.Information);

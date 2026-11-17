@@ -144,7 +144,45 @@ internal sealed class SelfTestPipeServer : IDisposable
                     break;
                 }
 
-                // Xả bỏ: chỉ cần pipe không đầy để lần ghi của Tray không chặn.
+                // Trả lời canned cho câu hỏi của Tray (đợt PIN/xin giờ/xem
+                // giờ): server giả đóng vai Service, vọng lại RequestId để
+                // Tray đối chiếu. Ghi chặn đồng bộ trên thread xả này là an
+                // toàn: SendAsync dùng ConfigureAwait(false) và thread xả
+                // không có SynchronizationContext nên không deadlock; test
+                // không gọi SendAsync đồng thời trong giai đoạn hỏi/đáp
+                // (các lần gửi warning/lock/unlock chạy trước, tuần tự).
+                // Mọi dòng khác (hello, usage-sample...) thì xả bỏ: chỉ cần
+                // pipe không đầy để lần ghi của Tray không chặn.
+                IpcMessage? message = IpcMessage.FromLine(line);
+                if (message is null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (message.Type == IpcMessageTypes.RemainingTimeRequest)
+                    {
+                        RemainingTimeRequestPayload? request = message.GetPayload<RemainingTimeRequestPayload>();
+                        _ = SendAsync(IpcMessage.Create(
+                            IpcMessageTypes.RemainingTimeResponse,
+                            new RemainingTimeResponsePayload("warn", 42, "Self-test.", DateTimeOffset.UtcNow, request?.RequestId ?? string.Empty)))
+                            .GetAwaiter().GetResult();
+                    }
+                    else if (message.Type == IpcMessageTypes.PinVerifyRequest)
+                    {
+                        PinVerifyRequestPayload? request = message.GetPayload<PinVerifyRequestPayload>();
+                        _ = SendAsync(IpcMessage.Create(
+                            IpcMessageTypes.PinVerifyResponse,
+                            new PinVerifyResponsePayload(Verified: true, LockedOut: false, RemainingAttempts: 5, PinConfigured: true, RequestId: request?.RequestId ?? string.Empty)))
+                            .GetAwaiter().GetResult();
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+                {
+                    // Pipe đóng giữa chừng khi test dọn dẹp: thoát vòng xả.
+                    break;
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)

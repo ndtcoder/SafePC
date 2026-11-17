@@ -9,7 +9,7 @@
         <TextBlock x:Name="ErrorText" Margin="0,8,0,0" Foreground="Red" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="Hủy" Width="80" Margin="0,0,8,0" Click="CancelButton_Click" />
-            <Button Content="Xác nhận" Width="90" IsDefault="True" Click="OkButton_Click" />
+            <Button x:Name="OkButton" Content="Xác nhận" Width="90" IsDefault="True" Click="OkButton_Click" />
         </StackPanel>
     </StackPanel>
 </Window>
