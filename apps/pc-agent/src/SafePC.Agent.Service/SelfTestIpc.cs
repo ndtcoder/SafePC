@@ -144,7 +144,14 @@ public static class SelfTestIpc
             // pipe nên không tạo message trùng; gửi lại sau khi đã thành
             // công sẽ tạo 2 dòng lock và làm check unlock đọc nhầm.
             // (Review batch #6.)
-            Trace("đang gửi lock (thử lại tới khi giao được)...");
+            // ĐỌC PHẢI CHẠY ĐỒNG THỜI VỚI GỬI (run #135): FlushAsync của
+            // SendToTrayAsync chặn tới khi đầu kia đọc (FlushFileBuffers),
+            // nên gửi-tuần-tự-rồi-mới-đọc sẽ chết chéo — lần gửi đầu kẹt ở
+            // flush, task đọc chưa bao giờ bắt đầu, CTS 30s mới phá được
+            // vòng chờ (FAIL 2/3). Bắt đầu task đọc TRƯỚC khi gửi, rồi chờ
+            // cả hai. Task đọc dài 15s để bao hết vòng thử lại (~10s).
+            Trace("đang bắt đầu đọc lock đồng thời, rồi gửi lock (thử lại tới khi giao được)...");
+            Task<string?> lockReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(15));
             int lockSent = 0;
             for (int i = 0; i < 50 && lockSent < 1; i++)
             {
@@ -157,18 +164,19 @@ public static class SelfTestIpc
             }
 
             Check("SendToTrayAsync(lock) giao tới ≥1 writer", lockSent >= 1);
-            Trace("đang chờ client giả nhận message lock (tối đa 5s)...");
-            string? lockLine = await ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            Trace("đang chờ task đọc lock xong...");
+            string? lockLine = await lockReadTask;
             Trace("chờ lock xong: nhận được dòng=" + (lockLine is not null) + ".");
             Check("client giả nhận được message lock", lockLine is not null && IpcMessage.FromLine(lockLine)?.Type == IpcMessageTypes.Lock);
 
-            // Unlock: tương tự.
-            Trace("đang gửi unlock...");
+            // Unlock: tương tự — đọc đồng thời với gửi (xem ghi chú ở lock).
+            Trace("đang bắt đầu đọc unlock đồng thời, rồi gửi unlock...");
+            Task<string?> unlockReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
             int unlockSent = await server.SendToTrayAsync(
                 IpcMessage.Create(IpcMessageTypes.Unlock, new { }), cts.Token);
             Check("SendToTrayAsync(unlock) giao tới ≥1 writer", unlockSent >= 1);
-            Trace("đang chờ client giả nhận message unlock (tối đa 5s)...");
-            string? unlockLine = await ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            Trace("đang chờ task đọc unlock xong...");
+            string? unlockLine = await unlockReadTask;
             Trace("chờ unlock xong: nhận được dòng=" + (unlockLine is not null) + ".");
             Check("client giả nhận được message unlock", unlockLine is not null && IpcMessage.FromLine(unlockLine)?.Type == IpcMessageTypes.Unlock);
 
