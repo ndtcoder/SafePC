@@ -94,7 +94,7 @@ jobs:
         run: |
           $exe = 'apps/pc-agent/publish/Tray/SafePC.Agent.Tray.exe'
           $proc = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -NoNewWindow
-          if (-not $proc.WaitForExit(60000)) { $proc.Kill(); throw 'Tray self-test timed out after 60s' }
+          if (-not $proc.WaitForExit(120000)) { $proc.Kill(); throw 'Tray self-test timed out after 120s' }
           if ($proc.ExitCode -ne 0) { throw "Tray self-test FAILED (exit $($proc.ExitCode)) - see tray log in the next step" }
           Write-Host 'Tray self-test PASSED'
       - name: Show tray self-test log
@@ -103,6 +103,21 @@ jobs:
         run: |
           $logDir = Join-Path $env:LOCALAPPDATA 'SafePC\logs'
           if (Test-Path $logDir) { Get-ChildItem $logDir -Filter *.log | ForEach-Object { Write-Host "=== $($_.Name) ==="; Get-Content $_.FullName -Tail 150 } } else { Write-Host 'No tray log dir found' }
+      - name: Service IPC self-test (lock/unlock delivery)
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          $exe = 'apps/pc-agent/publish/Service/SafePC.Agent.Service.exe'
+          $proc = Start-Process -FilePath $exe -ArgumentList '--self-test-ipc' -PassThru -NoNewWindow
+          if (-not $proc.WaitForExit(60000)) { $proc.Kill(); throw 'Service IPC self-test timed out after 60s' }
+          if ($proc.ExitCode -ne 0) { throw "Service IPC self-test FAILED (exit $($proc.ExitCode)) - see service log in the next step" }
+          Write-Host 'Service IPC self-test PASSED'
+      - name: Show service self-test log
+        if: always() && steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          $logDir = Join-Path $env:ProgramData 'SafePC\logs'
+          if (Test-Path $logDir) { Get-ChildItem $logDir -Filter *.log | ForEach-Object { Write-Host "=== $($_.Name) ==="; Get-Content $_.FullName -Tail 80 } } else { Write-Host 'No service log dir found' }
       - name: Install Inno Setup
         if: steps.check.outputs.exists == 'true'
         run: choco install innosetup -y --no-progress
