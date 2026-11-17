@@ -59,7 +59,7 @@ interface PairingSession {
   pairedDevice: Device | null
 }
 
-const PAIRING_CODE_TTL_MS = 10 * 60 * 1000
+const PAIRING_CODE_TTL_MS = 5 * 60 * 1000
 
 /** Mã ghép nối 6 số (100000–999999) từ nguồn ngẫu nhiên của trình duyệt. */
 function generatePairingCode(): string {
@@ -140,7 +140,7 @@ function getActiveUnlock(commands: Command[], deviceId: string, nowMs: number): 
   return null
 }
 
-export default function DevicesPage() {
+export default function DevicesPage({ childIdFilter }: { childIdFilter?: string } = {}) {
   const { configured, user } = useAuth()
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState('')
@@ -190,9 +190,10 @@ export default function DevicesPage() {
   const [birthYear, setBirthYear] = useState('')
   const [savingChild, setSavingChild] = useState(false)
 
-  // Ghép nối máy mới: mã 6 số dùng một lần, hiệu lực 10 phút. Mã dạng
-  // plaintext chỉ hiển thị ở đây, một lần duy nhất; xuống database chỉ
-  // lưu SHA-256 hex của mã (xem handleCreatePairingCode).
+  // Ghép nối máy mới: mã PIN tạm thời 6 số dùng một lần, hiệu lực 5 phút
+  // (rút từ 10 phút theo yêu cầu 17/11/2026: mã ngắn hạn, ghép nối xong là
+  // hết giá trị). Mã dạng plaintext chỉ hiển thị ở đây, một lần duy nhất;
+  // xuống database chỉ lưu SHA-256 hex của mã (xem handleCreatePairingCode).
   const [pairChildId, setPairChildId] = useState('')
   const [pairing, setPairing] = useState<PairingSession | null>(null)
   const [pairError, setPairError] = useState<string | null>(null)
@@ -308,10 +309,19 @@ export default function DevicesPage() {
     void load()
   }, [load])
 
+  // Khi nhúng trong hồ sơ của một con (tab Thiết bị) thì chỉ hiện máy của
+  // con đó; trang độc lập (/thiet-bi) hiện mọi máy như trước.
+  const visibleDevices = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
+
   // Mặc định chọn con đầu tiên cho dropdown ghép nối (giống trang Quy tắc).
+  // Trong hồ sơ của một con thì luôn ghép cho con đó, không cho đổi.
   useEffect(() => {
-    if (!pairChildId && children.length > 0) setPairChildId(children[0].id)
-  }, [children, pairChildId])
+    if (childIdFilter) {
+      setPairChildId(childIdFilter)
+    } else if (!pairChildId && children.length > 0) {
+      setPairChildId(children[0].id)
+    }
+  }, [children, pairChildId, childIdFilter])
 
   // Đồng hồ đếm ngược khi đang chờ ghép nối; hết giờ thì đánh dấu hết hạn.
   useEffect(() => {
@@ -350,6 +360,7 @@ export default function DevicesPage() {
         .from('devices')
         .select('id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, status, created_at')
         .eq('family_id', family.id)
+        .eq('child_id', pairing.childId)
         .gt('created_at', pairing.createdAtIso)
         .order('created_at', { ascending: false })
         .limit(1)
@@ -643,15 +654,17 @@ export default function DevicesPage() {
         title="Thiết bị"
         description="Danh sách máy tính của con đã ghép nối với SafePC."
         actions={
-          <button
-            type="button"
-            onClick={() => setShowChildForm((v) => !v)}
-            disabled={!family}
-            className={secondaryButtonClassName}
-            title={family ? undefined : 'Cần tạo gia đình trước'}
-          >
-            Thêm hồ sơ con
-          </button>
+          !childIdFilter ? (
+            <button
+              type="button"
+              onClick={() => setShowChildForm((v) => !v)}
+              disabled={!family}
+              className={secondaryButtonClassName}
+              title={family ? undefined : 'Cần tạo gia đình trước'}
+            >
+              Thêm hồ sơ con
+            </button>
+          ) : undefined
         }
       />
 
@@ -687,7 +700,7 @@ export default function DevicesPage() {
 
       {state === 'ready' && family && (
         <div className="space-y-4 sm:space-y-6">
-          {showChildForm && (
+          {showChildForm && !childIdFilter && (
             <Card title="Thêm hồ sơ con">
               <form onSubmit={(e) => void handleCreateChild(e)} className="grid gap-4 sm:grid-cols-2">
                 <Field label="Tên hiển thị của con" htmlFor="child-name">
@@ -727,14 +740,14 @@ export default function DevicesPage() {
             </Card>
           )}
 
-          {devices.length === 0 ? (
+          {visibleDevices.length === 0 ? (
             <EmptyState
               title="Chưa có thiết bị nào"
               description="Chưa có máy tính nào được ghép nối với gia đình của bạn. Sau khi cài PC Agent lên máy của con và ghép nối thành công, máy sẽ xuất hiện tại đây."
             />
           ) : (
             <div className="grid gap-3 sm:gap-4 md:grid-cols-2">
-              {devices.map((device) => {
+              {visibleDevices.map((device) => {
                 const extension = extensionStatus(extensionSeenByDevice.get(device.id), Date.now())
                 const disconnected = isDisconnected(device, Date.now())
                 const extensionSeenAt = extensionSeenByDevice.get(device.id)
@@ -918,7 +931,7 @@ export default function DevicesPage() {
                     <p className="mb-2 text-sm font-medium text-slate-700">Mã PIN thoát Tray</p>
                     <p className="text-sm text-slate-600">
                       {device.exit_pin_hash
-                        ? 'Đã đặt mã PIN. Muốn thoát Tray trên máy này phải nhập đúng mã PIN.'
+                        ? 'Đã đặt mã PIN. Muốn thoát Tray trên máy này phải nhập đúng mã PIN. Mỗi mã chỉ dùng được một lần: nhập đúng và thoát xong, mã tự gỡ và cần đặt mã mới.'
                         : 'Chưa đặt mã PIN. Khi chưa có PIN, không ai thoát được Tray trên máy này.'}
                     </p>
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -1034,10 +1047,10 @@ export default function DevicesPage() {
                       id="pair-child"
                       value={pairChildId}
                       onChange={(e) => setPairChildId(e.target.value)}
-                      disabled={pairing?.status === 'waiting'}
+                      disabled={pairing?.status === 'waiting' || !!childIdFilter}
                       className={inputClassName}
                     >
-                      {children.map((child) => (
+                      {(childIdFilter ? children.filter((c) => c.id === childIdFilter) : children).map((child) => (
                         <option key={child.id} value={child.id}>
                           {child.display_name}
                         </option>
@@ -1074,7 +1087,7 @@ export default function DevicesPage() {
                       {`& 'C:\\Program Files\\SafePC Agent\\Service\\SafePC.Agent.Service.exe' pair ${pairing.code}`}
                     </pre>
                     <p className="text-sm text-slate-600">
-                      Dashboard đang chờ máy con ghép nối và tự kiểm tra mỗi 5 giây. Mã hết hạn sau 10 phút.
+                      Dashboard đang chờ máy con ghép nối và tự kiểm tra mỗi 5 giây. Mã hết hạn sau 5 phút.
                     </p>
                     <button type="button" onClick={handleCancelPairing} className={secondaryButtonClassName}>
                       Huỷ mã này

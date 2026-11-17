@@ -279,7 +279,7 @@ function TempOverrideTargetFields({
   )
 }
 
-export default function RulesPage() {
+export default function RulesPage({ childIdFilter }: { childIdFilter?: string } = {}) {
   const { configured, user } = useAuth()
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState('')
@@ -443,22 +443,37 @@ export default function RulesPage() {
   }, [load])
 
   useEffect(() => {
-    if (!formChildId && children.length > 0) setFormChildId(children[0].id)
-  }, [children, formChildId])
+    if (childIdFilter) {
+      setFormChildId(childIdFilter)
+    } else if (!formChildId && children.length > 0) {
+      setFormChildId(children[0].id)
+    }
+  }, [children, formChildId, childIdFilter])
 
   useEffect(() => {
-    if (!presetChildId && children.length > 0) setPresetChildId(children[0].id)
-  }, [children, presetChildId])
+    if (childIdFilter) {
+      setPresetChildId(childIdFilter)
+    } else if (!presetChildId && children.length > 0) {
+      setPresetChildId(children[0].id)
+    }
+  }, [children, presetChildId, childIdFilter])
 
   useEffect(() => {
-    if (!overrideDeviceId && devices.length > 0) setOverrideDeviceId(devices[0].id)
-  }, [devices, overrideDeviceId])
+    const pool = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
+    if (!overrideDeviceId && pool.length > 0) setOverrideDeviceId(pool[0].id)
+  }, [devices, overrideDeviceId, childIdFilter])
 
   useEffect(() => {
-    if (!tempDeviceId && devices.length > 0) setTempDeviceId(devices[0].id)
-  }, [devices, tempDeviceId])
+    const pool = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
+    if (!tempDeviceId && pool.length > 0) setTempDeviceId(pool[0].id)
+  }, [devices, tempDeviceId, childIdFilter])
 
   const childNameById = new Map(children.map((c) => [c.id, c.display_name]))
+
+  // Khi nhúng trong hồ sơ của một con (tab Quy tắc) thì chỉ hiện quy tắc,
+  // máy và lựa chọn của con đó; trang độc lập (/quy-tac) hiện mọi con.
+  const visibleChildren = childIdFilter ? children.filter((c) => c.id === childIdFilter) : children
+  const visibleDevices = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
 
   const resetDrafts = () => {
     setDailyDraft(emptyDailyLimitDraft())
@@ -997,18 +1012,24 @@ export default function RulesPage() {
       rules: childRules.filter((rule) => RULE_CATEGORY_OF[rule.type] === key),
     })).filter((category) => category.rules.length > 0)
   const childSections = [
-    ...children.map((child) => ({
+    ...visibleChildren.map((child) => ({
       childId: child.id,
       childName: child.display_name,
       categories: groupRulesByCategory(rules.filter((rule) => rule.child_id === child.id)),
     })),
-    {
-      childId: '__unknown__',
-      childName: 'Không rõ con',
-      categories: groupRulesByCategory(
-        rules.filter((rule) => !children.some((child) => child.id === rule.child_id)),
-      ),
-    },
+    // Mục "không rõ con" chỉ hiện ở trang độc lập — trong hồ sơ của một
+    // con thì các quy tắc lạ không thuộc về con đó.
+    ...(childIdFilter
+      ? []
+      : [
+          {
+            childId: '__unknown__',
+            childName: 'Không rõ con',
+            categories: groupRulesByCategory(
+              rules.filter((rule) => !children.some((child) => child.id === rule.child_id)),
+            ),
+          },
+        ]),
   ].filter((section) => section.categories.length > 0)
 
   const toggleRuleExpanded = (ruleId: string) => {
@@ -1087,9 +1108,10 @@ export default function RulesPage() {
                       id="rule-child"
                       value={formChildId}
                       onChange={(e) => setFormChildId(e.target.value)}
+                      disabled={!!childIdFilter}
                       className={inputClassName}
                     >
-                      {children.map((child) => (
+                      {visibleChildren.map((child) => (
                         <option key={child.id} value={child.id}>
                           {child.display_name}
                         </option>
@@ -1235,7 +1257,7 @@ export default function RulesPage() {
                         }
                       />
                       <TempOverrideTargetFields
-                        devices={devices}
+                        devices={visibleDevices}
                         childNameById={childNameById}
                         deviceId={tempDeviceId}
                         onDeviceChange={setTempDeviceId}
@@ -1294,7 +1316,7 @@ export default function RulesPage() {
                       idPrefix="app-temp"
                     />
                     <TempOverrideTargetFields
-                      devices={devices}
+                      devices={visibleDevices}
                       childNameById={childNameById}
                       deviceId={tempDeviceId}
                       onDeviceChange={setTempDeviceId}
@@ -1349,9 +1371,10 @@ export default function RulesPage() {
                       id="preset-child"
                       value={presetChildId}
                       onChange={(e) => setPresetChildId(e.target.value)}
+                      disabled={!!childIdFilter}
                       className={inputClassName}
                     >
-                      {children.map((child) => (
+                      {visibleChildren.map((child) => (
                         <option key={child.id} value={child.id}>
                           {child.display_name}
                         </option>
@@ -1413,7 +1436,7 @@ export default function RulesPage() {
           </Card>
 
           <Card title="Ghi đè tạm thời (tự hết hạn)">
-            {devices.length === 0 ? (
+            {visibleDevices.length === 0 ? (
               <p className="text-sm text-slate-700">
                 Chưa có thiết bị nào được ghép nối. Ghi đè tạm thời được gửi tới từng máy, nên cần ghép nối máy
                 của con trước (xem trang Thiết bị).
@@ -1428,7 +1451,7 @@ export default function RulesPage() {
                       onChange={(e) => setOverrideDeviceId(e.target.value)}
                       className={inputClassName}
                     >
-                      {devices.map((device) => (
+                      {visibleDevices.map((device) => (
                         <option key={device.id} value={device.id}>
                           {device.hostname}
                           {device.child_id ? ` — ${childNameById.get(device.child_id) ?? ''}` : ''}
@@ -1518,7 +1541,7 @@ export default function RulesPage() {
           </Card>
 
           <Card title="Cho phép / chặn website tạm thời">
-            {devices.length === 0 ? (
+            {visibleDevices.length === 0 ? (
               <p className="text-sm text-slate-700">
                 Chưa có thiết bị nào được ghép nối. Ghi đè website tạm thời được gửi tới từng máy, nên cần ghép
                 nối máy của con trước (xem trang Thiết bị).
@@ -1533,7 +1556,7 @@ export default function RulesPage() {
                       onChange={(e) => setOverrideDeviceId(e.target.value)}
                       className={inputClassName}
                     >
-                      {devices.map((device) => (
+                      {visibleDevices.map((device) => (
                         <option key={device.id} value={device.id}>
                           {device.hostname}
                           {device.child_id ? ` — ${childNameById.get(device.child_id) ?? ''}` : ''}
@@ -1625,7 +1648,7 @@ export default function RulesPage() {
             )}
           </Card>
 
-          {rules.length === 0 ? (
+          {childSections.length === 0 ? (
             <EmptyState
               title="Chưa có quy tắc nào"
               description="Chưa có quy tắc nào cho gia đình của bạn. Thêm quy tắc ở trên hoặc áp dụng một mẫu sẵn để bắt đầu."

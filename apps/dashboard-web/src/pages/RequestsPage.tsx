@@ -114,11 +114,17 @@ export default function RequestsPage() {
     setActionError(null)
     setActionMessage(null)
     try {
-      // Duyệt yêu cầu xin thêm giờ thì phải CỘNG GIỜ thật: gửi lệnh
-      // temporary_override (bonus_minutes) tới máy đã gửi yêu cầu, hiệu lực
-      // tới hết ngày hôm nay (cùng mẫu với ghi đè ở trang Quy tắc). Lệnh
-      // gửi trước, cập nhật trạng thái sau — gửi lệnh lỗi thì yêu cầu vẫn
-      // ở trạng thái chờ để phụ huynh thử lại.
+      // Duyệt yêu cầu xin thêm giờ thì phải MỞ KHÓA LUÔN và CỘNG GIỜ thật
+      // (yêu cầu test máy thật 17/11/2026: duyệt xong mà máy vẫn khóa thì
+      // giờ cộng thêm không vào đâu được): gửi lệnh 'unlock' trước để gỡ
+      // khóa cưỡng chế và đóng màn hình khóa, rồi gửi lệnh
+      // temporary_override (bonus_minutes) tới máy đã gửi yêu cầu, hiệu
+      // lực tới hết ngày hôm nay (cùng mẫu với ghi đè ở trang Quy tắc).
+      // Nếu máy đang khóa bởi quy tắc giờ giấc (giờ ngủ, khung giờ) thì
+      // quy tắc sẽ khóa lại ở lần kiểm tra sau — đó là hành vi an toàn
+      // đúng: giờ thêm chỉ nới giới hạn tổng giờ trong ngày, không phá
+      // giờ ngủ. Lệnh gửi trước, cập nhật trạng thái sau — gửi lệnh lỗi
+      // thì yêu cầu vẫn ở trạng thái chờ để phụ huynh thử lại.
       if (status === 'approved' && request.type === 'extra_time') {
         let deviceId = request.device_id ?? null
         if (!deviceId) {
@@ -132,11 +138,19 @@ export default function RequestsPage() {
           deviceId = childDevices?.[0]?.id ?? null
         }
         if (!deviceId) {
-          throw new Error('Không tìm thấy thiết bị của con để gửi lệnh cộng giờ.')
+          throw new Error('Không tìm thấy thiết bị của con để gửi lệnh mở khóa và cộng giờ.')
         }
         const minutes = request.minutes ?? 30
         const now = new Date()
         const expiresAt = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0)
+        const { error: unlockError } = await supabase.from('commands').insert({
+          family_id: request.family_id,
+          device_id: deviceId,
+          type: 'unlock',
+          payload: {},
+          status: 'pending',
+        })
+        if (unlockError) throw unlockError
         const { error: insertError } = await supabase.from('commands').insert({
           family_id: request.family_id,
           device_id: deviceId,
@@ -167,7 +181,7 @@ export default function RequestsPage() {
       )
       setActionMessage(
         status === 'approved' && request.type === 'extra_time'
-          ? `Đã duyệt và cộng ${request.minutes ?? 30} phút cho ${childNameById.get(request.child_id) ?? 'con'} (hiệu lực tới hết hôm nay).`
+          ? `Đã duyệt: máy sẽ mở khóa và cộng ${request.minutes ?? 30} phút cho ${childNameById.get(request.child_id) ?? 'con'} (hiệu lực tới hết hôm nay).`
           : `Đã ${status === 'approved' ? 'duyệt' : 'từ chối'} yêu cầu của ${childNameById.get(request.child_id) ?? 'con'}.`,
       )
     } catch (err) {
