@@ -12,15 +12,15 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 
 ## 2. Xác thực & phân quyền
 
-- [ ] Supabase Auth: email + mật khẩu mạnh (tối thiểu 10 ký tự, kiểm tra HaveIBeenPwned qua Supabase), khóa tài khoản sau 5 lần sai trong 15 phút.
+- [x] Supabase Auth: email + mật khẩu (Supabase quản lý hash, xác minh email qua link). — Đã triển khai. Khóa tài khoản sau 5 lần sai / kiểm tra HaveIBeenPwned là cấu hình Supabase, chưa rà soát.
 - [ ] MFA TOTP cho phụ huynh (giai đoạn 1.5, khuyến nghị bật).
-- [ ] Session: JWT ngắn hạn, refresh token rotation, đăng xuất mọi thiết bị khi đổi mật khẩu.
-- [ ] RLS trên mọi bảng: `family_id` là ranh giới. Kiểm thử RLS bằng test: user gia đình A không đọc được dữ liệu gia đình B.
-- [ ] Device token: chuỗi ngẫu nhiên 256-bit, chỉ gửi 1 lần lúc pairing, lưu hash (SHA-256) ở DB, lưu bản gốc bằng DPAPI trên máy con. Thu hồi được từ Dashboard ("Xóa máy").
-- [ ] Pairing code: 6 số, hết hạn 10 phút, tối đa 5 lần thử, dùng 1 lần.
+- [x] Session: JWT ngắn hạn, refresh token rotation (Supabase Auth mặc định). — Đã triển khai theo mặc định Supabase.
+- [x] RLS trên mọi bảng: `family_id` là ranh giới. — Đã bật trên 12 bảng (migration 1). Kiểm thử truy cập chéo gia đình (2 tài khoản) chưa chạy — xem `RLS_TESTING.md`.
+- [x] Device token: chuỗi ngẫu nhiên 256-bit, chỉ gửi 1 lần lúc pairing, lưu hash (SHA-256) ở DB, lưu bản gốc bằng DPAPI trên máy con. Thu hồi được từ Dashboard ("Xóa máy"). — Đã triển khai và kiểm chứng.
+- [x] Pairing code: 6 số, hết hạn 10 phút, dùng 1 lần. — Đã triển khai. Giới hạn 5 lần thử chưa triển khai (RPC đổi mã chưa đếm số lần thử sai).
 - Agent gọi server qua RPC SECURITY DEFINER (`safepc_*`, migration 3), xác thực bằng cặp (device_id, SHA-256 của device token); PostgREST xác thực bằng khóa publishable (AnonKey) trong `appsettings.json` của Service — khóa này được thiết kế để lộ ra phía client. Khóa quản trị (bypass RLS) không bao giờ vào Agent, Dashboard hay repo.
-- [ ] Mã PIN gỡ Agent: 6 số, do phụ huynh đặt riêng, lưu hash bcrypt/argon2, nhập sai 5 lần khóa 30 phút.
-- [ ] Mọi hành động quan trọng ghi audit log: đổi quy tắc, khóa/mở, duyệt yêu cầu, thêm/xóa máy, đăng nhập lạ.
+- [ ] Mã PIN gỡ Agent: 6 số, do phụ huynh đặt riêng, lưu hash bcrypt/argon2, nhập sai 5 lần khóa 30 phút. — Chưa triển khai (Sprint 4). Mã PIN thoát Tray đang làm (đợt tiếp theo, hash PBKDF2 + giới hạn số lần thử tại chỗ).
+- [ ] Mọi hành động quan trọng ghi audit log: đổi quy tắc, khóa/mở, duyệt yêu cầu, thêm/xóa máy, đăng nhập lạ. — Mới có audit cho sự kiện can thiệp + heartbeat extension; lệnh từ xa chưa ghi audit (TODO).
 
 ## 3. Dữ liệu nhạy cảm — xử lý cụ thể
 
@@ -67,6 +67,11 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - Nghỉ bắt buộc là khóa phiên, nói thành thật: Service khóa phiên làm việc của con trong thời gian nghỉ (`LockWorkStation` sau đếm ngược 60s, nhắc lại mỗi 15s); biện pháp này chỉ ngăn dùng máy này, không thể ép con nghỉ ngơi và không khóa được máy khác.
 - RPC cảnh báo can thiệp (migration 5): `safepc_push_tamper_event` xác thực bằng `safepc_auth_device` (cặp device_id + hash token), chỉ nhận 4 loại sự kiện, `family_id`/`child_id`/`device_id` suy ra từ device đã xác thực (không tin client), `details` cắt tối đa 2KB và fallback `{}` khi JSON hỏng; `safepc_report_extension_heartbeat` chỉ cập nhật đúng cột `last_extension_seen_at`, kẹp giờ tương lai về giờ server. Cả hai đều `SECURITY DEFINER` với `search_path` cố định, GRANT cho `anon`/`authenticated`/`service_role` như các RPC khác. Agent chỉ tự đẩy `clock_drift` và `agent_restart` (tối đa 1 lần/giờ mỗi loại); `service_stopped` và `extension_missing` không do Agent đẩy.
 - File heartbeat extension: NativeHost ghi đè timestamp UTC vào `shared\extension_heartbeat.txt` mỗi lần extension liên hệ; file chỉ chứa timestamp, không secret, Service đọc với `FileShare.ReadWrite` và không bao giờ tin timestamp tương lai (RPC kẹp về giờ server). Ghi heartbeat lỗi không làm lỗi message của extension.
+
+**Giao lệnh theo phiên (đợt 17/11/2026, đã triển khai):**
+- Miễn trừ khóa theo tài khoản admin: Tray báo quyền admin qua `TokenElevationType` (Full/Limited = admin); Service chỉ giao lệnh khóa/cảnh báo tới phiên không phải admin. Điều này ĐÚNG chỉ khi con dùng tài khoản Standard User — nếu con có quyền Admin, phiên của con cũng được miễn. Tài liệu cài đặt phải nhấn mạnh: con luôn dùng Standard User, phụ huynh giữ tài khoản Admin duy nhất.
+- Thông tin hello (phiên, tên tài khoản, quyền admin) chỉ dùng để định tuyến lệnh khóa trong bộ nhớ của Service, không lưu DB, không gửi lên server. Phiên chưa giới thiệu vẫn nhận lệnh (fail-closed).
+- Không đổi ranh giới tin cậy khác: ACL pipe, giới hạn 8 instance, DPAPI token, RPC xác thực device đều không đổi.
 
 **Mode app mới / ghi đè app / báo cáo thi hành / cứng hóa Tray + IPC (bản sửa lỗi sau Sprint 2 đợt 3, đã triển khai):**
 - Mode app mới (`app_block`, `app_allowlist`, `app_allowlist_by_time`) và ghi đè app (`block_app`/`allow_app`) không nới lỏng an toàn đóng app: mọi đường đóng vẫn qua đúng một hàm `KillAppAsync` (một điểm gọi `Process.Kill` duy nhất), denylist hệ thống + exe SafePC không đổi và được kiểm tra ở đầu hàm lẫn từng process; chỉ đóng đúng session đã báo cáo, không chạm session 0; so khớp exe vẫn qua helper `ExeNames` duy nhất. Ghi đè app được `RuleEngine` bỏ qua hoàn toàn (cùng chốt chặn với ghi đè domain) nên không bao giờ biến thành mở/khóa máy.

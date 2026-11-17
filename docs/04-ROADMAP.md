@@ -1,56 +1,65 @@
 # Roadmap & Quy trình làm việc — SafePC
 
-## Lộ trình đề xuất (làm theo sprint 1-2 tuần, mỗi sprint có bản chạy được)
+## Trạng thái tổng quan (17/11/2026)
 
-### Sprint 0 — Nền móng (1 tuần)
-- [x] Đã chốt: tên app SafePC, Windows 10/11, backend Supabase (16/11/2026).
-- [ ] Tạo repo private, cấu trúc monorepo, CI cơ bản (build + lint + scan secret).
-- [ ] Tạo project Supabase Free, schema + RLS, seed data mẫu.
-- [ ] Tạo project Vercel Free, deploy Dashboard khung (trang đăng nhập, layout).
-- [ ] Design system v0 trong code (màu, font, component) — chưa cần Figma phức tạp. Figma Free tạo sau khi chốt luồng.
+Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy thật. Dashboard đã live. Còn lại: hoàn thiện Tray (PIN/xin giờ/xem giờ), kiểm chứng chặn domain đầu-cuối, báo cáo tuần, app Android, và flow cài đặt cho phụ huynh khác. Chi tiết từng hạng mục trong PRD (`01-PRD.md` mục 0).
 
-**Xong Sprint 0 khi:** Đăng nhập được, Dashboard deploy được, CI chạy xanh.
+## Lộ trình thực tế
 
-### Sprint 1 — Pairing + Usage Tracking
-- [ ] Backend: families/children/devices, pairing code, device token.
-- [ ] Agent: Service + Tray, heartbeat, ghi app foreground vào SQLite, đồng bộ lên Supabase.
-- [ ] Dashboard: trang Thiết bị, trang Hôm nay (tổng giờ, top app).
-- [ ] Installer thử nghiệm (Inno Setup) cài trên 1 máy Windows thật.
+### Sprint 0 — Nền móng ✅ (16/11/2026)
+- [x] Đã chốt: tên app SafePC, Windows 10/11, backend Supabase.
+- [x] Repo private `ndtcoder/SafePC`, cấu trúc monorepo, CI (build + scan secret + cổng kiểm tra).
+- [x] Project Supabase Free, schema 12 bảng + RLS, 6 migration đã áp.
+- [x] Project Vercel Free, Dashboard live tại `https://safe-pc.vercel.app`.
+- [x] Tài khoản phụ huynh đầu tiên đã đăng ký/đăng nhập thành công.
 
-**Xong Sprint 1 khi:** Cài Agent lên máy thật, Dashboard thấy đúng app + thời gian đã dùng.
+### Sprint 1 — Pairing + Usage Tracking ✅ (16/11/2026)
+- [x] Backend: families/children/devices, pairing code, device token (RPC SECURITY DEFINER).
+- [x] Agent: Service + Tray, heartbeat, ghi app foreground vào SQLite, đồng bộ lên Supabase.
+- [x] Dashboard: trang Thiết bị, trang Hôm nay.
+- [x] Installer Inno Setup, đã cài và kiểm chứng trên máy Windows thật.
 
-### Sprint 2 — Screen Time + Lock + Xin thêm giờ
-- [ ] Rules: daily limit + bedtime, cảnh báo, màn hình khóa, LockWorkStation.
-- [ ] Requests: con xin thêm giờ, phụ huynh duyệt/từ chối realtime.
-- [ ] Commands: khóa ngay, mở thêm giờ từ xa.
+### Sprint 2 — Screen Time + Lock + Rules ✅ (16–17/11/2026)
+- [x] Đợt 1: quy tắc giờ giấc (tổng giờ/ngày theo thứ, khung giờ, giờ ngủ) + ghi đè tạm thời.
+- [x] Đợt 2: chặn domain qua extension MV3 + NativeHost + SafeSearch/YouTube Restricted (code xong, **chưa kiểm chứng đầu-cuối**).
+- [x] Đợt 3: quy tắc theo app, giờ học tập trung, nghỉ bắt buộc, cảnh báo can thiệp, mẫu một chạm.
+- [x] Bản sửa lỗi: báo cáo thi hành realtime, cứng hóa Tray + IPC, Dashboard gom theo con + đếm ngược mở khóa + xóa thiết bị.
+- [x] Gốc rễ lỗi IPC (deadlock AutoFlush) đã tìm ra và sửa; cổng kiểm tra khóa/mở trên CI đã xanh; khóa/mở đã kiểm chứng trên máy thật (v0.1.136, 17/11/2026).
+- [x] Tối ưu CI: job lọc thay đổi (đẩy không chạm code agent thì bỏ qua job Windows), cache NuGet + Inno Setup.
+- [ ] Xin thêm giờ đầu-cuối (đang làm — xem đợt hiện tại).
 
-**Xong Sprint 2 khi:** Test kịch bản hết giờ đầy đủ trên máy thật, không mất dữ liệu khi mất mạng.
+### Đợt hiện tại — theo yêu cầu ngày 17/11/2026 🔨
+- [ ] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (đã đẩy code, đang chờ cổng kiểm tra CI, chưa kiểm chứng trên máy thật).
+- [ ] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật.
+- [ ] Kiểm chứng chặn domain đầu-cuối: cài extension lên trình duyệt máy thật, sửa `allowed_origins` theo ID thật, thử chặn/cho phép thật.
+- [ ] Rule mẫu URL có đường dẫn (`bing.com/videos`) bên cạnh rule domain.
 
-### Sprint 3 — App Rules + Web Filtering (Extension)
-- [ ] App blocklist/allowlist + giới hạn theo app.
-- [ ] Extension Chrome/Edge MV3: blocklist domain + báo cáo domain.
-- [ ] Dashboard: trang Quy tắc, trang Báo cáo tuần.
-
-**Xong Sprint 3 khi:** Chặn được 1 app + 1 domain, có log, phụ huynh tự thêm/sửa được quy tắc.
-
-### Sprint 4 — Cứng hóa + Beta gia đình
-- [ ] Tamper resistance: PIN gỡ, watchdog, cảnh báo offline.
+### Sprint 4 — Cứng hóa + Beta gia đình ⏳
+- [ ] Tamper resistance: PIN gỡ cài đặt, watchdog, cảnh báo offline.
 - [ ] Security checklist (docs/03) chạy đầy đủ, sửa lỗi Critical/High.
 - [ ] QA: test trên 2 máy Windows khác nhau, test Standard User, test mất mạng, test khởi động lại.
 - [ ] Tài liệu hướng dẫn cài đặt + Privacy Policy tiếng Việt.
 - [ ] Beta: anh Tiến dùng thật 1-2 tuần, ghi lại lỗi/cải tiến.
+- [ ] Kiểm thử RLS truy cập chéo gia đình (2 tài khoản).
 
-### Giai đoạn 2 — Android cho phụ huynh
+### Đề xuất đang thảo luận (chưa phê duyệt — ghi vào đây sau khi chốt)
+- Tính năng nâng cao + giao diện chuyên nghiệp: đang đề xuất, thảo luận trước khi chuyển sang Android.
+- Flow cài đặt đơn giản cho phụ huynh khác (không cần biết code): đang đề xuất.
+- Báo cáo tuần (nội dung + biểu đồ): đang đề xuất.
+- Các đề xuất sau khi phê duyệt sẽ thành mục theo dõi trong roadmap này và PRD.
+
+### Giai đoạn 2 — Android cho phụ huynh ⏳
+- [ ] Thảo luận sau khi chốt tính năng nâng cao (theo yêu cầu 17/11/2026).
 - [ ] Capacitor wrapper, push notification, màn hình nhanh (khóa/mở, duyệt yêu cầu).
 - [ ] Build APK thử nghiệm, sau đó AAB lên Play Console (khi anh Tiến sẵn sàng, phí đăng ký Play Console 25 USD một lần — ngoài phạm vi free, để sau).
 
 ## Quy trình làm việc chung (áp cho mọi app của anh Tiến)
 
-1. **Mỗi tính năng bắt đầu bằng 1 issue/mô tả ngắn:** làm gì, cho ai, xong thì kiểm tra thế nào.
-2. **Branch:** `main` luôn chạy được. Tính năng làm trên branch riêng, merge qua Pull Request, CI phải xanh.
-3. **Code review:** Trà My/em My tự kiểm tra theo checklist (bảo mật + lỗi + UX) trước khi báo xong. Anh Tiến kiểm tra bản chạy được, không cần đọc code.
-4. **Không merge khi:** có secret trong code, test chính đỏ, RLS chưa kiểm tra, hoặc chưa test trên máy thật (đối với Agent).
-5. **Release:** gắn tag version (v0.1.0...), ghi changelog tiếng Việt, giữ lại bản installer cũ để quay lại khi lỗi.
+1. **Mỗi tính năng bắt đầu bằng 1 mô tả ngắn:** làm gì, cho ai, xong thì kiểm tra thế nào.
+2. **Nhánh:** `main` luôn chạy được. Đẩy code qua giao diện web GitHub theo từng đợt (Git Trees API và SSH git đều bị chặn từ môi trường làm việc); commit trung gian trong một đợt đẩy có thể đỏ, chỉ trạng thái của commit đầu (head) mới quyết định.
+3. **Code review:** mỗi đợt sửa có 1 reviewer độc lập (agent nền) kiểm tra trước khi đẩy; anh Tiến kiểm tra bản chạy được trên máy thật, không cần đọc code. Lỗi trên máy thật được sửa theo log/ảnh chụp anh gửi.
+4. **Không báo xong khi:** có secret trong code, cổng kiểm tra CI đỏ, hoặc tính năng khóa/mở chưa qua cổng kiểm tra CI (yêu cầu từ 17/11/2026: khóa/mở phải test kỹ trước khi gửi bản).
+5. **Release:** phiên bản `0.1.<số run CI>`; installer đính kèm theo run CI xanh; giữ lại bản installer cũ để quay lại khi lỗi. Migration Supabase do anh Tiến paste + chạy (trình duyệt tự động không paste được vào SQL Editor), có kiểm tra độ trung thực trước khi chạy.
 
 ## Checklist QA trước mỗi release
 
