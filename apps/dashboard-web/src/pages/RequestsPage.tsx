@@ -61,6 +61,28 @@ export default function RequestsPage() {
       if (childrenResult.error) throw childrenResult.error
       setRequests((requestsResult.data ?? []) as AppRequest[])
       setChildren((childrenResult.data ?? []) as Child[])
+      // Truy vấn RIÊNG, best-effort: cột minutes/device_id chỉ có sau
+      // migration 7. Truy vấn lỗi (cột chưa tồn tại) thì yêu cầu vẫn hiện
+      // (không có số phút/máy), KHÔNG làm hỏng cả trang — cùng lý do như
+      // truy vấn best-effort ở DevicesPage (Vercel deploy trước, migration
+      // paste sau). Cùng thứ tự + giới hạn với truy vấn chính để gộp đúng
+      // 100 yêu cầu mới nhất theo id.
+      try {
+        const extraResult = await supabase
+          .from('requests')
+          .select('id, minutes, device_id')
+          .order('created_at', { ascending: false })
+          .limit(100)
+        if (!extraResult.error) {
+          const extraById = new Map<string, { minutes: number | null; device_id: string | null }>()
+          for (const row of (extraResult.data ?? []) as Array<{ id: string; minutes: number | null; device_id: string | null }>) {
+            extraById.set(row.id, { minutes: row.minutes, device_id: row.device_id })
+          }
+          setRequests((prev) => prev.map((r) => ({ ...r, ...(extraById.get(r.id) ?? {}) })))
+        }
+      } catch {
+        // Chưa có cột → giữ nguyên yêu cầu không có số phút/máy.
+      }
       setState('ready')
     } catch (err) {
       setError(toVietnameseError(err))
@@ -92,6 +114,41 @@ export default function RequestsPage() {
     setActionError(null)
     setActionMessage(null)
     try {
+      // Duyệt yêu cầu xin thêm giờ thì phải CỘNG GIỜ thật: gửi lệnh
+      // temporary_override (bonus_minutes) tới máy đã gửi yêu cầu, hiệu lực
+      // tới hết ngày hôm nay (cùng mẫu với ghi đè ở trang Quy tắc). Lệnh
+      // gửi trước, cập nhật trạng thái sau — gửi lệnh lỗi thì yêu cầu vẫn
+      // ở trạng thái chờ để phụ huynh thử lại.
+      if (status === 'approved' && request.type === 'extra_time') {
+        let deviceId = request.device_id ?? null
+        if (!deviceId) {
+          const { data: childDevices, error: devicesError } = await supabase
+            .from('devices')
+            .select('id, last_seen_at')
+            .eq('child_id', request.child_id)
+            .order('last_seen_at', { ascending: false, nullsFirst: false })
+            .limit(1)
+          if (devicesError) throw devicesError
+          deviceId = childDevices?.[0]?.id ?? null
+        }
+        if (!deviceId) {
+          throw new Error('Không tìm thấy thiết bị của con để gửi lệnh cộng giờ.')
+        }
+        const minutes = request.minutes ?? 30
+        const now = new Date()
+        const expiresAt = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0)
+        const { error: insertError } = await supabase.from('commands').insert({
+          family_id: request.family_id,
+          device_id: deviceId,
+          type: 'temporary_override',
+          payload: { action: 'bonus_minutes', minutes, expires_at: expiresAt.toISOString() },
+          status: 'pending',
+        })
+        if (insertError) throw insertError
+      }
+      // Yêu cầu xin mở ứng dụng: chưa có thông tin app trong yêu cầu nên
+      // duyệt chỉ đổi trạng thái (phụ huynh tự mở bằng ghi đè tạm thời ở
+      // trang Quy tắc).
       const { error: updateError } = await supabase
         .from('requests')
         .update({
@@ -109,7 +166,9 @@ export default function RequestsPage() {
         ),
       )
       setActionMessage(
-        `Đã ${status === 'approved' ? 'duyệt' : 'từ chối'} yêu cầu của ${childNameById.get(request.child_id) ?? 'con'}.`,
+        status === 'approved' && request.type === 'extra_time'
+          ? `Đã duyệt và cộng ${request.minutes ?? 30} phút cho ${childNameById.get(request.child_id) ?? 'con'} (hiệu lực tới hết hôm nay).`
+          : `Đã ${status === 'approved' ? 'duyệt' : 'từ chối'} yêu cầu của ${childNameById.get(request.child_id) ?? 'con'}.`,
       )
     } catch (err) {
       setActionError(toVietnameseError(err))
@@ -172,6 +231,11 @@ export default function RequestsPage() {
                   <h2 className="text-base font-semibold text-slate-900">
                     {requestTypeLabel(request.type)} — {childNameById.get(request.child_id) ?? 'Không rõ con'}
                   </h2>
+                  {request.type === 'extra_time' && request.minutes != null && (
+                    <p className="mt-1 text-sm font-medium text-slate-900">
+                      Xin thêm {request.minutes} phút
+                    </p>
+                  )}
                   <p className="mt-1 text-sm text-slate-700">
                     <span className="font-medium">Lý do: </span>
                     {request.reason && request.reason.trim() !== '' ? request.reason : 'Con không nhập lý do.'}

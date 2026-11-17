@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
+import { hashPin, isValidPin } from '../lib/pinHash'
 import type { Child, Command, Device, EnforcementDecision, EnforcementSnapshot, Family } from '../lib/types'
 import {
   deviceStatusLabel,
@@ -176,6 +177,13 @@ export default function DevicesPage() {
   const [confirmDeleteDeviceId, setConfirmDeleteDeviceId] = useState<string | null>(null)
   const [deletingDeviceId, setDeletingDeviceId] = useState<string | null>(null)
 
+  // Mã PIN thoát Tray theo từng máy: chỉ băm mới lên server, PIN thô
+  // không rời trình duyệt (xem pinHash.ts).
+  const [pinByDevice, setPinByDevice] = useState<Record<string, string>>({})
+  const [pinConfirmByDevice, setPinConfirmByDevice] = useState<Record<string, string>>({})
+  const [savingPinId, setSavingPinId] = useState<string | null>(null)
+  const [removingPinId, setRemovingPinId] = useState<string | null>(null)
+
   // Form tạo hồ sơ con (tối thiểu): tên hiển thị + năm sinh.
   const [showChildForm, setShowChildForm] = useState(false)
   const [childName, setChildName] = useState('')
@@ -269,6 +277,25 @@ export default function DevicesPage() {
         }
       } catch {
         setEnforcementByDevice(new Map())
+      }
+      // Truy vấn RIÊNG, best-effort: cột exit_pin_hash chỉ có sau
+      // migration 7. Truy vấn lỗi (cột chưa tồn tại) thì coi mọi máy là
+      // chưa đặt PIN, KHÔNG làm hỏng cả trang (Vercel deploy theo push,
+      // migration do phụ huynh paste sau — trang Thiết bị không được vỡ
+      // trong khoảng giữa). Gộp theo id vào state devices đã tải.
+      try {
+        const pinResult = await supabase
+          .from('devices')
+          .select('id, exit_pin_hash')
+        if (!pinResult.error) {
+          const pinById = new Map<string, string | null>()
+          for (const row of (pinResult.data ?? []) as Array<{ id: string; exit_pin_hash: string | null }>) {
+            pinById.set(row.id, row.exit_pin_hash)
+          }
+          setDevices((prev) => prev.map((d) => ({ ...d, exit_pin_hash: pinById.get(d.id) ?? null })))
+        }
+      } catch {
+        // Chưa có cột → giữ nguyên trạng thái "chưa đặt PIN".
       }
       setState('ready')
     } catch (err) {
@@ -447,6 +474,63 @@ export default function DevicesPage() {
       setActionError(toVietnameseError(err))
     } finally {
       setCancellingUnlockId(null)
+    }
+  }
+
+  const handleSavePin = async (device: Device) => {
+    if (!supabase || !user) return
+    const pin = pinByDevice[device.id] ?? ''
+    const confirm = pinConfirmByDevice[device.id] ?? ''
+    setActionError(null)
+    setActionMessage(null)
+    if (!isValidPin(pin)) {
+      setActionError('Mã PIN phải gồm đúng 6 chữ số.')
+      return
+    }
+    if (pin !== confirm) {
+      setActionError('Hai lần nhập mã PIN chưa khớp nhau.')
+      return
+    }
+    setSavingPinId(device.id)
+    try {
+      const exitPinHash = await hashPin(pin)
+      const { error: updateError } = await supabase
+        .from('devices')
+        .update({ exit_pin_hash: exitPinHash })
+        .eq('id', device.id)
+      if (updateError) throw updateError
+      setDevices((prev) =>
+        prev.map((d) => (d.id === device.id ? { ...d, exit_pin_hash: exitPinHash } : d)),
+      )
+      setPinByDevice((prev) => ({ ...prev, [device.id]: '' }))
+      setPinConfirmByDevice((prev) => ({ ...prev, [device.id]: '' }))
+      setActionMessage(
+        `Đã đặt mã PIN thoát cho máy "${device.hostname}". Agent sẽ nhận mã mới trong vòng ~1 phút khi máy online.`,
+      )
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setSavingPinId(null)
+    }
+  }
+
+  const handleRemovePin = async (device: Device) => {
+    if (!supabase || !user) return
+    setRemovingPinId(device.id)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const { error: updateError } = await supabase
+        .from('devices')
+        .update({ exit_pin_hash: null })
+        .eq('id', device.id)
+      if (updateError) throw updateError
+      setDevices((prev) => prev.map((d) => (d.id === device.id ? { ...d, exit_pin_hash: null } : d)))
+      setActionMessage(`Đã gỡ mã PIN thoát của máy "${device.hostname}".`)
+    } catch (err) {
+      setActionError(toVietnameseError(err))
+    } finally {
+      setRemovingPinId(null)
     }
   }
 
@@ -829,6 +913,70 @@ export default function DevicesPage() {
                         </p>
                       </>
                     )}
+                  </div>
+                  <div className="mt-4 border-t border-slate-100 pt-4">
+                    <p className="mb-2 text-sm font-medium text-slate-700">Mã PIN thoát Tray</p>
+                    <p className="text-sm text-slate-600">
+                      {device.exit_pin_hash
+                        ? 'Đã đặt mã PIN. Muốn thoát Tray trên máy này phải nhập đúng mã PIN.'
+                        : 'Chưa đặt mã PIN. Khi chưa có PIN, không ai thoát được Tray trên máy này.'}
+                    </p>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <Field label="Mã PIN mới (6 số)" htmlFor={`pin-${device.id}`}>
+                        <input
+                          id={`pin-${device.id}`}
+                          type="password"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={6}
+                          value={pinByDevice[device.id] ?? ''}
+                          onChange={(e) =>
+                            setPinByDevice((prev) => ({ ...prev, [device.id]: e.target.value }))
+                          }
+                          className={inputClassName}
+                          placeholder="6 chữ số"
+                        />
+                      </Field>
+                      <Field label="Nhập lại mã PIN" htmlFor={`pin-confirm-${device.id}`}>
+                        <input
+                          id={`pin-confirm-${device.id}`}
+                          type="password"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={6}
+                          value={pinConfirmByDevice[device.id] ?? ''}
+                          onChange={(e) =>
+                            setPinConfirmByDevice((prev) => ({ ...prev, [device.id]: e.target.value }))
+                          }
+                          className={inputClassName}
+                          placeholder="Nhập lại 6 chữ số"
+                        />
+                      </Field>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleSavePin(device)}
+                        disabled={savingPinId === device.id}
+                        className={primaryButtonClassName}
+                      >
+                        {savingPinId === device.id ? 'Đang lưu…' : 'Lưu mã PIN'}
+                      </button>
+                      {device.exit_pin_hash && (
+                        <button
+                          type="button"
+                          onClick={() => void handleRemovePin(device)}
+                          disabled={removingPinId === device.id}
+                          className={secondaryButtonClassName}
+                        >
+                          {removingPinId === device.id ? 'Đang gỡ…' : 'Gỡ mã PIN'}
+                        </button>
+                      )}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Mã PIN chỉ được lưu dạng băm, không lưu PIN thô. Đừng dùng chung với mật khẩu
+                      đăng nhập.
+                    </p>
                   </div>
                   <div className="mt-4 border-t border-slate-100 pt-4">
                     <div className="flex flex-wrap gap-2">
