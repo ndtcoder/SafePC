@@ -40,8 +40,9 @@ namespace SafePC.Agent.Service;
 /// app_allowlist / app_allowlist_by_time chỉ cho phép danh sách app), ghi đè
 /// app tạm thời (block_app/allow_app, xét trước mọi rule theo app), và báo
 /// cáo trạng thái thi hành (snapshot enforcement qua RPC migration 6, gửi ở
-/// chu kỳ heartbeat khi đổi, tối đa 1 lần/5 phút) + log chẩn đoán quyết
-/// định rules (khi đổi + mỗi 15 phút). Thứ tự thi hành theo app: ghi đè app
+/// chu kỳ heartbeat khi đổi, tối đa 1 lần/phút — chu kỳ heartbeat là
+/// throttle tự nhiên, không chặn thêm) + log chẩn đoán quyết định rules
+/// (khi đổi + mỗi 15 phút). Thứ tự thi hành theo app: ghi đè app
 /// → focus → allowlist → luôn chặn → chặn theo giờ → giới hạn thời gian;
 /// mọi đường đóng app đều qua KillAppAsync với denylist bảo vệ.
 /// </summary>
@@ -107,14 +108,14 @@ public sealed class AgentWorker : BackgroundService
     private ParsedAppRules? _parsedAppRules;
 
     // Báo cáo trạng thái thi hành (migration 6): vòng kiểm tra rules dựng
-    // snapshot mỗi 15s và để ở đây; vòng heartbeat gửi lên server khi nội
-    // dung (trừ thời điểm) ĐỔI, tối đa 1 lần/5 phút. Hai vòng chạy song song
+    // snapshot mỗi 15s và để ở đây; vòng heartbeat (60 giây) gửi lên server
+    // khi nội dung (trừ thời điểm) ĐỔI — chu kỳ heartbeat là throttle tự
+    // nhiên, không chặn thêm (đợt sửa 17/11/2026). Hai vòng chạy song song
     // nên mọi truy cập qua khóa này.
     private readonly object _enforcementGate = new();
     private string? _pendingEnforcementJson;
     private string? _pendingEnforcementSignature;
     private string? _lastSentEnforcementSignature;
-    private DateTimeOffset _lastEnforcementSentAt;
 
     // Chẩn đoán quyết định rules: ghi log khi quyết định đổi, hoặc tối đa
     // 1 lần/15 phút khi không đổi — để log Service trả lời được rules có
@@ -275,7 +276,7 @@ public sealed class AgentWorker : BackgroundService
 
                     // Báo trạng thái thi hành mới nhất (nếu đổi) lên server
                     // — Dashboard đọc để hiển thị máy đang bị khóa bởi gì.
-                    // Hàm tự kiểm tra đổi/throttle nên gọi mỗi chu kỳ là an
+                    // Hàm chỉ gửi khi nội dung đổi nên gọi mỗi chu kỳ là an
                     // toàn; máy offline thì snapshot chờ ở _pending.
                     await MaybeReportEnforcementAsync(ct);
                 }
@@ -2217,9 +2218,12 @@ public sealed class AgentWorker : BackgroundService
 
     /// <summary>
     /// Gửi snapshot enforcement đang chờ lên server nếu nội dung (trừ thời
-    /// điểm) đã đổi so với lần gửi trước và đã qua 5 phút từ lần gửi trước.
-    /// Chỉ gọi sau khi heartbeat thành công (máy đang online). Gửi lỗi thì
-    /// giữ nguyên mốc lần gửi để chu kỳ sau thử lại với snapshot mới nhất.
+    /// điểm) đã đổi so với lần gửi trước. Không chặn 5 phút nữa (đợt sửa
+    /// 17/11/2026): hàm chỉ chạy ở chu kỳ heartbeat 60 giây nên tối đa
+    /// 1 lần gửi/phút và chỉ khi chữ ký đổi — chặn thêm làm Dashboard chậm
+    /// thấy trạng thái thi hành mới. Chỉ gọi sau khi heartbeat thành công
+    /// (máy đang online). Gửi lỗi thì giữ nguyên chữ ký đã gửi để chu kỳ
+    /// sau thử lại với snapshot mới nhất.
     /// </summary>
     private async Task MaybeReportEnforcementAsync(CancellationToken ct)
     {
@@ -2230,12 +2234,6 @@ public sealed class AgentWorker : BackgroundService
             json = _pendingEnforcementJson;
             signature = _pendingEnforcementSignature;
             if (json is null || signature is null || signature == _lastSentEnforcementSignature)
-            {
-                return;
-            }
-
-            if (_lastSentEnforcementSignature is not null
-                && DateTimeOffset.UtcNow - _lastEnforcementSentAt < TimeSpan.FromMinutes(5))
             {
                 return;
             }
@@ -2257,7 +2255,6 @@ public sealed class AgentWorker : BackgroundService
             lock (_enforcementGate)
             {
                 _lastSentEnforcementSignature = signature;
-                _lastEnforcementSentAt = DateTimeOffset.UtcNow;
             }
         }
     }

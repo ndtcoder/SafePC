@@ -20,7 +20,7 @@ namespace SafePC.Agent.Service;
 /// hello IsAdmin=true và khẳng định lệnh lock không còn giao tới writer nào
 /// (miễn trừ phiên admin). Lỗi "handler đã nối nhưng danh sách writer rỗng"
 /// (bản 0.1.122) phải bị bắt ở đây.
-/// Tổng 12 check.
+/// Tổng 13 check.
 ///
 /// Ghi kết quả ra CẢ log file (LocalLogger) lẫn console để CI đọc trực tiếp.
 /// Thoát 0 khi mọi check đạt, 1 khi có check trượt.
@@ -286,8 +286,10 @@ public static class SelfTestIpc
             // client giả gửi hello KHÔNG phải admin trong lúc quyết định
             // mới nhất đang là Lock thì server phải gửi ngay lệnh khóa
             // xuống writer vừa giới thiệu, không chờ vòng kiểm tra rules.
-            // Đọc phải chạy đồng thời với gửi (FlushAsync của lệnh khóa
-            // chặn tới khi đầu kia đọc).
+            // Lệnh khóa đồng bộ phải mang Immediate = true: quyết định
+            // khóa đã có hiệu lực từ trước, Tray nối lại không được đếm
+            // ngược 60 giây nữa. Đọc phải chạy đồng thời với gửi
+            // (FlushAsync của lệnh khóa chặn tới khi đầu kia đọc).
             Trace("đang kiểm tra đồng bộ trạng thái khi hello...");
             Task<string?> helloSyncReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
             await writer.WriteLineAsync(IpcMessage.Create(
@@ -297,6 +299,8 @@ public static class SelfTestIpc
             string? helloSyncLine = await helloSyncReadTask;
             IpcMessage? helloSyncMessage = helloSyncLine is null ? null : IpcMessage.FromLine(helloSyncLine);
             Check("hello từ phiên không admin thì nhận ngay lệnh khóa đang hiệu lực", helloSyncMessage?.Type == IpcMessageTypes.Lock);
+            LockPayload? helloSyncPayload = helloSyncMessage?.GetPayload<LockPayload>();
+            Check("lệnh khóa đồng bộ khi hello phải khóa ngay, không đếm ngược", helloSyncPayload?.Immediate == true);
 
             // Miễn trừ admin (đợt khóa theo phiên): client giả gửi hello
             // IsAdmin=true, rồi khẳng định lệnh lock KHÔNG còn giao tới

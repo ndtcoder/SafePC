@@ -287,8 +287,10 @@ public sealed class IpcPipeServer : BackgroundService
     /// cảnh báo — cả hai đều MIỄN phiên admin như
     /// <see cref="SendToTrayAsync"/>; đang cho phép thì gửi mở tới mọi
     /// phiên để đóng màn hình khóa/cảnh báo cũ còn sót. Khóa đồng bộ luôn
-    /// có đếm ngược (Immediate = false): Tray mới chưa từng thấy cảnh báo
-    /// trong phiên này nên vẫn cần thời gian lưu bài.
+    /// là khóa NGAY (Immediate = true): lệnh khóa đã có hiệu lực từ trước
+    /// khi Tray nối lại, đếm ngược "sẽ khóa sau 60 giây" là sai sự thật —
+    /// test máy thật 17/11/2026 cho thấy Tray nối lại vẫn đếm ngược như
+    /// bản cũ (đợt sửa 17/11/2026).
     /// </summary>
     private async Task SyncStateToWriterAsync(WriterEntry entry, CancellationToken ct)
     {
@@ -306,8 +308,8 @@ public sealed class IpcPipeServer : BackgroundService
         switch (decision.Kind)
         {
             case RuleDecisionKind.Lock when !isAdmin:
-                _log.Info("IPC: đồng bộ trạng thái cho Tray mới nối: đang khóa, gửi lệnh khóa.");
-                await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason)), ct);
+                _log.Info("IPC: đồng bộ trạng thái cho Tray mới nối: đang khóa, gửi lệnh khóa ngay (không đếm ngược).");
+                await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason, Immediate: true)), ct);
                 break;
 
             case RuleDecisionKind.Warn when !isAdmin:
