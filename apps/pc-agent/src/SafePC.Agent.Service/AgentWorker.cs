@@ -767,7 +767,6 @@ public sealed class AgentWorker : BackgroundService
 
                     case RuleDecisionKind.Lock:
                         bool firstLock = !_lockSent;
-                        _lockSent = true;
                         if (firstLock || breakActive)
                         {
                             // Giờ nghỉ bắt buộc nhắc lại lệnh khóa ở MỌI lần
@@ -780,8 +779,20 @@ public sealed class AgentWorker : BackgroundService
                                 _log.Info("Hết giờ (" + decision.Reason + "). Báo Tray hiện màn hình khóa.");
                             }
 
-                            await _ipc.SendToTrayAsync(
+                            // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1
+                            // Tray: mẫu cũ đặt _lockSent = true TRƯỚC khi
+                            // gửi, nên lần gửi lúc chưa Tray nào nối (bị bỏ
+                            // qua) vẫn khóa cờ vĩnh viễn và lệnh khóa không
+                            // bao giờ được gửi lại — log 17/11/2026: màn
+                            // hình khóa chưa từng hiện vì đúng lỗi này.
+                            // Gửi thất bại thì cờ vẫn false, lần kiểm tra
+                            // sau gửi lại.
+                            int sent = await _ipc.SendToTrayAsync(
                                 IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason)), ct);
+                            if (firstLock)
+                            {
+                                _lockSent = sent > 0;
+                            }
                         }
                         break;
                 }
@@ -1556,9 +1567,12 @@ public sealed class AgentWorker : BackgroundService
                 // Lưu bền vững: khóa cưỡng chế sống sót qua khởi động lại
                 // Service, chỉ hết khi có lệnh unlock.
                 await _outbox.SetStateAsync(StateKeys.ForcedLock, "1", ct);
-                _lockSent = true;
-                await _ipc.SendToTrayAsync(
+                // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1 Tray (xem ghi
+                // chú ở vòng kiểm tra rules): gửi thất bại thì cờ vẫn false
+                // và vòng kiểm tra sau gửi lại từ trạng thái khóa bền vững.
+                int lockSent = await _ipc.SendToTrayAsync(
                     IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy.")), ct);
+                _lockSent = lockSent > 0;
                 return true;
 
             case CommandTypes.Unlock:
@@ -1698,9 +1712,12 @@ public sealed class AgentWorker : BackgroundService
         // tra rules tiếp theo. Nhánh dưới đây chỉ khớp action Lock/Unlock.
         if (!isDomainAction && action == OverrideActions.Lock)
         {
-            _lockSent = true;
-            await _ipc.SendToTrayAsync(
+            // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1 Tray (xem ghi chú
+            // ở vòng kiểm tra rules): gửi thất bại thì vòng kiểm tra sau
+            // gửi lại từ ghi đè đang hiệu lực.
+            int lockSent = await _ipc.SendToTrayAsync(
                 IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy tạm thời.")), ct);
+            _lockSent = lockSent > 0;
         }
         else if (!isDomainAction && action == OverrideActions.Unlock)
         {

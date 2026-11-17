@@ -92,7 +92,10 @@ public sealed class IpcPipeServer : BackgroundService
     /// nối thì bỏ qua (ghi log chống spam) chứ không xếp hàng — cảnh báo/khóa
     /// sẽ được gửi lại ở lần kiểm tra rules tiếp theo.
     /// </summary>
-    public async Task SendToTrayAsync(IpcMessage message, CancellationToken ct = default)
+    /// <returns>Số Tray đã ghi thành công (0 khi chưa Tray nào nối, chờ khóa
+    /// ghi quá hạn, hoặc mọi lần ghi đều lỗi). Nơi gọi dùng giá trị này để
+    /// quyết định có coi lệnh là "đã gửi" hay không — xem _lockSent.</returns>
+    public async Task<int> SendToTrayAsync(IpcMessage message, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -120,7 +123,7 @@ public sealed class IpcPipeServer : BackgroundService
                 _log.Info("IPC: Tray chưa kết nối, bỏ qua message " + message.Type + ".");
             }
 
-            return;
+            return 0;
         }
 
         string line = message.ToLine();
@@ -136,9 +139,10 @@ public sealed class IpcPipeServer : BackgroundService
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             _log.Warning("IPC: chờ khóa ghi quá 5 giây, bỏ qua message " + message.Type + ".");
-            return;
+            return 0;
         }
 
+        int sent = 0;
         try
         {
             foreach (StreamWriter writer in writers)
@@ -147,6 +151,7 @@ public sealed class IpcPipeServer : BackgroundService
                 {
                     await writer.WriteLineAsync(line);
                     await writer.FlushAsync();
+                    sent++;
                 }
                 catch (Exception ex)
                 {
@@ -162,6 +167,8 @@ public sealed class IpcPipeServer : BackgroundService
         {
             _writeGate.Release();
         }
+
+        return sent;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -321,41 +328,50 @@ public sealed class IpcPipeServer : BackgroundService
             // KHÔNG kiểm tra server.IsConnected (cờ này không đáng tin —
             // xem ghi chú ở IpcPipeClient): chỉ thoát khi đọc được null,
             // ném exception, Service dừng, hoặc idle quá 120 giây.
-            // Mỗi lần đọc dùng một CancellationTokenSource liên kết riêng
-            // với CancelAfter(120s) — tránh ngữ nghĩa "đặt lại hẹn giờ"
-            // không chắc chắn của việc gọi CancelAfter lặp trên cùng một
-            // CTS. Đọc bị hủy do idle thì thoát vòng và dispose ở finally:
-            // kết nối chết không giữ pipe instance mãi.
+            //
+            // IDLE TIMEOUT BẰNG DISPOSE (sửa 17/11/2026): mẫu cũ dùng
+            // CancelAfter(120s) + ReadLineAsync(token) KHÔNG hoạt động —
+            // log thật ngày 17/11 cho thấy handler đọc kẹt 28 phút không
+            // dòng nào mà timeout không bao giờ kích hoạt: hủy token
+            // không abort được lần đọc pipe đang chờ qua StreamReader.
+            // Mẫu mới: đua Task.WhenAny giữa lần đọc và Task.Delay; quá
+            // hạn thì dispose stream (việc này giải phóng lần đọc đang
+            // chờ) rồi chờ lần đọc bị bỏ kết thúc trước khi thoát vòng.
+            // Stream được dispose lại ở finally — dispose hai lần an toàn.
             while (!ct.IsCancellationRequested)
             {
-                string? line;
-                bool idleTimedOut = false;
-                using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                Task<string?> readTask = reader.ReadLineAsync();
+                Task timeoutTask = Task.Delay(IdleTimeout, ct);
+                Task done = await Task.WhenAny(readTask, timeoutTask).ConfigureAwait(false);
+                if (done == timeoutTask)
                 {
-                    readCts.CancelAfter(IdleTimeout);
+                    if (!ct.IsCancellationRequested)
+                    {
+                        _log.Warning("IPC: handler #" + handlerId + " idle quá 120 giây không có dòng nào, thu hồi kết nối (giải phóng pipe instance).");
+                    }
+
                     try
                     {
-                        line = await reader.ReadLineAsync(readCts.Token);
+                        server.Dispose();
                     }
-                    catch (OperationCanceledException)
+                    catch
                     {
-                        if (ct.IsCancellationRequested)
-                        {
-                            line = null;
-                            break;
-                        }
-
-                        idleTimedOut = true;
-                        line = null;
+                        // Bỏ qua lỗi đóng stream cũ.
                     }
-                }
 
-                if (idleTimedOut)
-                {
-                    _log.Warning("IPC: handler #" + handlerId + " idle quá 120 giây không có dòng nào, thu hồi kết nối (giải phóng pipe instance).");
+                    try
+                    {
+                        await readTask.ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Lần đọc bị bỏ kết thúc bằng lỗi sau khi dispose.
+                    }
+
                     break;
                 }
 
+                string? line = await readTask.ConfigureAwait(false);
                 if (line is null)
                 {
                     _log.Info("IPC: handler #" + handlerId + " — Tray App đã đóng kết nối (EOF).");
