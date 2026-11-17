@@ -8,9 +8,9 @@
 ## Trạng thái hiện tại (17/11/2026)
 
 - **Dashboard đã live:** https://safe-pc.vercel.app (Vercel Free, deploy tự động từ `main`).
-- **Backend:** Supabase Free (project SafePC, region Singapore). Đã áp 6 migration: schema 12 bảng + RLS, RPC thiết bị, web usage, cảnh báo can thiệp, báo cáo thi hành.
-- **PC Agent:** C# .NET 8 (Service + Tray + NativeHost), bộ cài Inno Setup do CI đóng gói (phiên bản `0.1.<số run CI>`). **Khóa/mở máy từ Dashboard đã kiểm chứng trên máy thật** (bản v0.1.136, ngày 17/11/2026). Quy tắc giờ giấc, theo app, giờ học tập trung, nghỉ bắt buộc, cảnh báo can thiệp và báo cáo thi hành đã triển khai; xem chi tiết trong `docs/01-PRD.md` và `docs/04-ROADMAP.md`.
-- **Đang làm tiếp (theo yêu cầu ngày 17/11):** khóa có độ trễ + cảnh báo nhỏ + khóa theo phiên (đã đẩy code, đang chờ cổng kiểm tra CI); PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại thật; kiểm chứng chặn domain đầu-cuối (extension chưa từng cài thử trên máy thật); rule mẫu URL có đường dẫn.
+- **Backend:** Supabase Free (project SafePC, region Singapore). Đã áp 6 migration: schema 12 bảng + RLS, RPC thiết bị, web usage, cảnh báo can thiệp, báo cáo thi hành. Migration 7 (PIN + yêu cầu xin giờ) có dấu hiệu đã áp nhưng chưa được xác nhận trực tiếp; migration 8 (gỡ PIN dùng một lần) đã lên GitHub, chờ áp.
+- **PC Agent:** C# .NET 8 (Service + Tray + NativeHost), bộ cài Inno Setup do CI đóng gói (phiên bản `0.1.<số run CI>`). **Khóa/mở máy từ Dashboard đã kiểm chứng trên máy thật** (bản v0.1.136, ngày 17/11/2026). Bản mới nhất **v0.1.159** (CI run #159 xanh: Tray 19/19, Service IPC 12/12) gồm khóa có độ trễ + khóa theo phiên, PIN thoát dùng một lần, xin thêm giờ đầu-cuối, xem giờ còn lại thật — đang chờ kiểm chứng trên máy thật. Quy tắc giờ giấc, theo app, giờ học tập trung, nghỉ bắt buộc, cảnh báo can thiệp và báo cáo thi hành đã triển khai; xem chi tiết trong `docs/01-PRD.md` và `docs/04-ROADMAP.md`.
+- **Đang làm tiếp (theo yêu cầu ngày 17/11):** kiểm chứng bản v0.1.159 trên máy thật; kiểm chứng chặn domain đầu-cuối (extension chưa từng cài thử trên máy thật); rule mẫu URL có đường dẫn.
 - **Chưa làm:** app Android cho phụ huynh; các hạng mục đã phê duyệt ngày 17/11/2026 (tính năng nâng cao + giao diện chuyên nghiệp, flow cài đặt cho phụ huynh khác, báo cáo tuần) — thực hiện dần, xem `docs/01-PRD.md` §2.8–2.10 và `docs/04-ROADMAP.md`.
 
 ## 1. Tóm tắt sản phẩm
