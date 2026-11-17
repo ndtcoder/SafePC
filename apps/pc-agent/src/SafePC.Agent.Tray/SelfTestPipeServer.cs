@@ -19,6 +19,17 @@ namespace SafePC.Agent.Tray;
 /// dùng đúng mẫu production (ReadLine đồng bộ + dispose để giải phóng),
 /// không dùng ReadLineAsync + timeout.
 ///
+/// ACCEPT CŨNG ĐỒNG BỘ (bài học từ run CI #127): bản đầu dùng
+/// WaitForConnectionAsync — Tray nối được (log "đã kết nối" 04:02:25) nhưng
+/// phía server im lặng suốt 30s, _writer không bao giờ được gán, cả 4 check
+/// IPC rớt. Nghi là do client đang treo trong ConnectAsync từ lúc khởi động
+/// nên nối ngay khi instance xuất hiện, trước khi lệnh chờ nối bất đồng bộ
+/// kịp đăng ký (cơ chế chưa chứng minh chắc chắn — quan sát chắc chắn là
+/// lệnh chờ đó không hoàn tất trong 30s).
+/// WaitForConnection() chặn trên thread riêng xử lý đúng cả hai thứ tự
+/// (client chờ sẵn hay nối sau), khớp bài học pipe của dự án: I/O pipe
+/// đồng bộ trên thread riêng, không dùng lệnh chờ bất đồng bộ.
+///
 /// GIỚI HẠN: cổng này chạy cùng user/cùng session nên không kiểm chứng
 /// ranh giới ACL SYSTEM↔user hay đa session — nó không thay thế test trên
 /// máy thật với Service chạy quyền SYSTEM + Tray ở session của con.
@@ -51,22 +62,31 @@ internal sealed class SelfTestPipeServer : IDisposable
             maxNumberOfServerInstances: 1,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous);
-        _ = WaitForConnectionAsync();
+        _ = Task.Run(AcceptLoop);
     }
 
-    private async Task WaitForConnectionAsync()
+    /// <summary>
+    /// Chờ Tray nối tới bằng lệnh CHẶN đồng bộ trên thread riêng (xem ghi
+    /// chú ở đầu file: WaitForConnectionAsync đã không hoàn tất ở run #127
+    /// khi client nối trước khi lệnh chờ kịp đăng ký). Dispose pipe sẽ
+    /// giải phóng lệnh chờ đang chặn.
+    /// </summary>
+    private void AcceptLoop()
     {
+        _log?.Info("SELF-TEST: pipe server giả đang chờ Tray nối tới.");
         try
         {
-            await _server!.WaitForConnectionAsync().ConfigureAwait(false);
+            _server!.WaitForConnection();
             _reader = new StreamReader(_server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
             _writer = new StreamWriter(_server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
             _ = Task.Run(DrainLoop);
             _log?.Info("SELF-TEST: pipe server giả đã nhận kết nối từ Tray.");
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
-            // Test đã dispose server trước khi Tray nối tới: thoát im lặng.
+            // Test đã dispose server trong lúc chờ nối: thoát, nhưng vẫn ghi
+            // log để lần sau phân biệt được "client chưa nối" với "accept chết".
+            _log?.Warning("SELF-TEST: pipe server giả dừng chờ kết nối (" + ex.GetType().Name + ", thường là test đã dọn dẹp).");
         }
         catch (Exception ex)
         {
@@ -113,7 +133,17 @@ internal sealed class SelfTestPipeServer : IDisposable
             await Task.Delay(200).ConfigureAwait(false);
         }
 
-        return IsConnected;
+        bool connected = IsConnected;
+        if (!connected)
+        {
+            // Chẩn đoán cho lần rớt sau (run #127): phân biệt "client chưa
+            // nối" (pipe IsConnected=false) với "accept không hoàn tất"
+            // (pipe IsConnected=true nhưng _writer chưa gán).
+            _log?.Info("SELF-TEST: chờ Tray nối hết hạn: writer sẵn sàng=" + IsConnected
+                + ", pipe IsConnected=" + (_server?.IsConnected.ToString() ?? "null") + ".");
+        }
+
+        return connected;
     }
 
     /// <summary>Gửi một message xuống Tray đang nối. Trả về false khi chưa nối hoặc ghi lỗi.</summary>
