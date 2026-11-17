@@ -155,7 +155,12 @@ public sealed class IpcPipeClient : IDisposable
         }
 
         _log.Info("IPC: đã kết nối tới Service (client #" + GetHashCode() + ").");
-        _writer = new StreamWriter(pipe, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+        // KHÔNG dùng AutoFlush trên pipe (xem ghi chú ở IpcPipeServer): setter
+        // gọi Flush() → FlushFileBuffers chặn tới khi Service ĐỌC — chết chéo
+        // với handler phía Service cũng đang kẹt ở cùng chỗ (run CI
+        // #127/#129/#131/#133: "writer đã sẵn sàng" không bao giờ xuất hiện).
+        // SendAsync đã FlushAsync tường minh sau mỗi lần ghi.
+        _writer = new StreamWriter(pipe, Encoding.UTF8, bufferSize: 1024, leaveOpen: true);
         // Breadcrumb mịn (run CI #127/#129/#131: client im lặng giữa "đã kết
         // nối" và "writer đã sẵn sàng" — khoảng giữa chỉ có ctor
         // StreamWriter, về lý thuyết không thể chặn. Dòng này xác định ctor
