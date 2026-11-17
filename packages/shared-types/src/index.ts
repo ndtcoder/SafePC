@@ -476,6 +476,8 @@ export type TemporaryOverrideAction =
 export interface CommandPayload {
   message?: string;
   target_version?: string;
+  /** Độ trễ trước khi khóa (phút, 0–5) cho lệnh lock_now; > 0 thì Agent gửi cảnh báo nhỏ trước, hết trễ mới khóa. */
+  delay_minutes?: number;
   action?: TemporaryOverrideAction;
   minutes?: number;
   expires_at?: string;
