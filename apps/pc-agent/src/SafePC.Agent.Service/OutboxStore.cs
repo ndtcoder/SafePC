@@ -248,6 +248,58 @@ public sealed class OutboxStore
         await update.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>
+    /// Xếp một yêu cầu xin thêm giờ của con vào outbox (kind
+    /// 'extra_time_request') để AgentWorker đẩy lên bảng requests. Hàng đợi
+    /// bền vững: yêu cầu không mất khi mất mạng hay khởi động lại Service,
+    /// và được gửi lại theo backoff của <see cref="MarkFailedAsync"/>.
+    /// </summary>
+    public async Task EnqueueExtraTimeRequestAsync(int minutes, string reason, DateTimeOffset requestedAt, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(reason);
+
+        string payload = JsonSerializer.Serialize(new ExtraTimeRequestPayload(minutes, reason, requestedAt));
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO outbox (kind, payload_json, attempts, next_retry_at, created_at)
+            VALUES ('extra_time_request', $payload, 0, $now, $now);
+            """;
+        command.Parameters.AddWithValue("$payload", payload);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Lấy các yêu cầu xin thêm giờ đã đến hạn gửi, cũ nhất trước. Chỉ kind 'extra_time_request'.</summary>
+    public async Task<IReadOnlyList<OutboxItem>> GetPendingExtraTimeRequestsAsync(int limit, CancellationToken ct)
+    {
+        var items = new List<OutboxItem>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, payload_json FROM outbox
+            WHERE kind = 'extra_time_request' AND next_retry_at <= $now
+            ORDER BY id ASC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+        command.Parameters.AddWithValue("$limit", limit);
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            items.Add(new OutboxItem(reader.GetInt64(0), reader.GetString(1)));
+        }
+
+        return items;
+    }
+
     /// <summary>Thay toàn bộ cache rules bằng danh sách mới tải về.</summary>
     public async Task SaveRulesAsync(IReadOnlyList<Rule> rules, CancellationToken ct)
     {

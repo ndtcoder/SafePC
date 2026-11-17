@@ -26,7 +26,7 @@ public sealed class PairingResult
     public Guid? ChildId { get; set; }
 }
 
-/// <summary>Kết quả heartbeat: giờ server (để phát hiện chỉnh đồng hồ) + gia đình/con.</summary>
+/// <summary>Kết quả heartbeat: giờ server (để phát hiện chỉnh đồng hồ) + gia đình/con + hash mã PIN thoát.</summary>
 public sealed class HeartbeatResult
 {
     [JsonPropertyName("server_time")]
@@ -37,6 +37,14 @@ public sealed class HeartbeatResult
 
     [JsonPropertyName("child_id")]
     public Guid? ChildId { get; set; }
+
+    /// <summary>
+    /// Hash PBKDF2 của mã PIN thoát (cột devices.exit_pin_hash, migration 7).
+    /// Null khi phụ huynh chưa đặt PIN hoặc server chưa áp migration 7.
+    /// Không bao giờ ghi log giá trị này.
+    /// </summary>
+    [JsonPropertyName("exit_pin_hash")]
+    public string? ExitPinHash { get; set; }
 }
 
 /// <summary>
@@ -330,6 +338,35 @@ public sealed class SupabaseApiClient
             },
             ct);
         return id is not null;
+    }
+
+    /// <summary>
+    /// Đẩy một yêu cầu xin thêm giờ của con lên bảng <c>requests</c>
+    /// (migration 7, RPC <c>safepc_push_extra_time_request</c>). Trả về true
+    /// khi server trả về id yêu cầu. Lỗi mạng/server đều trả false để
+    /// AgentWorker giữ hàng trong outbox và thử lại theo backoff.
+    /// </summary>
+    public async Task<bool> PushExtraTimeRequestAsync(int minutes, string reason, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(reason);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? notReadyReason))
+        {
+            LogThrottled("not-ready", "Gửi yêu cầu xin thêm giờ bỏ qua: " + notReadyReason + ".");
+            return false;
+        }
+
+        JsonElement? result = await PostRpcAsync<JsonElement>(
+            "safepc_push_extra_time_request",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_minutes = minutes,
+                p_reason = reason,
+            },
+            ct);
+        return result.HasValue;
     }
 
     /// <summary>

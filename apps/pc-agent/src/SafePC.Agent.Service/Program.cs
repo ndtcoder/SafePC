@@ -44,6 +44,7 @@ builder.ConfigureServices((context, services) =>
     services.AddSingleton<RuleEngine>();
     services.AddSingleton<DomainRulesPublisher>();
     services.AddSingleton<ForegroundState>();
+    services.AddSingleton<TrayQueryState>();
     services.AddHttpClient<SupabaseApiClient>();
 
     // IpcPipeServer vừa là singleton (để AgentWorker gửi message xuống Tray)

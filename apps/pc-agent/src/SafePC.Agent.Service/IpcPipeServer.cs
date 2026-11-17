@@ -64,6 +64,7 @@ public sealed class IpcPipeServer : BackgroundService
     private readonly OutboxStore _outbox;
     private readonly LocalLogger _log;
     private readonly ForegroundState _foregroundState;
+    private readonly TrayQueryState _queryState;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     /// <summary>
@@ -107,11 +108,18 @@ public sealed class IpcPipeServer : BackgroundService
     private readonly object _noTrayLogLock = new();
     private DateTimeOffset _lastNoTrayLogAt;
 
-    public IpcPipeServer(OutboxStore outbox, LocalLogger log, ForegroundState foregroundState)
+    /// <summary>Số lần nhập sai mã PIN thoát cho phép trước khi khóa nhập.</summary>
+    private const int MaxPinAttempts = 5;
+
+    /// <summary>Thời gian khóa nhập PIN sau khi sai quá số lần cho phép.</summary>
+    private static readonly TimeSpan PinLockoutDuration = TimeSpan.FromMinutes(5);
+
+    public IpcPipeServer(OutboxStore outbox, LocalLogger log, ForegroundState foregroundState, TrayQueryState queryState)
     {
         _outbox = outbox;
         _log = log;
         _foregroundState = foregroundState;
+        _queryState = queryState;
     }
 
     /// <summary>
@@ -221,6 +229,52 @@ public sealed class IpcPipeServer : BackgroundService
         }
 
         return sent;
+    }
+
+    /// <summary>
+    /// Trả lời riêng cho MỘT Tray đã hỏi (remaining-time, pin-verify): chỉ ghi
+    /// xuống writer của kết nối đã gửi câu hỏi, không broadcast, không lọc
+    /// admin (phiên admin cũng được xem giờ còn lại và kiểm tra PIN). Cùng
+    /// khóa ghi và kiểu flush tường minh như <see cref="SendToTrayAsync"/>.
+    /// </summary>
+    /// <returns>True khi đã ghi thành công.</returns>
+    private async Task<bool> SendToWriterAsync(WriterEntry entry, IpcMessage message, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(message);
+
+        using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        waitCts.CancelAfter(WriteGateTimeout);
+        try
+        {
+            await _writeGate.WaitAsync(waitCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Warning("IPC: chờ khóa ghi quá 5 giây, bỏ qua trả lời " + message.Type + ".");
+            return false;
+        }
+
+        try
+        {
+            await entry.Writer.WriteLineAsync(message.ToLine());
+            await entry.Writer.FlushAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Error("IPC: không trả lời được message " + message.Type + " tới một Tray (writer #" + entry.Writer.GetHashCode() + "), gỡ khỏi danh sách.", ex);
+            lock (_writersLock)
+            {
+                _clientWriters.Remove(entry);
+            }
+
+            return false;
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -671,14 +725,146 @@ public sealed class IpcPipeServer : BackgroundService
                 break;
 
             case IpcMessageTypes.ExtraTimeRequest:
-                // TODO Sprint 2: ghi yêu cầu vào bảng requests qua Supabase để
-                // phụ huynh duyệt trên Dashboard, rồi nhận quyết định qua commands.
-                _log.Info("IPC: nhận yêu cầu xin thêm giờ (skeleton, chưa gửi lên server).");
+                ExtraTimeRequestPayload? request = message.GetPayload<ExtraTimeRequestPayload>();
+                if (request is not null && request.Minutes >= 1 && request.Minutes <= 240)
+                {
+                    // Reason có thể null khi JSON gửi lên thiếu trường hoặc
+                    // mang null (System.Text.Json không throw cho trường
+                    // non-nullable) — .Trim() trực tiếp sẽ NRE và giết cả
+                    // handler/kết nối (review đợt này).
+                    string reason = (request.Reason ?? string.Empty).Trim();
+                    await _outbox.EnqueueExtraTimeRequestAsync(
+                        request.Minutes,
+                        reason.Length == 0 ? "(không có lý do)" : reason[..Math.Min(reason.Length, 500)],
+                        request.RequestedAt,
+                        ct);
+                    _log.Info("IPC: nhận yêu cầu xin thêm giờ (" + request.Minutes + " phút), đã xếp vào outbox để đẩy lên server.");
+                }
+                else
+                {
+                    _log.Warning("IPC: yêu cầu xin thêm giờ không hợp lệ (thiếu payload hoặc số phút ngoài 1-240), bỏ qua.");
+                }
+                break;
+
+            case IpcMessageTypes.RemainingTimeRequest:
+                RemainingTimeRequestPayload? remainingRequest = message.GetPayload<RemainingTimeRequestPayload>();
+                string remainingRequestId = remainingRequest?.RequestId ?? string.Empty;
+                RemainingTimeResponsePayload remainingResponse;
+                if (_queryState.TryGetDecision(out RuleDecision decision, out DateTimeOffset evaluatedAt))
+                {
+                    string decisionText = decision.Kind switch
+                    {
+                        RuleDecisionKind.Warn => "warn",
+                        RuleDecisionKind.Lock => "lock",
+                        _ => "allow",
+                    };
+                    remainingResponse = new RemainingTimeResponsePayload(
+                        decisionText,
+                        decision.MinutesLeft == int.MaxValue ? null : decision.MinutesLeft,
+                        decision.Reason,
+                        evaluatedAt,
+                        remainingRequestId);
+                }
+                else
+                {
+                    remainingResponse = new RemainingTimeResponsePayload(
+                        "unknown",
+                        null,
+                        "Service chưa đánh giá quy tắc lần nào.",
+                        DateTimeOffset.UtcNow,
+                        remainingRequestId);
+                }
+
+                await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.RemainingTimeResponse, remainingResponse), ct);
+                break;
+
+            case IpcMessageTypes.PinVerifyRequest:
+                await HandlePinVerifyAsync(message, entry, ct);
                 break;
 
             default:
                 _log.Warning("IPC: message không rõ loại, bỏ qua: " + message.Type);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Kiểm tra mã PIN thoát: Service giữ hash (đồng bộ qua heartbeat), Tray
+    /// chỉ gửi PIN nhập vào lên để kiểm tra — hash không bao giờ xuống Tray.
+    /// Sai quá <see cref="MaxPinAttempts"/> lần liên tiếp thì khóa nhập
+    /// <see cref="PinLockoutDuration"/>; số lần sai + thời điểm khóa lưu bền
+    /// vững trong device_state nên khởi động lại Tray/Service không xóa được.
+    /// Không bao giờ ghi log PIN nhập vào hay hash. Mọi lỗi (DB, hash hỏng)
+    /// đều trả lời "không xác thực" (fail-closed).
+    /// Ghi nhận (review đợt này): đọc-sửa-ghi PinFailCount không nguyên tử —
+    /// hai phiên kiểm tra cùng lúc có thể làm mất một lần đếm, hậu quả chỉ
+    /// là khóa chậm hơn một lần thử; chấp nhận, không khóa thêm.
+    /// </summary>
+    private async Task HandlePinVerifyAsync(IpcMessage message, WriterEntry entry, CancellationToken ct)
+    {
+        PinVerifyRequestPayload? request = message.GetPayload<PinVerifyRequestPayload>();
+        string requestId = request?.RequestId ?? string.Empty;
+        string? storedHash = _queryState.ExitPinHash;
+
+        async Task ReplyAsync(bool verified, bool lockedOut, int remainingAttempts, bool pinConfigured)
+        {
+            await SendToWriterAsync(entry, IpcMessage.Create(
+                IpcMessageTypes.PinVerifyResponse,
+                new PinVerifyResponsePayload(verified, lockedOut, remainingAttempts, pinConfigured, requestId)), ct);
+        }
+
+        if (request is null || string.IsNullOrEmpty(request.Pin))
+        {
+            await ReplyAsync(verified: false, lockedOut: false, remainingAttempts: 0, pinConfigured: storedHash is not null);
+            return;
+        }
+
+        if (storedHash is null)
+        {
+            await ReplyAsync(verified: false, lockedOut: false, remainingAttempts: 0, pinConfigured: false);
+            return;
+        }
+
+        try
+        {
+            string? lockoutUntilText = await _outbox.GetStateAsync(StateKeys.PinLockoutUntil, ct);
+            if (DateTimeOffset.TryParse(lockoutUntilText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset lockoutUntil)
+                && lockoutUntil > DateTimeOffset.UtcNow)
+            {
+                await ReplyAsync(verified: false, lockedOut: true, remainingAttempts: 0, pinConfigured: true);
+                return;
+            }
+
+            if (PinHash.Verify(request.Pin, storedHash))
+            {
+                await _outbox.SetStateAsync(StateKeys.PinFailCount, "0", ct);
+                await _outbox.DeleteStateAsync(StateKeys.PinLockoutUntil, ct);
+                _log.Info("IPC: mã PIN thoát đúng, cho phép thoát Tray.");
+                await ReplyAsync(verified: true, lockedOut: false, remainingAttempts: MaxPinAttempts, pinConfigured: true);
+                return;
+            }
+
+            string? failCountText = await _outbox.GetStateAsync(StateKeys.PinFailCount, ct);
+            int fails = (int.TryParse(failCountText, CultureInfo.InvariantCulture, out int parsed) ? parsed : 0) + 1;
+            await _outbox.SetStateAsync(StateKeys.PinFailCount, fails.ToString(CultureInfo.InvariantCulture), ct);
+            if (fails >= MaxPinAttempts)
+            {
+                await _outbox.SetStateAsync(
+                    StateKeys.PinLockoutUntil,
+                    DateTimeOffset.UtcNow.Add(PinLockoutDuration).ToString("o", CultureInfo.InvariantCulture),
+                    ct);
+                _log.Warning("IPC: nhập sai mã PIN thoát lần " + fails + "/" + MaxPinAttempts + ", khóa nhập " + PinLockoutDuration.TotalMinutes.ToString(CultureInfo.InvariantCulture) + " phút.");
+                await ReplyAsync(verified: false, lockedOut: true, remainingAttempts: 0, pinConfigured: true);
+                return;
+            }
+
+            _log.Warning("IPC: nhập sai mã PIN thoát (lần " + fails + "/" + MaxPinAttempts + ").");
+            await ReplyAsync(verified: false, lockedOut: false, remainingAttempts: MaxPinAttempts - fails, pinConfigured: true);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("IPC: kiểm tra mã PIN thoát lỗi.", ex);
+            await ReplyAsync(verified: false, lockedOut: false, remainingAttempts: 0, pinConfigured: true);
         }
     }
 }

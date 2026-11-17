@@ -12,10 +12,13 @@ namespace SafePC.Agent.Service;
 /// IpcPipeServer THẬT (không khởi động AgentWorker nên không chạm Supabase),
 /// nối một client pipe giả vào, gửi một usage-sample lên để chạy đường đọc
 /// của server, rồi khẳng định SendToTrayAsync giao message lock/unlock tới
-/// ≥1 writer và client nhận đủ cả hai dòng; cuối cùng client gửi hello
-/// IsAdmin=true và khẳng định lệnh lock không còn giao tới writer nào
-/// (miễn trừ phiên admin). Lỗi "handler đã nối nhưng danh sách writer rỗng"
-/// (bản 0.1.122) phải bị bắt ở đây.
+/// ≥1 writer và client nhận đủ cả hai dòng; khẳng định extra-time-request
+/// được xếp vào outbox; khẳng định pin-verify (đúng thì đạt, sai thì trượt
+/// và trừ lần thử) và remaining-time-request trả về quyết định mới nhất;
+/// cuối cùng client gửi hello IsAdmin=true và khẳng định lệnh lock không
+/// còn giao tới writer nào (miễn trừ phiên admin). Lỗi "handler đã nối
+/// nhưng danh sách writer rỗng" (bản 0.1.122) phải bị bắt ở đây.
+/// Tổng 11 check.
 ///
 /// Ghi kết quả ra CẢ log file (LocalLogger) lẫn console để CI đọc trực tiếp.
 /// Thoát 0 khi mọi check đạt, 1 khi có check trượt.
@@ -32,6 +35,7 @@ public static class SelfTestIpc
         LocalLogger log = host.Services.GetRequiredService<LocalLogger>();
         OutboxStore outbox = host.Services.GetRequiredService<OutboxStore>();
         IpcPipeServer server = host.Services.GetRequiredService<IpcPipeServer>();
+        TrayQueryState queryState = host.Services.GetRequiredService<TrayQueryState>();
 
         int passed = 0;
         int total = 0;
@@ -181,6 +185,93 @@ public static class SelfTestIpc
             string? unlockLine = await unlockReadTask;
             Trace("chờ unlock xong: nhận được dòng=" + (unlockLine is not null) + ".");
             Check("client giả nhận được message unlock", unlockLine is not null && IpcMessage.FromLine(unlockLine)?.Type == IpcMessageTypes.Unlock);
+
+            // Xin thêm giờ (đợt PIN/xin giờ/xem giờ): client giả gửi
+            // extra-time-request, khẳng định server xếp nó vào outbox để
+            // AgentWorker đẩy lên server (đường Tray→Service→hàng đợi).
+            Trace("đang gửi extra-time-request, rồi poll outbox...");
+            await writer.WriteLineAsync(IpcMessage.Create(
+                IpcMessageTypes.ExtraTimeRequest,
+                new ExtraTimeRequestPayload(30, "self-test xin thêm giờ", DateTimeOffset.UtcNow)).ToLine());
+            await writer.FlushAsync();
+            bool extraTimeEnqueued = false;
+            long extraTimeItemId = 0;
+            for (int i = 0; i < 10 && !extraTimeEnqueued; i++)
+            {
+                await Task.Delay(500, cts.Token);
+                IReadOnlyList<OutboxItem> pending = await outbox.GetPendingExtraTimeRequestsAsync(10, cts.Token);
+                foreach (OutboxItem item in pending)
+                {
+                    ExtraTimeRequestPayload? enqueued;
+                    try
+                    {
+                        enqueued = System.Text.Json.JsonSerializer.Deserialize<ExtraTimeRequestPayload>(item.PayloadJson);
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        enqueued = null;
+                    }
+
+                    if (enqueued is not null && enqueued.Minutes == 30 && enqueued.Reason == "self-test xin thêm giờ")
+                    {
+                        extraTimeEnqueued = true;
+                        extraTimeItemId = item.Id;
+                    }
+                }
+            }
+
+            Check("server xếp extra-time-request vào outbox", extraTimeEnqueued);
+
+            // Dọn hàng self-test khỏi outbox dùng chung: nếu chạy test này
+            // trên máy thật rồi Service thật khởi động, hàng còn lại sẽ bị
+            // đẩy lên Dashboard thành yêu cầu xin thêm giờ giả (review đợt này).
+            if (extraTimeEnqueued)
+            {
+                await outbox.MarkSentAsync(extraTimeItemId, cts.Token);
+            }
+
+            // Kiểm tra PIN (đợt PIN/xin giờ/xem giờ): đặt hash của PIN
+            // "123456" vào trạng thái chia sẻ (đóng vai heartbeat đã đồng
+            // bộ), rồi hỏi qua pipe như Tray thật: PIN đúng thì được xác
+            // thực, PIN sai thì bị từ chối và còn 4 lần thử (lần sai đầu
+            // sau khi lần đúng đã đặt lại bộ đếm về 0). Đọc phải chạy đồng
+            // thời với gửi (xem ghi chú ở lock): FlushAsync của câu trả lời
+            // chặn tới khi đầu kia đọc.
+            Trace("đang kiểm tra pin-verify PIN đúng...");
+            queryState.UpdatePinHash(PinHash.Hash("123456"));
+            Task<string?> pinOkReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            await writer.WriteLineAsync(IpcMessage.Create(
+                IpcMessageTypes.PinVerifyRequest,
+                new PinVerifyRequestPayload("123456", "self-test-pin-ok")).ToLine());
+            await writer.FlushAsync();
+            string? pinOkLine = await pinOkReadTask;
+            PinVerifyResponsePayload? pinOk = pinOkLine is null ? null : IpcMessage.FromLine(pinOkLine)?.GetPayload<PinVerifyResponsePayload>();
+            Check("pin-verify PIN đúng thì được xác thực", pinOk is { Verified: true, PinConfigured: true, RequestId: "self-test-pin-ok" });
+
+            Trace("đang kiểm tra pin-verify PIN sai...");
+            Task<string?> pinBadReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            await writer.WriteLineAsync(IpcMessage.Create(
+                IpcMessageTypes.PinVerifyRequest,
+                new PinVerifyRequestPayload("000000", "self-test-pin-bad")).ToLine());
+            await writer.FlushAsync();
+            string? pinBadLine = await pinBadReadTask;
+            PinVerifyResponsePayload? pinBad = pinBadLine is null ? null : IpcMessage.FromLine(pinBadLine)?.GetPayload<PinVerifyResponsePayload>();
+            Check("pin-verify PIN sai thì bị từ chối, còn 4 lần thử", pinBad is { Verified: false, LockedOut: false, RemainingAttempts: 4, PinConfigured: true, RequestId: "self-test-pin-bad" });
+
+            // Thời gian còn lại (đợt PIN/xin giờ/xem giờ): đặt quyết định
+            // mới nhất vào trạng thái chia sẻ (đóng vai vòng kiểm tra
+            // rules), rồi hỏi qua pipe như Tray thật và khẳng định câu trả
+            // lời mang đúng quyết định đó.
+            Trace("đang kiểm tra remaining-time-request...");
+            queryState.UpdateDecision(new RuleDecision(RuleDecisionKind.Lock, "Self-test khóa/mở.", 0), DateTimeOffset.UtcNow);
+            Task<string?> remainingReadTask = ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            await writer.WriteLineAsync(IpcMessage.Create(
+                IpcMessageTypes.RemainingTimeRequest,
+                new RemainingTimeRequestPayload("self-test-remaining")).ToLine());
+            await writer.FlushAsync();
+            string? remainingLine = await remainingReadTask;
+            RemainingTimeResponsePayload? remaining = remainingLine is null ? null : IpcMessage.FromLine(remainingLine)?.GetPayload<RemainingTimeResponsePayload>();
+            Check("remaining-time-request trả về quyết định mới nhất", remaining is { Decision: "lock", MinutesLeft: 0, RequestId: "self-test-remaining" });
 
             // Miễn trừ admin (đợt khóa theo phiên): client giả gửi hello
             // IsAdmin=true, rồi khẳng định lệnh lock KHÔNG còn giao tới

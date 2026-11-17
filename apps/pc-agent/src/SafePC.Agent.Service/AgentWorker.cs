@@ -55,6 +55,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly TokenStore _tokens;
     private readonly DomainRulesPublisher _publisher;
     private readonly ForegroundState _foregroundState;
+    private readonly TrayQueryState _queryState;
 
     // Denylist kill (tên đã chuẩn hóa bằng ExeNames, so khớp không phân biệt
     // hoa thường): tiến trình hệ thống + chính các exe của SafePC — không bao
@@ -129,7 +130,8 @@ public sealed class AgentWorker : BackgroundService
         IpcPipeServer ipc,
         TokenStore tokens,
         DomainRulesPublisher publisher,
-        ForegroundState foregroundState)
+        ForegroundState foregroundState,
+        TrayQueryState queryState)
     {
         _log = log;
         _outbox = outbox;
@@ -139,6 +141,7 @@ public sealed class AgentWorker : BackgroundService
         _tokens = tokens;
         _publisher = publisher;
         _foregroundState = foregroundState;
+        _queryState = queryState;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -220,6 +223,16 @@ public sealed class AgentWorker : BackgroundService
                     }
 
                     await RefreshRulesAsync(ct);
+
+                    // Đồng bộ hash mã PIN thoát (migration 7): Service giữ
+                    // hash trong bộ nhớ để kiểm tra PIN cho Tray qua IPC.
+                    // Chỉ ghi log khi giá trị ĐỔI; không bao giờ ghi hash.
+                    if (_queryState.UpdatePinHash(result.ExitPinHash))
+                    {
+                        _log.Info(result.ExitPinHash is null
+                            ? "Mã PIN thoát đã được gỡ (phụ huynh chưa đặt PIN)."
+                            : "Mã PIN thoát đã được đặt/cập nhật từ server.");
+                    }
 
                     // Kiểm tra extension còn sống (chỉ sau khi heartbeat
                     // thành công — máy offline thì không kết luận gì về
@@ -307,6 +320,11 @@ public sealed class AgentWorker : BackgroundService
                         _log.Error("Ack command " + command.Id + " lỗi.", ex);
                     }
                 }
+
+                // Đẩy các yêu cầu xin thêm giờ con đã gửi (Tray xếp vào
+                // outbox) lên bảng requests — cùng chu kỳ poll 15s để phụ
+                // huynh thấy yêu cầu gần như ngay khi con gửi.
+                await FlushExtraTimeRequestsAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -320,6 +338,57 @@ public sealed class AgentWorker : BackgroundService
             if (!await WaitAsync(AgentConstants.CommandPollInterval, ct))
             {
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Đẩy các yêu cầu xin thêm giờ đang chờ trong outbox lên server. Gửi
+    /// thành công thì xóa hàng; lỗi thì hẹn thử lại theo backoff của
+    /// outbox. Hàng hỏng (JSON không đọc được) thì xóa để không kẹt mãi.
+    /// Mỗi hàng xử lý độc lập, lỗi một hàng không chặn các hàng sau.
+    /// </summary>
+    private async Task FlushExtraTimeRequestsAsync(CancellationToken ct)
+    {
+        IReadOnlyList<OutboxItem> pending = await _outbox.GetPendingExtraTimeRequestsAsync(limit: 10, ct);
+        foreach (OutboxItem item in pending)
+        {
+            ExtraTimeRequestPayload? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<ExtraTimeRequestPayload>(item.PayloadJson);
+            }
+            catch (JsonException)
+            {
+                request = null;
+            }
+
+            if (request is null || request.Minutes < 1 || request.Minutes > 240 || string.IsNullOrEmpty(request.Reason))
+            {
+                _log.Warning("IPC: yêu cầu xin thêm giờ trong outbox hỏng, bỏ qua (id " + item.Id + ").");
+                await _outbox.MarkSentAsync(item.Id, ct);
+                continue;
+            }
+
+            bool ok;
+            try
+            {
+                ok = await _api.PushExtraTimeRequestAsync(request.Minutes, request.Reason, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Đẩy yêu cầu xin thêm giờ lỗi.", ex);
+                ok = false;
+            }
+
+            if (ok)
+            {
+                await _outbox.MarkSentAsync(item.Id, ct);
+                _log.Info("Đã đẩy yêu cầu xin thêm giờ (" + request.Minutes + " phút) lên server để phụ huynh duyệt.");
+            }
+            else
+            {
+                await _outbox.MarkFailedAsync(item.Id, ct);
             }
         }
     }
@@ -881,6 +950,22 @@ public sealed class AgentWorker : BackgroundService
                     _pendingEnforcementJson = snapshotJson;
                     _pendingEnforcementSignature = snapshotSignature;
                 }
+
+                // Quyết định cuối cùng (đã gồm nghỉ bắt buộc, ghi đè, khóa
+                // có độ trễ) cũng là đáp án cho câu hỏi "thời gian còn lại"
+                // của Tray — để ở trạng thái chia sẻ cho IpcPipeServer đọc.
+                // Riêng trường hợp Allowed, quyết định thi hành luôn mang
+                // int.MaxValue nên phải điền số phút thật bằng
+                // GetRemainingMinutes (review đợt này: không thì Tray báo
+                // "không còn giới hạn" suốt cả ngày dù sắp hết giờ).
+                RuleDecision displayDecision = decision;
+                if (decision.Kind == RuleDecisionKind.Allowed)
+                {
+                    int remainingMinutes = _ruleEngine.GetRemainingMinutes(rules, usedToday, now, activeOverride);
+                    displayDecision = new RuleDecision(RuleDecisionKind.Allowed, string.Empty, remainingMinutes);
+                }
+
+                _queryState.UpdateDecision(displayDecision, now);
 
                 LogRuleDecisionIfDue(decision, ruleIds, usedToday, activeOverride);
             }

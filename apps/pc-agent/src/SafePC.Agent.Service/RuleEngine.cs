@@ -161,6 +161,183 @@ public sealed class RuleEngine
     }
 
     /// <summary>
+    /// Số phút còn lại cho tới ràng buộc giờ giấc gần nhất — dùng HIỂN THỊ
+    /// cho "xem thời gian còn lại" trên Tray, KHÔNG dùng thi hành. Chỉ gọi
+    /// khi quyết định thi hành là Allowed: trường hợp Lock/Warn đã có
+    /// MinutesLeft đúng của nó (0 hoặc ngưỡng cảnh báo 15 phút), còn
+    /// Allowed của <see cref="Evaluate"/> luôn mang <c>int.MaxValue</c> nên
+    /// không cho biết còn bao nhiêu phút. Hàm này lấy min của ba ràng buộc:
+    /// phút còn lại của giới hạn ngày (giới hạn chặt nhất + phút bonus),
+    /// phút tới cuối khung giờ đang dùng, và phút tới lần bắt đầu giờ ngủ
+    /// gần nhất. Không có ràng buộc nào thì trả về <c>int.MaxValue</c>
+    /// (không giới hạn). Ghi đè mở khóa còn hạn thì quy tắc giờ giấc đang
+    /// bị tạm ngưng nên cũng trả về <c>int.MaxValue</c>.
+    ///
+    /// Thuần logic, không I/O — cùng quy ước giờ địa phương và hình dạng
+    /// config như <see cref="Evaluate"/>; các helper đọc config được dùng
+    /// chung để hai đường không lệch nhau.
+    /// </summary>
+    public int GetRemainingMinutes(
+        IReadOnlyList<Rule> rules,
+        TimeSpan usedToday,
+        DateTimeOffset now,
+        TemporaryOverride? activeOverride)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+
+        if (activeOverride is not null && activeOverride.ExpiresAt > now
+            && activeOverride.Action == OverrideActions.Unlock)
+        {
+            return int.MaxValue;
+        }
+
+        int bonusMinutes = activeOverride is not null && activeOverride.ExpiresAt > now
+            && activeOverride.Action == OverrideActions.BonusMinutes
+            ? activeOverride.Minutes
+            : 0;
+
+        DateTime local = now.LocalDateTime;
+        int weekday = (int)local.DayOfWeek;
+        int? remaining = null;
+        void Consider(int minutes)
+        {
+            remaining = remaining is null ? minutes : Math.Min(remaining.Value, minutes);
+        }
+
+        // 1. Giới hạn ngày: giới hạn chặt nhất trong các rule đang bật,
+        // cộng phút bonus, trừ thời gian đã dùng (làm tròn xuống như
+        // CheckDailyLimit để hai đường khớp nhau).
+        int? effectiveLimit = null;
+        foreach (Rule rule in rules)
+        {
+            if (!rule.Enabled || rule.Type != RuleTypes.DailyLimit)
+            {
+                continue;
+            }
+
+            int? limit = GetDailyLimitMinutes(rule, weekday);
+            if (limit is not null)
+            {
+                effectiveLimit = effectiveLimit is null ? limit.Value : Math.Min(effectiveLimit.Value, limit.Value);
+            }
+        }
+
+        if (effectiveLimit is not null)
+        {
+            Consider(Math.Max(0, effectiveLimit.Value + bonusMinutes - (int)usedToday.TotalMinutes));
+        }
+
+        // 2. Khung giờ: phút tới cuối khung giờ đang chứa "now", lấy khung
+        // dài nhất (khớp phép hợp union của CheckTimeWindows). Không trong
+        // khung nào mà vẫn Allowed thì chỉ có thể do ghi đè unlock — đã
+        // return ở trên — nên không cộng thêm ràng buộc ở đây.
+        TimeOnly current = TimeOnly.FromDateTime(local);
+        string weekdayKey = weekday.ToString(CultureInfo.InvariantCulture);
+        int? minutesUntilWindowEnd = null;
+        foreach (Rule rule in rules)
+        {
+            if (!rule.Enabled || rule.Type != RuleTypes.TimeWindow)
+            {
+                continue;
+            }
+
+            if (!TryGetObject(rule.Config, "windowsByWeekday", out JsonElement byWeekday)
+                || !byWeekday.TryGetProperty(weekdayKey, out JsonElement dayRanges)
+                || dayRanges.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (JsonElement range in dayRanges.EnumerateArray())
+            {
+                if (!TryGetTime(range, "start", out TimeOnly start)
+                    || !TryGetTime(range, "end", out TimeOnly end)
+                    || start >= end)
+                {
+                    continue;
+                }
+
+                if (current >= start && current < end)
+                {
+                    int untilEnd = (int)(end - current).TotalMinutes;
+                    minutesUntilWindowEnd = minutesUntilWindowEnd is null
+                        ? untilEnd
+                        : Math.Max(minutesUntilWindowEnd.Value, untilEnd);
+                }
+            }
+        }
+
+        if (minutesUntilWindowEnd is not null)
+        {
+            Consider(minutesUntilWindowEnd.Value);
+        }
+
+        // 3. Giờ ngủ: phút tới lần bắt đầu giờ ngủ gần nhất (hôm nay nếu
+        // chưa tới giờ, không thì ngày mai). Làm tròn LÊN để không hiển thị
+        // "còn 0 phút" khi vẫn còn vài chục giây.
+        int? minutesUntilBedtime = MinutesUntilNextBedtime(rules, local);
+        if (minutesUntilBedtime is not null)
+        {
+            Consider(minutesUntilBedtime.Value);
+        }
+
+        return remaining ?? int.MaxValue;
+    }
+
+    /// <summary>
+    /// Phút tới lần bắt đầu giờ ngủ gần nhất trong 24 giờ tới, lấy min qua
+    /// mọi rule bedtime đang bật. Trả về null khi không có khung giờ ngủ
+    /// nào sắp bắt đầu (không có rule, hoặc mọi khung đều rỗng). Khoảng
+    /// rỗng (start == end) không bao giờ khóa nên không tính.
+    /// </summary>
+    private static int? MinutesUntilNextBedtime(IReadOnlyList<Rule> rules, DateTime local)
+    {
+        int? nearest = null;
+        int weekday = (int)local.DayOfWeek;
+        int tomorrow = (weekday + 1) % 7;
+        DateTime today = local.Date;
+
+        foreach (Rule rule in rules)
+        {
+            if (!rule.Enabled || rule.Type != RuleTypes.Bedtime)
+            {
+                continue;
+            }
+
+            foreach ((int day, DateTime date) in new[] { (weekday, today), (tomorrow, today.AddDays(1)) })
+            {
+                if (!TryGetBedtimeStart(rule, day, out TimeOnly start, out TimeOnly end) || start == end)
+                {
+                    continue;
+                }
+
+                DateTime startMoment = date.Add(start.ToTimeSpan());
+                if (startMoment > local)
+                {
+                    int minutes = (int)Math.Ceiling((startMoment - local).TotalMinutes);
+                    nearest = nearest is null ? minutes : Math.Min(nearest.Value, minutes);
+                }
+            }
+        }
+
+        return nearest;
+    }
+
+    /// <summary>Giờ bắt đầu/kết thúc giờ ngủ của một rule cho một thứ (hình dạng mới theo thứ, hoặc hình dạng cũ mọi ngày).</summary>
+    private static bool TryGetBedtimeStart(Rule rule, int weekday, out TimeOnly start, out TimeOnly end)
+    {
+        start = default;
+        end = default;
+
+        if (TryGetObject(rule.Config, "bedtimeByWeekday", out JsonElement byWeekday))
+        {
+            return TryGetTimeRange(byWeekday, weekday.ToString(CultureInfo.InvariantCulture), out start, out end);
+        }
+
+        return TryGetTime(rule.Config, "start", out start) && TryGetTime(rule.Config, "end", out end);
+    }
+
+    /// <summary>
     /// Có đang trong giờ ngủ không? Kiểm tra khung của hôm nay và đuôi qua
     /// đêm của khung hôm qua (bedtime bắt đầu 21:00 hôm qua khóa tới 07:00
     /// hôm nay). Hình dạng cũ {"start","end"} được hiểu là cùng một khung
