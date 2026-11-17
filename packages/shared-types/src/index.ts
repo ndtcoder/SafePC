@@ -379,6 +379,8 @@ export interface Rule<T extends RuleType = RuleType> {
   child_id: string;
   type: T;
   config: RuleConfigMap[T];
+  /** Tên do phụ huynh đặt (thêm ở migration 9, cột rules.name, nullable). Vắng mặt/NULL = chưa đặt tên, hiển thị tên tự sinh từ loại rule. */
+  name?: string | null;
   enabled: boolean;
   created_at: string;
 }
