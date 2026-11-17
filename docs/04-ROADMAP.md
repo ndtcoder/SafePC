@@ -29,10 +29,13 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [x] Xin thêm giờ đầu-cuối (xong đợt 17/11/2026 — xem đợt hiện tại).
 
 ### Đợt hiện tại — theo yêu cầu ngày 17/11/2026 🔨
-- [x] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (CI xanh run #159, v0.1.159, chưa kiểm chứng trên máy thật).
-- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (CI xanh run #159; yêu cầu xin giờ + khóa nhập PIN đã thấy trong log máy thật; migration 8 chờ áp).
+- [x] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (đã kiểm chứng trên máy thật tối 17/11: độ trễ + cảnh báo nhỏ đúng, phiên admin miễn khóa qua đường Limited-token).
+- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (PIN một lần đã kiểm chứng trên máy thật tối 17/11; yêu cầu xin giờ + khóa nhập PIN đã thấy trong log máy thật; migration 8 chờ áp).
 - [x] Đợt sửa theo 7 yêu cầu test máy thật 17/11: PIN chỉ dùng một lần, đồng bộ trạng thái khi Tray nối lại, duyệt xin giờ mở khóa luôn, lệnh khóa sau thắng ghi đè mở khóa trước, hết độ trễ khóa ngay không đếm ngược, hồ sơ theo con (Tổng quan / Hồ sơ / Yêu cầu), mã ghép nối 5 phút (CI xanh run #159, v0.1.159, chưa kiểm chứng trên máy thật).
-- [ ] Kiểm chứng chặn domain đầu-cuối: cài extension lên trình duyệt máy thật, sửa `allowed_origins` theo ID thật, thử chặn/cho phép thật.
+- [x] Đợt sửa sau test v0.1.159 (đêm 17→18/11): đồng bộ trạng thái khóa ngay không đếm ngược, snapshot thi hành gửi ngay khi đổi (bỏ chặn 5 phút), duyệt xin giờ = mở khóa đúng N phút, thẻ thiết bị nhất quán sau Khóa ngay (tải lại + nhận diện lock_now), installer nướng ID extension Edge thật, extension 0.1.1 (chẩn đoán DNR trong popup), thiết kế lại trang Quy tắc + tên rule + mẫu của phụ huynh + mẫu Chỉ cho phép Edge, migration 9 (CI xanh run #167: Tray 19/19, Service IPC 13/13; run #170: build-dashboard xanh; v0.1.167 chờ kiểm chứng trên máy thật).
+- [ ] Áp migration 8 (gỡ PIN đã dùng khỏi server) + migration 9 (tên rule + bảng rule_templates) lên Supabase.
+- [ ] Kiểm chứng v0.1.167 trên máy thật: duyệt giờ giữ mở đủ N phút; đăng nhập lại khi đang khóa thì khóa ngay không đếm ngược; thẻ thiết bị nhất quán; giao diện Quy tắc mới trên điện thoại thật.
+- [ ] Kiểm chứng chặn domain đầu-cuối với extension 0.1.1: reload extension từ zip mới, thử youtube.com ở TAB MỚI, đọc chẩn đoán popup (số domain đang chặn / số quy tắc đang áp / lỗi áp quy tắc).
 - [ ] Rule mẫu URL có đường dẫn (`bing.com/videos`) bên cạnh rule domain.
 
 ### Sprint 4 — Cứng hóa + Beta gia đình ⏳

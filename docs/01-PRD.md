@@ -1,6 +1,6 @@
 # PRD — SafePC v0.1
 
-## 0. Trạng thái hiện tại (17/11/2026)
+## 0. Trạng thái hiện tại (18/11/2026)
 
 Bản v0.1.136 đã kiểm chứng trên máy thật: ghép nối, đồng bộ quy tắc, khóa/mở máy từ Dashboard đều hoạt động. Các mục dưới đây ghi rõ trạng thái thật: ✅ đã triển khai (ghi rõ đã kiểm chứng trên máy thật hay chưa), 🔨 đang làm, ⏳ chưa làm. Chi tiết lộ trình xem `04-ROADMAP.md`.
 
@@ -10,10 +10,10 @@ Bản v0.1.136 đã kiểm chứng trên máy thật: ghép nối, đồng bộ 
 | Theo dõi thời gian dùng app + web | ✅ Đã triển khai (app đã kiểm chứng; web chờ extension được cài) |
 | Quy tắc giờ giấc, theo app, focus, nghỉ bắt buộc | ✅ Đã triển khai; khóa theo quy tắc đã kiểm chứng (giờ ngủ), các mode app chờ kiểm chứng thêm |
 | Khóa/mở từ xa, ghi đè tạm thời | ✅ Đã triển khai, đã kiểm chứng trên máy thật |
-| Khóa có độ trễ + khóa theo phiên | 🔨 Đã triển khai, CI xanh (run #159, 17/11, v0.1.159), chưa kiểm chứng trên máy thật; lệnh sau thắng lệnh trước, hết độ trễ khóa ngay không đếm ngược, đồng bộ trạng thái khi Tray nối lại |
-| PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại | 🔨 Đã triển khai, CI xanh (run #159, 17/11, v0.1.159), chưa kiểm chứng trên máy thật; PIN chỉ dùng một lần; migration 8 chờ áp lên Supabase (migration 7 có dấu hiệu đã áp nhưng chưa được xác nhận trực tiếp) |
-| Hồ sơ theo con (Dashboard) | ✅ Đã triển khai, CI xanh (run #159, 17/11): Tổng quan / Hồ sơ / Yêu cầu; mỗi hồ sơ có tab Thiết bị / Quy tắc / Báo cáo riêng; mã ghép nối hết hạn sau 5 phút |
-| Chặn/cho phép domain qua extension | ✅ Code đã xong, ⏳ chưa từng kiểm chứng đầu-cuối (extension chưa cài trên máy thật) |
+| Khóa có độ trễ + khóa theo phiên | ✅ Đã triển khai, đã kiểm chứng trên máy thật (tối 17/11: độ trễ + cảnh báo nhỏ đúng, phiên admin miễn khóa qua đường Limited-token); lệnh sau thắng lệnh trước, hết độ trễ khóa ngay không đếm ngược; đồng bộ trạng thái khi Tray nối lại giờ khóa ngay không đếm ngược (CI xanh run #167, v0.1.167) — chờ kiểm chứng lại |
+| PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại | 🔨 Đã triển khai, CI xanh (run #167, v0.1.167); PIN một lần đã kiểm chứng trên máy thật (lần dùng thứ 2 bị từ chối); duyệt xin giờ đổi thành mở khóa đúng N phút (mẫu cũ cộng giờ không có tác dụng khi đã vượt mức trần) — chờ kiểm chứng lại; migration 8 + 9 chờ áp lên Supabase |
+| Hồ sơ theo con (Dashboard) | ✅ Đã triển khai, CI xanh (run #159, 17/11): Tổng quan / Hồ sơ / Yêu cầu; mỗi hồ sơ có tab Thiết bị / Quy tắc / Báo cáo riêng; mã ghép nối hết hạn sau 5 phút. Thiết kế lại trang Quy tắc (quy tắc hiện hành lên đầu, form thu gọn, tên rule, mẫu của phụ huynh, mẫu Chỉ cho phép Edge) — CI xanh run #170, chờ kiểm chứng trên điện thoại thật; migration 9 chờ áp |
+| Chặn/cho phép domain qua extension | 🔨 Extension đã cài trên Edge máy thật, native messaging đã nối, ID thật đã nướng vào installer (v0.1.167); nhưng domain bị chặn vẫn vào được — extension 0.1.1 thêm chẩn đoán DNR vào popup, chờ kiểm chứng ở tab mới |
 | Tính năng nâng cao + giao diện chuyên nghiệp | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.8) |
 | Flow cài đặt cho phụ huynh khác | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.9) |
 | Báo cáo tuần | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.10) |
@@ -48,7 +48,7 @@ Một gia đình: 1-2 phụ huynh, 1-3 con, 1-3 máy PC (MVP: 1 phụ huynh, 1 c
 - [x] Lịch giờ ngủ / giờ cấm theo từng thứ (VD: 21:30-07:00 không dùng máy, qua đêm được). — Xong Sprint 2 đợt 1 (xem 2.3.1).
 - [x] Khung giờ được dùng máy theo từng thứ (VD: T2-T6 chỉ 07:00-21:00, ngoài khung giờ thì khóa). — Xong Sprint 2 đợt 1 (xem 2.3.1).
 - [x] Cảnh báo trước 15/5/1 phút khi sắp hết giờ. — Đã triển khai: Service gửi cảnh báo theo ngưỡng, Tray hiện cửa sổ nhỏ có đếm ngược trực tiếp (đợt khóa có độ trễ, 17/11).
-- [x] Khi hết giờ: hiển thị màn hình khóa toàn màn hình, khóa phiên làm việc (LockWorkStation), đếm ngược 60s để con kịp lưu bài. — Đã triển khai và kiểm chứng trên máy thật (v0.1.136). Khóa có độ trễ do phụ huynh chọn (0–5 phút, hết độ trễ khóa ngay không đếm ngược), khóa theo phiên, lệnh sau thắng lệnh trước, đồng bộ trạng thái khi Tray nối lại — CI xanh run #159 (v0.1.159), đang chờ kiểm chứng trên máy thật (xem 2.3.2).
+- [x] Khi hết giờ: hiển thị màn hình khóa toàn màn hình, khóa phiên làm việc (LockWorkStation), đếm ngược 60s để con kịp lưu bài. — Đã triển khai và kiểm chứng trên máy thật (v0.1.136). Khóa có độ trễ do phụ huynh chọn (0–5 phút, hết độ trễ khóa ngay không đếm ngược), khóa theo phiên, lệnh sau thắng lệnh trước, đồng bộ trạng thái khi Tray nối lại — khóa có độ trễ + khóa theo phiên đã kiểm chứng trên máy thật tối 17/11/2026 (kể cả đường Limited-token); đồng bộ trạng thái giờ khóa ngay không đếm ngược (v0.1.167, CI xanh run #167) — chờ kiểm chứng lại (xem 2.3.2).
 - [x] Phụ huynh có thể "Khóa ngay" / "Mở thêm 15/30/60 phút" từ xa. — Xong Sprint 2 đợt 1 dưới dạng ghi đè tạm thời tự hết hạn (cộng thêm giờ / khóa tạm thời / tạm mở máy, 15/30/60/120 phút, xem 2.3.1). Lệnh khóa/mở đã kiểm chứng trên máy thật.
 
 #### 2.3.1. Danh mục quy tắc giờ giấc — Sprint 2 đợt 1 (đã triển khai)
@@ -72,24 +72,24 @@ Quy tắc lưu trong bảng `rules` (cột `config` JSONB). Mọi giờ giấc t
 
 Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khung giờ → giới hạn ngày. Các loại quy tắc khác (theo app, website/domain, giờ học, nghỉ bắt buộc, cảnh báo chống phá, mẫu sẵn) thuộc các đợt tiếp theo theo thứ tự đã chốt với phụ huynh.
 
-#### 2.3.2. Khóa có độ trễ + khóa theo phiên (đợt 17/11/2026 — đã triển khai, CI xanh run #159, chưa kiểm chứng trên máy thật)
+#### 2.3.2. Khóa có độ trễ + khóa theo phiên (đợt 17/11/2026 — đã kiểm chứng trên máy thật tối 17/11; đồng bộ Immediate đợt 18/11, CI xanh run #167, chờ kiểm chứng lại)
 
 - Phụ huynh chọn độ trễ 0–5 phút khi bấm "Khóa ngay" trên Dashboard (`delay_minutes` trong payload lệnh `lock_now`). Độ trễ > 0: Tray chỉ hiện cửa sổ cảnh báo nhỏ (không full màn, con vẫn làm việc/lưu bài), hết đếm ngược mới hiện màn hình khóa full màn kèm nút xin thêm giờ. Độ trễ 0: khóa ngay như trước.
 - Lệnh khóa/cảnh báo chỉ giao tới phiên Windows của con: Tray tự giới thiệu (phiên, tài khoản, quyền admin qua `TokenElevationType`); Service miễn trừ phiên admin. Ghép nối vẫn ở mức máy (cài một lần bằng quyền Admin, Service chạy quyền SYSTEM); chỉ phần giao lệnh là theo phiên. Phiên chưa giới thiệu vẫn nhận lệnh (fail-closed).
 - Trạng thái thi hành trong lúc chờ khóa: Dashboard báo "cảnh báo" thay vì "đang khóa" cho tới khi khóa thật sự có hiệu lực.
 - Hết độ trễ thì khóa ngay (Immediate): màn hình khóa full màn hiện không đếm ngược 60s và khóa phiên ngay, vì con đã có cả thời gian độ trễ để lưu bài. Khóa không độ trễ và khóa do quy tắc vẫn giữ đếm ngược 60s.
 - Hành động sau thắng hành động trước: lệnh `lock_now` xóa ghi đè mở khóa (unlock) đang hiệu lực trước khi đặt khóa cưỡng chế; ghi đè cộng giờ/chặn app/chặn domain không bị ảnh hưởng.
-- Đồng bộ trạng thái khi Tray nối lại: Tray gửi hello thì Service đẩy ngay quyết định hiện tại tới phiên đó (khóa/cảnh báo miễn phiên admin, mở tới mọi phiên) — Tray thoát rồi chạy lại hoặc đăng nhập lại vẫn nhận đúng trạng thái khóa, không chờ tới lần đánh giá sau.
+- Đồng bộ trạng thái khi Tray nối lại: Tray gửi hello thì Service đẩy ngay quyết định hiện tại tới phiên đó (khóa/cảnh báo miễn phiên admin, mở tới mọi phiên) — Tray thoát rồi chạy lại hoặc đăng nhập lại vẫn nhận đúng trạng thái khóa, không chờ tới lần đánh giá sau. Lệnh khóa đồng bộ mang Immediate=true (khóa ngay, không đếm ngược 60s) từ v0.1.167, vì lệnh khóa đã có hiệu lực từ trước.
 
 ### 2.4. Chặn / cho phép app (App Rules)
 - [x] Danh sách chặn/cho phép theo app với thời gian hiệu lực (luôn luôn / theo giờ / tạm thời). — Đã triển khai (Dashboard + Agent, Sprint 2 đợt 3 + bản sửa lỗi): 5 mode `app_time_limit`, `app_block_by_time`, `app_block`, `app_allowlist`, `app_allowlist_by_time` + ghi đè app tạm thời (`block_app`/`allow_app`). Chưa kiểm chứng đầy đủ trên máy thật.
 - [x] Chặn theo tên exe (chuẩn hóa chung, không phân biệt hoa thường). Khi app bị chặn đang chạy -> kết thúc process + hiện thông báo lý do. — Đã triển khai (đóng đúng session, denylist hệ thống, fail-open khi không có báo cáo foreground tươi).
 - [x] Giới hạn theo app: VD: game tối đa 45 phút/ngày. — Đã triển khai (`app_time_limit`, cảnh báo khi còn ≤ 5 phút).
 - [x] Chế độ Allowlist (chỉ cho phép app trong danh sách). — Đã triển khai (`app_allowlist`, `app_allowlist_by_time`).
-- [x] Giờ học tập trung (focus) + nghỉ bắt buộc (forced_break) + mẫu quy tắc một chạm (Ngày học/Cuối tuần/Kỳ nghỉ). — Đã triển khai (Sprint 2 đợt 3).
+- [x] Giờ học tập trung (focus) + nghỉ bắt buộc (forced_break) + mẫu quy tắc một chạm (Ngày học/Cuối tuần/Kỳ nghỉ). — Đã triển khai (Sprint 2 đợt 3). Mẫu nhanh "Chỉ cho phép Edge" (chặn 10 trình duyệt đã biết theo tên exe, Dashboard đợt 18/11; trình duyệt lạ/đổi tên không chặn được bằng lớp này — xem §2.5 về DNS dự phòng).
 
 ### 2.5. Lọc web — Phạm vi MVP (nói rõ giới hạn)
-- [x] Browser Extension cho Chrome/Edge (Manifest V3): chặn domain trong blocklist, chặn theo giờ, allowlist, giới hạn thời gian theo domain, SafeSearch, YouTube Restricted, báo cáo domain đã thăm (chỉ domain, không full URL). — Code đã xong (Sprint 2 đợt 2); **chưa từng kiểm chứng đầu-cuối** vì extension chưa được cài trên máy thật nào. Manifest NativeHost vẫn dùng ID extension placeholder.
+- [x] Browser Extension cho Chrome/Edge (Manifest V3): chặn domain trong blocklist, chặn theo giờ, allowlist, giới hạn thời gian theo domain, SafeSearch, YouTube Restricted, báo cáo domain đã thăm (chỉ domain, không full URL). — Code đã xong (Sprint 2 đợt 2); extension đã cài trên Edge máy thật tối 17/11/2026, native messaging đã nối (popup báo đang bảo vệ + đồng bộ quy tắc), ID thật đã nướng vào installer từ v0.1.167 (không còn placeholder); nhưng domain bị chặn vẫn vào được — nguyên nhân DNR chưa rõ, extension 0.1.1 tách nhóm redirect + thêm chẩn đoán vào popup, chờ kiểm chứng ở tab mới.
 - [x] Blocklist/Allowlist do phụ huynh tự thêm (VD: chặn tiktok.com, cho phép hocmai.vn) + cho phép/chặn tạm thời. — Đã triển khai trên Dashboard + đồng bộ xuống file `domain_rules.json` (đã thấy file xuất bản đúng trên máy thật); thi hành trong trình duyệt chờ kiểm chứng extension.
 - [ ] Rule mẫu URL có đường dẫn (VD: `bing.com/videos` chỉ chặn link khớp mẫu) bên cạnh rule domain. — Đang làm (đợt tiếp theo).
 - [ ] DNS filtering dự phòng: hướng dẫn đặt DNS gia đình trên máy con (VD: Cloudflare for Families 1.1.1.3) — ghi rõ đây là lớp bổ sung, không thay extension.
@@ -97,14 +97,14 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 
 ### 2.6. Yêu cầu từ con & thông báo
 - [x] Con bấm "Xin thêm giờ" / "Xin mở app" từ màn hình khóa/tray, nhập lý do. — Đã triển khai đầu-cuối (Tray → IPC → outbox Service → RPC Supabase → Dashboard); yêu cầu xin giờ đã kiểm chứng lên server trên máy thật (log 17/11/2026). Yêu cầu xin mở app chưa có thông tin app trong yêu cầu nên duyệt mới chỉ đổi trạng thái.
-- [x] Phụ huynh nhận yêu cầu trên Dashboard (Realtime), Duyệt/Từ chối + ghi chú. — Đã triển khai: duyệt xin thêm giờ gửi lệnh mở khóa trước rồi lệnh cộng giờ tới máy (tới hết ngày), rồi mới đổi trạng thái; CI xanh run #159, chưa kiểm chứng trên máy thật. Ghi chú khi duyệt chưa có.
+- [x] Phụ huynh nhận yêu cầu trên Dashboard (Realtime), Duyệt/Từ chối + ghi chú. — Đã triển khai: duyệt xin thêm giờ gửi MỘT lệnh ghi đè mở khóa đúng N phút (đổi từ mẫu unlock + cộng giờ sau test máy thật 17/11: cộng giờ chỉ nới mức trần ngày nên không có tác dụng khi con đã dùng vượt mức trần); CI xanh run #167, chưa kiểm chứng lại trên máy thật. Ghi chú khi duyệt chưa có.
 - [x] Agent nhận lệnh trong vòng < 30 giây khi online (polling 15s). — Đã triển khai và kiểm chứng (lệnh khóa/mở tới trong ~15s).
-- [x] PIN thoát Tray (mã PIN riêng của phụ huynh, khác mật khẩu đăng nhập). — Đã triển khai: PIN đặt trên Dashboard (băm PBKDF2 tại trình duyệt), Service giữ hash và xác thực, sai 5 lần khóa 5 phút (đã thấy khóa nhập hoạt động trong log máy thật 17/11/2026); mã chỉ dùng một lần — nhập đúng và thoát xong thì mã tự gỡ khỏi server (RPC migration 8, đối sánh hash nên không xóa nhầm mã mới), CI xanh run #159. Cần migration 8 áp lên Supabase thì việc gỡ trên server mới chạy; trước đó mã vẫn bị xóa khỏi bộ nhớ Service ngay khi dùng đúng và lệnh gỡ thử lại mỗi phút.
-- [x] Xem thời gian còn lại thật trên Tray. — Đã triển khai: Tray hỏi Service qua IPC, Service trả quyết định mới nhất kèm số phút còn lại thật (giới hạn ngày/khung giờ/giờ ngủ); khi đang mở khóa tạm thời thì hiện rõ lý do thay vì "không giới hạn". CI xanh run #159, chưa kiểm chứng trên máy thật.
+- [x] PIN thoát Tray (mã PIN riêng của phụ huynh, khác mật khẩu đăng nhập). — Đã triển khai: PIN đặt trên Dashboard (băm PBKDF2 tại trình duyệt), Service giữ hash và xác thực, sai 5 lần khóa 5 phút (đã thấy khóa nhập hoạt động trong log máy thật 17/11/2026); mã chỉ dùng một lần — nhập đúng và thoát xong thì mã tự gỡ khỏi server (RPC migration 8, đối sánh hash nên không xóa nhầm mã mới), đã kiểm chứng trên máy thật tối 17/11 (lần dùng thứ 2 bị từ chối); CI xanh run #167. Cần migration 8 áp lên Supabase thì việc gỡ trên server mới chạy; trước đó mã vẫn bị xóa khỏi bộ nhớ Service ngay khi dùng đúng và lệnh gỡ thử lại mỗi phút.
+- [x] Xem thời gian còn lại thật trên Tray. — Đã triển khai: Tray hỏi Service qua IPC, Service trả quyết định mới nhất kèm số phút còn lại thật (giới hạn ngày/khung giờ/giờ ngủ); khi đang mở khóa tạm thời thì hiện rõ lý do thay vì "không giới hạn". CI xanh run #167, chưa kiểm chứng trên máy thật.
 
 ### 2.7. Báo cáo
 - [x] Trạng thái thi hành realtime trên Dashboard: luật nào đang khóa máy/khóa app/khóa domain, chip "Đang thi hành", thời gian cập nhật. — Đã triển khai (snapshot enforcement, migration 6).
-- [x] Hồ sơ theo con: Dashboard điều hướng Tổng quan / Hồ sơ / Yêu cầu; vào hồ sơ của một con có 3 tab Thiết bị / Quy tắc / Báo cáo chỉ hiện dữ liệu của con đó; tab Báo cáo tổng hợp tổng phút hôm nay, top 5 app, trạng thái máy, yêu cầu chờ duyệt, số quy tắc đang bật (chỉ dùng cột migration 1). — Đã triển khai (đợt sửa 17/11/2026, CI xanh run #159); đường dẫn cũ `/thiet-bi`, `/quy-tac` vẫn hoạt động.
+- [x] Hồ sơ theo con: Dashboard điều hướng Tổng quan / Hồ sơ / Yêu cầu; vào hồ sơ của một con có 3 tab Thiết bị / Quy tắc / Báo cáo chỉ hiện dữ liệu của con đó; tab Báo cáo tổng hợp tổng phút hôm nay, top 5 app, trạng thái máy, yêu cầu chờ duyệt, số quy tắc đang bật (chỉ dùng cột migration 1). — Đã triển khai (đợt sửa 17/11/2026, CI xanh run #159); đường dẫn cũ `/thiet-bi`, `/quy-tac` vẫn hoạt động. Thiết kế lại trang Quy tắc đợt 18/11 (quy tắc hiện hành lên đầu, nhóm theo con/danh mục với màu riêng, form tạo thu gọn accordion, đặt tên quy tắc, mẫu của phụ huynh lưu trên server + áp nhanh, mẫu Chỉ cho phép Edge; CI xanh run #170; migration 9 chờ áp; hạ cấp an toàn khi chưa áp).
 - [ ] Báo cáo ngày/tuần: tổng giờ, giờ theo app, số lần bị chặn, số lần xin thêm giờ. — Đã phê duyệt 17/11/2026 (xem §2.10).
 - [ ] Xuất CSV (giai đoạn 1.5).
 
