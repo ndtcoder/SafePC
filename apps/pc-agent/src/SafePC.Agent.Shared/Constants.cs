@@ -22,7 +22,7 @@ public static class AgentConstants
         try
         {
             System.Reflection.Assembly? entry = System.Reflection.Assembly.GetEntryAssembly();
-            string? informational = entry?.GetCustomAttribute<System.Reflection.AssemblyInformationalAttribute>()?.InformationalVersion;
+            string? informational = entry?.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion;
             if (!string.IsNullOrWhiteSpace(informational))
             {
                 // InformationalVersion có thể kèm hậu tố "+commit" — chỉ lấy phần trước '+'.
