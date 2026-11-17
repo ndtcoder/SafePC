@@ -104,7 +104,12 @@ public partial class App : System.Windows.Application
 
         _ipc = new IpcPipeClient(_log);
         _ipc.MessageReceived += OnIpcMessage;
-        _ = _ipc.RunAsync(_cts.Token);
+        // Vòng đọc IPC chạy trên thread-pool, KHÔNG dính UI thread: mẫu cũ
+        // fire-and-forget từ OnStartup (UI thread) khiến mọi continuation
+        // của vòng đọc dính vào DispatcherSynchronizationContext — nghi phạm
+        // chính của hiện tượng "chuột chết khi pipe đang nối" (17/11/2026).
+        // IpcPipeClient cũng ConfigureAwait(false) mọi await của nó.
+        _ = Task.Run(() => _ipc.RunAsync(_cts.Token));
         _log.Info("Tray khởi động: bước 3/6 — IPC đã khởi động.");
 
         _sampler = new ForegroundSampler(_ipc, _log);
