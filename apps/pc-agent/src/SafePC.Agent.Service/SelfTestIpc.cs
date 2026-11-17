@@ -46,6 +46,30 @@ public static class SelfTestIpc
             Console.WriteLine(line);
         }
 
+        void Trace(string step)
+        {
+            string line = "SELF-TEST-IPC: [debug] " + step;
+            log.Info(line);
+            Console.WriteLine(line);
+        }
+
+        // Watchdog cứng (run #129: test treo đủ 60s không một dòng log, bị
+        // CI hủy mù): nếu RunAsync chưa xong sau 45s thì ép thoát kèm dấu
+        // vết rõ ràng; breadcrumb gần nhất sẽ cho biết điểm treo. Test bình
+        // thường xong trong vài giây nên watchdog không bao giờ kích hoạt.
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = Task.Run(async () =>
+        {
+            Task finished = await Task.WhenAny(Task.Delay(TimeSpan.FromSeconds(45)), done.Task).ConfigureAwait(false);
+            if (finished != done.Task)
+            {
+                string stuck = "SELF-TEST-IPC: WATCHDOG: test chưa xong sau 45s, ép thoát (xem breadcrumb gần nhất để biết điểm treo).";
+                log.Error(stuck);
+                Console.WriteLine(stuck);
+                Environment.Exit(2);
+            }
+        });
+
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
@@ -57,9 +81,11 @@ public static class SelfTestIpc
             // InitializeAsync lúc chạy thật — test phải tự tạo schema SQLite,
             // nếu không usage-sample gửi lên sẽ lỗi "no such table", handler
             // chết và lock/unlock sau đó không còn writer nào để giao.
+            Trace("đang tạo schema SQLite (InitializeAsync)...");
             await outbox.InitializeAsync(cts.Token);
-
+            Trace("schema SQLite xong, đang khởi động IpcPipeServer...");
             await server.StartAsync(cts.Token);
+            Trace("IpcPipeServer đã khởi động, client giả đang nối tới...");
 
             using var client = new NamedPipeClientStream(".", AgentConstants.IpcPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             await client.ConnectAsync(cts.Token);
@@ -76,15 +102,18 @@ public static class SelfTestIpc
             // ĐỊNH server đã xử lý nó: poll bảng usage_samples tới khi thấy
             // mẫu "self-test". Không có khẳng định này thì một thread đọc
             // của server bị kẹt (park) sẽ không làm test trượt.
+            Trace("đang gửi usage-sample lên server...");
             await writer.WriteLineAsync(IpcMessage.Create(
                 IpcMessageTypes.UsageSample,
                 new UsageSamplePayload("self-test", null, DateTimeOffset.UtcNow)).ToLine());
+            Trace("đã gửi usage-sample, đang poll bảng usage_samples...");
             bool sampleProcessed = false;
             for (int i = 0; i < 10 && !sampleProcessed; i++)
             {
                 await Task.Delay(500, cts.Token);
                 IReadOnlyDictionary<string, TimeSpan> usage = await outbox.GetUsageByAppTodayAsync(cts.Token);
                 sampleProcessed = usage.ContainsKey("self-test");
+                Trace("poll lần " + (i + 1) + "/10: thấy self-test=" + sampleProcessed + ".");
             }
 
             Check("server xử lý usage-sample gửi lên", sampleProcessed);
@@ -97,6 +126,7 @@ public static class SelfTestIpc
             // pipe nên không tạo message trùng; gửi lại sau khi đã thành
             // công sẽ tạo 2 dòng lock và làm check unlock đọc nhầm.
             // (Review batch #6.)
+            Trace("đang gửi lock (thử lại tới khi giao được)...");
             int lockSent = 0;
             for (int i = 0; i < 50 && lockSent < 1; i++)
             {
@@ -109,17 +139,24 @@ public static class SelfTestIpc
             }
 
             Check("SendToTrayAsync(lock) giao tới ≥1 writer", lockSent >= 1);
+            Trace("đang chờ client giả nhận message lock (tối đa 5s)...");
             string? lockLine = await ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            Trace("chờ lock xong: nhận được dòng=" + (lockLine is not null) + ".");
             Check("client giả nhận được message lock", lockLine is not null && IpcMessage.FromLine(lockLine)?.Type == IpcMessageTypes.Lock);
 
             // Unlock: tương tự.
+            Trace("đang gửi unlock...");
             int unlockSent = await server.SendToTrayAsync(
                 IpcMessage.Create(IpcMessageTypes.Unlock, new { }), cts.Token);
             Check("SendToTrayAsync(unlock) giao tới ≥1 writer", unlockSent >= 1);
+            Trace("đang chờ client giả nhận message unlock (tối đa 5s)...");
             string? unlockLine = await ReadLineWithTimeoutAsync(reader, client, TimeSpan.FromSeconds(5));
+            Trace("chờ unlock xong: nhận được dòng=" + (unlockLine is not null) + ".");
             Check("client giả nhận được message unlock", unlockLine is not null && IpcMessage.FromLine(unlockLine)?.Type == IpcMessageTypes.Unlock);
 
+            Trace("đang dừng IpcPipeServer...");
             await server.StopAsync(cts.Token);
+            Trace("IpcPipeServer đã dừng.");
         }
         catch (Exception ex)
         {
@@ -131,13 +168,17 @@ public static class SelfTestIpc
         string result = "SELF-TEST-IPC: " + (passed == total ? "PASS" : "FAIL") + " (" + passed + "/" + total + " check đạt).";
         log.Info(result);
         Console.WriteLine(result);
+        done.TrySetResult();
         return passed == total ? 0 : 1;
     }
 
     /// <summary>
     /// Đọc một dòng với giới hạn chờ: đọc đồng bộ trên thread riêng, quá hạn
     /// thì dispose client để giải phóng lần đọc (đúng mẫu production — hủy
-    /// token không abort được lần đọc pipe). Trả về null khi quá hạn.
+    /// token không abort được lần đọc pipe). Sau khi dispose chỉ chờ lần đọc
+    /// bị bỏ tối đa 2s rồi bỏ mặc: chờ mãi ở đây sẽ treo cả test nếu dispose
+    /// không giải phóng được lần đọc (điểm treo nghi vấn ở run #129). Trả về
+    /// null khi quá hạn.
     /// </summary>
     private static async Task<string?> ReadLineWithTimeoutAsync(StreamReader reader, NamedPipeClientStream client, TimeSpan timeout)
     {
@@ -156,11 +197,13 @@ public static class SelfTestIpc
 
             try
             {
-                await readTask.ConfigureAwait(false);
+                await readTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
             }
             catch
             {
-                // Lần đọc bị bỏ kết thúc bằng lỗi sau khi dispose.
+                // Lần đọc bị bỏ kết thúc bằng lỗi sau khi dispose, hoặc vẫn
+                // kẹt sau 2s — bỏ mặc, không chờ nữa (xem ghi chú ở đầu
+                // phương thức). Thread nền bị bỏ sẽ chết cùng process.
             }
 
             return null;

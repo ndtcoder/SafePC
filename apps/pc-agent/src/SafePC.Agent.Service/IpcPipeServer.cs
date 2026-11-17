@@ -78,6 +78,13 @@ public sealed class IpcPipeServer : BackgroundService
     private volatile bool _waitingForConnection;
     private long _handlerCount;
 
+    // Đã tạo thành công ít nhất một pipe instance kèm ACL hay chưa — chỉ
+    // vòng accept chạm tới (đơn luồng). Instance #2+ dưới tài khoản không
+    // phải SYSTEM được phép rơi về instance trần (xem CreatePipeServer);
+    // instance ĐẦU TIÊN thì không, để lỗi tạo pipe đầu vẫn hiện rõ thay vì
+    // âm thầm chạy với DACL mặc định yếu hơn.
+    private bool _firstPipeCreated;
+
     private readonly object _noTrayLogLock = new();
     private DateTimeOffset _lastNoTrayLogAt;
 
@@ -289,7 +296,7 @@ public sealed class IpcPipeServer : BackgroundService
     }
 
     /// <summary>Tạo pipe server với ACL: SYSTEM toàn quyền, Users đọc/ghi.</summary>
-    private static NamedPipeServerStream CreatePipeServer()
+    private NamedPipeServerStream CreatePipeServer()
     {
         var security = new PipeSecurity();
         security.AddAccessRule(new PipeAccessRule(
@@ -301,16 +308,39 @@ public sealed class IpcPipeServer : BackgroundService
             PipeAccessRights.ReadWrite,
             AccessControlType.Allow));
 
-        return NamedPipeServerStreamAcl.Create(
-            AgentConstants.IpcPipeName,
-            PipeDirection.InOut,
-            // Cho phép nhiều instance chờ sẵn để nhiều session nối cùng lúc.
-            maxNumberOfServerInstances: 8,
-            transmissionMode: PipeTransmissionMode.Byte,
-            options: PipeOptions.Asynchronous,
-            inBufferSize: 0,
-            outBufferSize: 0,
-            pipeSecurity: security);
+        try
+        {
+            NamedPipeServerStream server = NamedPipeServerStreamAcl.Create(
+                AgentConstants.IpcPipeName,
+                PipeDirection.InOut,
+                // Cho phép nhiều instance chờ sẵn để nhiều session nối cùng lúc.
+                maxNumberOfServerInstances: 8,
+                transmissionMode: PipeTransmissionMode.Byte,
+                options: PipeOptions.Asynchronous,
+                inBufferSize: 0,
+                outBufferSize: 0,
+                pipeSecurity: security);
+            _firstPipeCreated = true;
+            return server;
+        }
+        catch (UnauthorizedAccessException ex) when (_firstPipeCreated)
+        {
+            // Instance #2+ dưới tài khoản không phải SYSTEM: tạo instance
+            // kèm descriptor bảo mật bị từ chối vì pipe object đã có DACL từ
+            // instance #1 (CI run #129: accept #2–#7 lỗi này khi chạy dưới
+            // user thường; trên máy thật Service chạy SYSTEM nên không gặp).
+            // Instance sau không cần descriptor — Windows áp DACL của
+            // instance đầu cho toàn bộ pipe object — nên tạo instance trần:
+            // bảo mật giữ nguyên, chỉ tránh lỗi tạo instance. Chỉ rơi về
+            // khi instance đầu đã tạo thành công kèm ACL (xem _firstPipeCreated).
+            _log.Warning("IPC: tạo pipe kèm ACL bị từ chối (không phải SYSTEM?), dùng instance trần — DACL của pipe đã chốt từ instance đầu. " + ex.Message);
+            return new NamedPipeServerStream(
+                AgentConstants.IpcPipeName,
+                PipeDirection.InOut,
+                maxNumberOfServerInstances: 8,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous);
+        }
     }
 
     private async Task HandleClientAsync(NamedPipeServerStream server, CancellationToken ct)
@@ -327,6 +357,10 @@ public sealed class IpcPipeServer : BackgroundService
         {
             using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
             writer = new StreamWriter(server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            // Breadcrumb (run #129: handler im lặng sau "bắt đầu đọc", không
+            // tới được dòng đăng ký writer): dòng này phân biệt "chết khi
+            // tạo reader/writer" với "chết khi đăng ký/vào vòng đọc".
+            _log.Info("IPC: handler #" + handlerId + " — đã tạo reader/writer, đang đăng ký.");
             int writerCount;
             lock (_writersLock)
             {
@@ -425,6 +459,10 @@ public sealed class IpcPipeServer : BackgroundService
                 }
             }, watchdogToken);
 
+            // Breadcrumb (run #129): tới được đây nghĩa là thread đọc +
+            // watchdog đã lên lịch; im lặng sau dòng này nghĩa là vòng xử lý
+            // Channel đang chờ dòng đầu tiên (bình thường) hoặc đã kẹt.
+            _log.Info("IPC: handler #" + handlerId + " — thread đọc + watchdog đã lên lịch, vào vòng xử lý.");
             await foreach (string line in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
                 Volatile.Write(ref lastActivityTicks, DateTimeOffset.UtcNow.UtcTicks);
