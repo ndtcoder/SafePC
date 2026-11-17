@@ -52,3 +52,15 @@ safepc/
 - Google Family Link không quản lý được Windows PC. Microsoft Family Safety lọc web đầy đủ chủ yếu trên Edge. App tự làm cũng có giới hạn tương tự nếu chỉ dựa vào browser.
 - Lọc web toàn hệ thống "mọi trình duyệt, mọi app" ở mức chuyên nghiệp cần driver/proxy hệ thống, rất phức tạp và dễ bị antivirus chặn. MVP sẽ làm theo hướng thực tế: Browser Extension (Chrome/Edge) + chặn app + DNS filtering + chính sách Windows, và ghi rõ phạm vi.
 - Chống gỡ/tắt Agent 100% là không thể nếu con có quyền Admin. Giải pháp là: con dùng Standard User + Service chạy quyền SYSTEM + bảo vệ bằng mã PIN của phụ huynh + cảnh báo khi Agent offline.
+
+## 6. CI (GitHub Actions)
+
+Workflow `.github/workflows/ci.yml` chạy trên mỗi lần đẩy lên `main`:
+- `docs-check`: kiểm tra tài liệu bắt buộc và quét secret cơ bản.
+- `build-dashboard`: build Dashboard (Vite).
+- `build-agent`: build + publish Agent trên Windows, chạy tự kiểm tra giao diện Tray và cổng kiểm tra khóa/mở (IPC), đóng gói bộ cài Inno Setup, tải lên artifact `SafePCAgentSetup`.
+
+Để CI chạy nhanh:
+- Job `changes` xác định lần đẩy có chạm code agent (`apps/pc-agent/`) hoặc chính workflow không; nếu không, job Windows được bỏ qua và run xong trong khoảng 30 giây.
+- Gói NuGet được cache theo file `.csproj`; thư mục cài Inno Setup được cache để khỏi cài lại mỗi lần (tăng số trong khóa cache để ép dùng bản mới).
+- Phiên bản bản cài là `0.1.<số run CI>` — không tách workflow vì số run tính theo từng workflow.
