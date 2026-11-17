@@ -19,16 +19,15 @@ namespace SafePC.Agent.Tray;
 /// dùng đúng mẫu production (ReadLine đồng bộ + dispose để giải phóng),
 /// không dùng ReadLineAsync + timeout.
 ///
-/// ACCEPT CŨNG ĐỒNG BỘ (bài học từ run CI #127): bản đầu dùng
-/// WaitForConnectionAsync — Tray nối được (log "đã kết nối" 04:02:25) nhưng
-/// phía server im lặng suốt 30s, _writer không bao giờ được gán, cả 4 check
-/// IPC rớt. Nghi là do client đang treo trong ConnectAsync từ lúc khởi động
-/// nên nối ngay khi instance xuất hiện, trước khi lệnh chờ nối bất đồng bộ
-/// kịp đăng ký (cơ chế chưa chứng minh chắc chắn — quan sát chắc chắn là
-/// lệnh chờ đó không hoàn tất trong 30s).
-/// WaitForConnection() chặn trên thread riêng xử lý đúng cả hai thứ tự
-/// (client chờ sẵn hay nối sau), khớp bài học pipe của dự án: I/O pipe
-/// đồng bộ trên thread riêng, không dùng lệnh chờ bất đồng bộ.
+/// NHẬN KẾT NỐI BẰNG POLL IsConnected (bài học từ run CI #127 + #129): CẢ
+/// WaitForConnectionAsync (#127) LẪN WaitForConnection() chặn đồng bộ (#129)
+/// đều không quan sát được một kết nối đã thiết lập TRƯỚC khi lệnh chờ bắt
+/// đầu. Tray treo trong ConnectAsync từ lúc khởi động nên nối ngay khi
+/// instance xuất hiện; log chẩn đoán run #129 cho thấy pipe IsConnected=True
+/// trong khi lệnh chờ treo đủ 30s và _writer không bao giờ được gán. Vì vậy
+/// server giả KHÔNG chờ nối nữa: mỗi lần poll/khi gửi, nó kiểm tra trạng
+/// thái thật IsConnected của stream và tự tạo reader/writer + chạy vòng xả
+/// ngay khi thấy đã nối. Không còn thread accept, không còn lệnh chờ nối nào.
 ///
 /// GIỚI HẠN: cổng này chạy cùng user/cùng session nên không kiểm chứng
 /// ranh giới ACL SYSTEM↔user hay đa session — nó không thay thế test trên
@@ -37,60 +36,69 @@ namespace SafePC.Agent.Tray;
 internal sealed class SelfTestPipeServer : IDisposable
 {
     private readonly LocalLogger? _log;
+    private readonly object _connectLock = new();
     private NamedPipeServerStream? _server;
     private StreamReader? _reader;
 
-    // Volatile: ghi trên thread accept, đọc trên UI thread (poll nối +
-    // gửi) — không có volatile thì UI thread có thể đọc giá trị cũ mãi.
+    // Volatile: ghi khi EnsureConnected chạy, đọc từ UI thread (poll nối +
+    // gửi) — không có volatile thì thread đọc có thể đọc giá trị cũ mãi.
     private volatile StreamWriter? _writer;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public SelfTestPipeServer(LocalLogger? log)
     {
         _log = log;
     }
 
-    /// <summary>Tray đã nối tới và stream ghi đã sẵn sàng (chỉ đặt sau khi accept xong).</summary>
+    /// <summary>Tray đã nối tới và stream ghi đã sẵn sàng (chỉ đặt sau khi thấy IsConnected).</summary>
     public bool IsConnected => _writer is not null;
 
-    /// <summary>Tạo pipe instance và bắt đầu chờ Tray nối tới (không chặn).</summary>
+    /// <summary>Tạo pipe instance. Kết nối được nhận khi poll/gửi thấy IsConnected (xem ghi chú ở đầu file).</summary>
     public void Start()
     {
+        if (_server is not null)
+        {
+            throw new InvalidOperationException("SelfTestPipeServer.Start() chỉ được gọi một lần.");
+        }
+
         _server = new NamedPipeServerStream(
             AgentConstants.IpcPipeName,
             PipeDirection.InOut,
             maxNumberOfServerInstances: 1,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous);
-        _ = Task.Run(AcceptLoop);
+        _log?.Info("SELF-TEST: pipe server giả đã tạo, chờ Tray nối tới (poll IsConnected).");
     }
 
     /// <summary>
-    /// Chờ Tray nối tới bằng lệnh CHẶN đồng bộ trên thread riêng (xem ghi
-    /// chú ở đầu file: WaitForConnectionAsync đã không hoàn tất ở run #127
-    /// khi client nối trước khi lệnh chờ kịp đăng ký). Dispose pipe sẽ
-    /// giải phóng lệnh chờ đang chặn.
+    /// Nếu pipe đã nối (IsConnected) mà reader/writer chưa tạo thì tạo ngay
+    /// và chạy vòng xả. Idempotent, an toàn khi gọi nhiều lần: chỉ lần đầu
+    /// tạo, các lần sau thấy _writer đã có thì thôi.
     /// </summary>
-    private void AcceptLoop()
+    private void EnsureConnected()
     {
-        _log?.Info("SELF-TEST: pipe server giả đang chờ Tray nối tới.");
-        try
+        if (_writer is not null || _disposed)
         {
-            _server!.WaitForConnection();
-            _reader = new StreamReader(_server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
-            _writer = new StreamWriter(_server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+            return;
+        }
+
+        lock (_connectLock)
+        {
+            if (_writer is not null || _disposed)
+            {
+                return;
+            }
+
+            NamedPipeServerStream? server = _server;
+            if (server is null || !server.IsConnected)
+            {
+                return;
+            }
+
+            _reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            _writer = new StreamWriter(server, Encoding.UTF8, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
             _ = Task.Run(DrainLoop);
             _log?.Info("SELF-TEST: pipe server giả đã nhận kết nối từ Tray.");
-        }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
-        {
-            // Test đã dispose server trong lúc chờ nối: thoát, nhưng vẫn ghi
-            // log để lần sau phân biệt được "client chưa nối" với "accept chết".
-            _log?.Warning("SELF-TEST: pipe server giả dừng chờ kết nối (" + ex.GetType().Name + ", thường là test đã dọn dẹp).");
-        }
-        catch (Exception ex)
-        {
-            _log?.Error("SELF-TEST: pipe server giả chờ kết nối lỗi.", ex);
         }
     }
 
@@ -125,6 +133,7 @@ internal sealed class SelfTestPipeServer : IDisposable
         DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
+            EnsureConnected();
             if (IsConnected)
             {
                 return true;
@@ -133,6 +142,7 @@ internal sealed class SelfTestPipeServer : IDisposable
             await Task.Delay(200).ConfigureAwait(false);
         }
 
+        EnsureConnected();
         bool connected = IsConnected;
         if (!connected)
         {
@@ -149,6 +159,7 @@ internal sealed class SelfTestPipeServer : IDisposable
     /// <summary>Gửi một message xuống Tray đang nối. Trả về false khi chưa nối hoặc ghi lỗi.</summary>
     public async Task<bool> SendAsync(IpcMessage message)
     {
+        EnsureConnected();
         StreamWriter? writer = _writer;
         if (writer is null)
         {
