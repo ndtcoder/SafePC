@@ -72,6 +72,9 @@ public sealed class IpcPipeServer : BackgroundService
     private long _acceptIterationCount;
     private long _lastAcceptIterationTicks;
     private long _lastWatchdogWarnedCount = -1;
+
+    /// <summary>Vòng accept đang ngồi chờ client nối tới (trạng thái bình thường) — watchdog bỏ qua.</summary>
+    private volatile bool _waitingForConnection;
     private long _handlerCount;
 
     private readonly object _noTrayLogLock = new();
@@ -178,7 +181,19 @@ public sealed class IpcPipeServer : BackgroundService
             {
                 _log.Info("IPC: accept #" + iteration + " — chờ Tray App kết nối...");
                 server = CreatePipeServer();
-                await server.WaitForConnectionAsync(stoppingToken);
+                // Đánh dấu "đang chờ kết nối": watchdog KHÔNG được kêu trong
+                // lúc này — chờ client là trạng thái bình thường, không phải
+                // kẹt (log thật 17/11/2026: watchdog báo giả 3 lần trong lúc
+                // vòng accept chỉ đang chờ Tray nối tới, làm nhiễu chẩn đoán).
+                _waitingForConnection = true;
+                try
+                {
+                    await server.WaitForConnectionAsync(stoppingToken);
+                }
+                finally
+                {
+                    _waitingForConnection = false;
+                }
                 _log.Info("IPC: accept #" + iteration + " — Tray App đã kết nối.");
                 // Giao qua Task.Run — KHÔNG gọi trực tiếp: code của handler
                 // (kể cả phần đồng bộ trước await đầu tiên) không bao giờ
@@ -231,6 +246,13 @@ public sealed class IpcPipeServer : BackgroundService
     {
         try
         {
+            // Vòng accept đang chờ client nối tới là trạng thái bình thường —
+            // không kêu, nếu không log đầy cảnh báo giả (gặp ngày 17/11/2026).
+            if (_waitingForConnection)
+            {
+                return;
+            }
+
             long lastTicks = Interlocked.Read(ref _lastAcceptIterationTicks);
             if (lastTicks == 0)
             {
