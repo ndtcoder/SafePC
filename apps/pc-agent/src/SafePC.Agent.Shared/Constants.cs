@@ -99,4 +99,10 @@ public static class StateKeys
 
     /// <summary>Lần cuối đã báo heartbeat của extension lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/5 phút.</summary>
     public const string ExtensionHeartbeatLastReported = "extension_heartbeat_last_reported";
+
+    /// <summary>Số lần nhập sai mã PIN thoát liên tiếp (đặt lại 0 khi nhập đúng). Lưu bền vững để khởi động lại Tray không xóa được số lần sai.</summary>
+    public const string PinFailCount = "pin_fail_count";
+
+    /// <summary>Thời điểm hết khóa nhập PIN (ISO-8601 UTC) sau khi sai quá số lần cho phép. Vắng mặt = không bị khóa.</summary>
+    public const string PinLockoutUntil = "pin_lockout_until";
 }

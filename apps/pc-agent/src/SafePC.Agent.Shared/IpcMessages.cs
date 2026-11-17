@@ -25,6 +25,18 @@ public static class IpcMessageTypes
 
     /// <summary>Tray -> Service: Tray tự giới thiệu khi nối (phiên, tài khoản, quyền admin) để Service chỉ giao lệnh khóa/cảnh báo tới phiên của con.</summary>
     public const string Hello = "hello";
+
+    /// <summary>Tray -> Service: xin thời gian còn lại (quyết định mới nhất của Service). Service trả <see cref="RemainingTimeResponse"/> về đúng writer đã hỏi.</summary>
+    public const string RemainingTimeRequest = "remaining-time-request";
+
+    /// <summary>Service -> Tray: trả lời <see cref="RemainingTimeRequest"/>.</summary>
+    public const string RemainingTimeResponse = "remaining-time-response";
+
+    /// <summary>Tray -> Service: kiểm tra mã PIN thoát. Service kiểm tra với hash đã đồng bộ, KHÔNG gửi hash xuống Tray.</summary>
+    public const string PinVerifyRequest = "pin-verify-request";
+
+    /// <summary>Service -> Tray: trả lời <see cref="PinVerifyRequest"/>.</summary>
+    public const string PinVerifyResponse = "pin-verify-response";
 }
 
 /// <summary>
@@ -94,3 +106,34 @@ public sealed record ExtraTimeRequestPayload(int Minutes, string Reason, DateTim
 /// khi đã biết chắc phiên đó là admin.
 /// </summary>
 public sealed record HelloPayload(int SessionId, string UserName, bool IsAdmin);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.RemainingTimeRequest"/>: chỉ mang
+/// id để Tray đối chiếu câu trả lời (pipe đa message, câu trả lời đến muộn
+/// của lần hỏi trước không được tính cho lần hỏi sau).
+/// </summary>
+public sealed record RemainingTimeRequestPayload(string RequestId);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.RemainingTimeResponse"/>.
+/// <c>Decision</c>: "allow" | "warn" | "lock" | "unknown" (Service chưa đánh
+/// giá lần nào). <c>MinutesLeft</c> null = không giới hạn (hoặc chưa biết).
+/// <c>RequestId</c> vọng lại id của câu hỏi.
+/// </summary>
+public sealed record RemainingTimeResponsePayload(string Decision, int? MinutesLeft, string Reason, DateTimeOffset EvaluatedAt, string RequestId);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.PinVerifyRequest"/>: PIN con/người
+/// dùng vừa nhập + id để đối chiếu câu trả lời. PIN chỉ đi trên pipe nội bộ
+/// của máy, không bao giờ ghi log.
+/// </summary>
+public sealed record PinVerifyRequestPayload(string Pin, string RequestId);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.PinVerifyResponse"/>.
+/// <c>PinConfigured</c> false = phụ huynh chưa đặt PIN (không PIN nào đúng).
+/// <c>LockedOut</c> true = đã sai quá số lần cho phép, phải chờ.
+/// <c>RemainingAttempts</c>: số lần thử còn lại trước khi bị khóa.
+/// <c>RequestId</c> vọng lại id của câu hỏi.
+/// </summary>
+public sealed record PinVerifyResponsePayload(bool Verified, bool LockedOut, int RemainingAttempts, bool PinConfigured, string RequestId);
