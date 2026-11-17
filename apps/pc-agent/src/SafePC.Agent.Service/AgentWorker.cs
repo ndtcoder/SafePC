@@ -70,6 +70,18 @@ public sealed class AgentWorker : BackgroundService
     private int _lastWarnBucket;
     private bool _lockSent;
 
+    // Khóa có độ trễ (lệnh lock_now kèm delay_minutes 1–5): thời điểm lệnh
+    // khóa thật sự có hiệu lực. Trong lúc chờ, vòng kiểm tra chỉ gửi cảnh
+    // báo (cửa sổ nhỏ) thay vì màn hình khóa full màn — con có thời gian
+    // lưu bài. Chỉ tồn tại trong bộ nhớ: Service khởi động lại giữa chừng
+    // thì trạng thái khóa bền vững (ForcedLock) khiến tick sau khóa ngay
+    // (fail-closed, mất độ trễ nhưng không mất lệnh khóa).
+    private DateTimeOffset? _pendingLockAt;
+
+    // Số phút còn lại của lần cảnh báo chờ-khóa gần nhất đã gửi — chỉ gửi
+    // lại khi số phút đổi (tránh spam mỗi tick 15s; Tray tự đếm ngược).
+    private int _lastPendingWarnMinutes;
+
     // Chữ ký ghi đè ở lần kiểm tra rules trước (action + hết hạn + domains):
     // đổi là ghi đè đã áp dụng/hết hạn/bị thay, cần xuất bản lại file domain.
     private string? _lastOverrideSignature;
@@ -742,7 +754,13 @@ public sealed class AgentWorker : BackgroundService
                 {
                     case RuleDecisionKind.Allowed:
                         _lastWarnBucket = 0;
-                        if (_lockSent)
+                        // Hết điều kiện khóa thì hủy cả lệnh khóa đang chờ
+                        // (VD: ghi đè mở khóa tới trong lúc chờ): nếu cửa sổ
+                        // cảnh báo đang hiện thì lệnh mở dưới đây sẽ đóng nó.
+                        // Chỉ hủy pending khi gửi mở thành công (đúng mẫu
+                        // _lockSent): gửi rớt thì tick sau gửi lại.
+                        bool hadPendingLock = _pendingLockAt.HasValue;
+                        if (_lockSent || hadPendingLock)
                         {
                             // Chuyển từ khóa sang cho phép (hết giờ ngủ, hết
                             // khung cấm, ghi đè hết hạn...): báo Tray đóng
@@ -750,11 +768,12 @@ public sealed class AgentWorker : BackgroundService
                             // dù rules đã cho phép. Chỉ xóa cờ khi gửi thành
                             // công tới ≥1 Tray (review batch #5): gửi rớt thì
                             // tick sau gửi lại.
-                            _log.Info("Hết điều kiện khóa. Báo Tray đóng màn hình khóa.");
+                            _log.Info("Hết điều kiện khóa. Báo Tray đóng màn hình khóa/cảnh báo.");
                             int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
                             if (unlockSent > 0)
                             {
                                 _lockSent = false;
+                                _pendingLockAt = null;
                             }
                         }
                         break;
@@ -771,6 +790,32 @@ public sealed class AgentWorker : BackgroundService
                         break;
 
                     case RuleDecisionKind.Lock:
+                        // Khóa có độ trễ đang chờ: chưa tới hẹn thì chỉ gửi
+                        // cảnh báo (khi số phút còn lại đổi), chưa gửi lệnh
+                        // khóa. Tới hẹn thì xóa hẹn và rơi xuống gửi khóa
+                        // như thường ở dưới.
+                        if (_pendingLockAt.HasValue)
+                        {
+                            if (now < _pendingLockAt.Value)
+                            {
+                                int minutesLeft = Math.Max(1, (int)Math.Ceiling((_pendingLockAt.Value - now).TotalMinutes));
+                                if (minutesLeft != _lastPendingWarnMinutes)
+                                {
+                                    _log.Info("Đang chờ khóa có độ trễ, còn " + minutesLeft + " phút. Gửi cảnh báo.");
+                                    int warned = await _ipc.SendToTrayAsync(
+                                        IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(minutesLeft, "Phụ huynh sẽ khóa máy. Hãy lưu bài làm của bạn.")), ct);
+                                    if (warned > 0)
+                                    {
+                                        _lastPendingWarnMinutes = minutesLeft;
+                                    }
+                                }
+
+                                break;
+                            }
+
+                            _pendingLockAt = null;
+                        }
+
                         bool firstLock = !_lockSent;
                         if (firstLock || breakActive)
                         {
@@ -817,6 +862,16 @@ public sealed class AgentWorker : BackgroundService
                 // mỗi lần kiểm tra, gửi lên server ở chu kỳ heartbeat khi
                 // đổi (xem MaybeReportEnforcementAsync). lockedBy/reasons/
                 // ruleIds suy ra từ chính kết quả đánh giá của lần này.
+                // Đang chờ khóa có độ trễ: snapshot báo "cảnh báo" thay vì
+                // "đang khóa" — màn hình khóa chưa hiện, Dashboard không nên
+                // báo khóa sớm. DeriveLockedBy trả về null khi decision
+                // không phải Lock nên lockedBy cũng sạch.
+                if (_pendingLockAt.HasValue && now < _pendingLockAt.Value)
+                {
+                    int pendingMinutesLeft = Math.Max(1, (int)Math.Ceiling((_pendingLockAt.Value - now).TotalMinutes));
+                    decision = new RuleDecision(RuleDecisionKind.Warn, "Phụ huynh sẽ khóa máy.", pendingMinutesLeft);
+                }
+
                 (List<string> reasons, List<string> ruleIds) = DeriveEnforcementReasons(decision, rules, breakActive, forcedLock, activeOverride, now);
                 string? lockedBy = DeriveLockedBy(decision, breakActive, forcedLock, activeOverride, now);
                 (string snapshotJson, string snapshotSignature) = BuildEnforcementSnapshot(
@@ -1572,6 +1627,37 @@ public sealed class AgentWorker : BackgroundService
                 // Lưu bền vững: khóa cưỡng chế sống sót qua khởi động lại
                 // Service, chỉ hết khi có lệnh unlock.
                 await _outbox.SetStateAsync(StateKeys.ForcedLock, "1", ct);
+
+                // Độ trễ khóa (Dashboard cho chọn 0–5 phút): delay > 0 và
+                // chưa khóa thì CHƯA gửi lệnh khóa — đặt hẹn giờ, gửi cảnh
+                // báo ngay (cửa sổ nhỏ, con vẫn làm việc/lưu bài), vòng
+                // kiểm tra rules sẽ gửi lệnh khóa khi tới hẹn. Delay = 0
+                // hoặc đã khóa rồi thì khóa ngay như trước.
+                int delayMinutes = 0;
+                if (TryGetPayloadInt32(command.Payload, "delay_minutes", out int parsedDelay))
+                {
+                    delayMinutes = Math.Clamp(parsedDelay, 0, 5);
+                }
+
+                if (delayMinutes > 0 && !_lockSent)
+                {
+                    _pendingLockAt = DateTimeOffset.UtcNow.AddMinutes(delayMinutes);
+                    _lastPendingWarnMinutes = 0;
+                    _log.Info("Khóa có độ trễ: sẽ khóa sau " + delayMinutes + " phút. Gửi cảnh báo trước.");
+                    int warned = await _ipc.SendToTrayAsync(
+                        IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(delayMinutes, "Phụ huynh sẽ khóa máy. Hãy lưu bài làm của bạn.")), ct);
+                    if (warned > 0)
+                    {
+                        // Chỉ ghi nhận đã cảnh báo khi thật sự giao được:
+                        // gửi rớt (chưa Tray nào nối) thì tick sau gửi lại
+                        // ngay thay vì chờ tới mốc phút tiếp theo.
+                        _lastPendingWarnMinutes = delayMinutes;
+                    }
+
+                    return true;
+                }
+
+                _pendingLockAt = null;
                 // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1 Tray (xem ghi
                 // chú ở vòng kiểm tra rules): gửi thất bại thì cờ vẫn false
                 // và vòng kiểm tra sau gửi lại từ trạng thái khóa bền vững.
@@ -1582,6 +1668,7 @@ public sealed class AgentWorker : BackgroundService
 
             case CommandTypes.Unlock:
                 await _outbox.DeleteStateAsync(StateKeys.ForcedLock, ct);
+                _pendingLockAt = null;
                 // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
                 // gửi rớt thì tick sau gửi lại từ quyết định Allowed.
                 int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
@@ -1727,6 +1814,10 @@ public sealed class AgentWorker : BackgroundService
         // tra rules tiếp theo. Nhánh dưới đây chỉ khớp action Lock/Unlock.
         if (!isDomainAction && action == OverrideActions.Lock)
         {
+            // Ghi đè khóa có tác dụng ngay, hủy luôn lệnh khóa có độ trễ
+            // đang chờ (nếu có) để tick sau không gửi cảnh báo thừa sau
+            // lưng màn hình khóa.
+            _pendingLockAt = null;
             // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1 Tray (xem ghi chú
             // ở vòng kiểm tra rules): gửi thất bại thì vòng kiểm tra sau
             // gửi lại từ ghi đè đang hiệu lực.

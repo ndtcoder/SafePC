@@ -12,8 +12,10 @@ namespace SafePC.Agent.Service;
 /// IpcPipeServer THẬT (không khởi động AgentWorker nên không chạm Supabase),
 /// nối một client pipe giả vào, gửi một usage-sample lên để chạy đường đọc
 /// của server, rồi khẳng định SendToTrayAsync giao message lock/unlock tới
-/// ≥1 writer và client nhận đủ cả hai dòng. Lỗi "handler đã nối nhưng danh
-/// sách writer rỗng" (bản 0.1.122) phải bị bắt ở đây.
+/// ≥1 writer và client nhận đủ cả hai dòng; cuối cùng client gửi hello
+/// IsAdmin=true và khẳng định lệnh lock không còn giao tới writer nào
+/// (miễn trừ phiên admin). Lỗi "handler đã nối nhưng danh sách writer rỗng"
+/// (bản 0.1.122) phải bị bắt ở đây.
 ///
 /// Ghi kết quả ra CẢ log file (LocalLogger) lẫn console để CI đọc trực tiếp.
 /// Thoát 0 khi mọi check đạt, 1 khi có check trượt.
@@ -179,6 +181,33 @@ public static class SelfTestIpc
             string? unlockLine = await unlockReadTask;
             Trace("chờ unlock xong: nhận được dòng=" + (unlockLine is not null) + ".");
             Check("client giả nhận được message unlock", unlockLine is not null && IpcMessage.FromLine(unlockLine)?.Type == IpcMessageTypes.Unlock);
+
+            // Miễn trừ admin (đợt khóa theo phiên): client giả gửi hello
+            // IsAdmin=true, rồi khẳng định lệnh lock KHÔNG còn giao tới
+            // writer nào (SendToTrayAsync trả về 0). Poll tới ~3s vì handler
+            // xử lý hello bất đồng bộ; mỗi lần gửi trước khi hello được xử
+            // lý sẽ giao 1 dòng lock xuống pipe — các dòng này không được
+            // đọc, nằm lại trong buffer, vô hại vì test sắp dừng server.
+            // KHÔNG bắt đầu task đọc ở đây: khi bộ lọc đúng thì không có
+            // dòng nào tới, task đọc sẽ treo tới hết timeout.
+            Trace("đang gửi hello admin, rồi khẳng định lock không còn giao tới...");
+            await writer.WriteLineAsync(IpcMessage.Create(
+                IpcMessageTypes.Hello,
+                new HelloPayload(0, "self-test-admin", true)).ToLine());
+            await writer.FlushAsync();
+            bool lockFiltered = false;
+            for (int i = 0; i < 15 && !lockFiltered; i++)
+            {
+                int filteredSent = await server.SendToTrayAsync(
+                    IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Self-test miễn trừ admin.")), cts.Token);
+                lockFiltered = filteredSent == 0;
+                if (!lockFiltered)
+                {
+                    await Task.Delay(200, cts.Token);
+                }
+            }
+
+            Check("SendToTrayAsync(lock) giao 0 writer sau hello admin", lockFiltered);
 
             Trace("đang dừng IpcPipeServer...");
             await server.StopAsync(cts.Token);

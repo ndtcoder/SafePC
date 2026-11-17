@@ -65,7 +65,26 @@ public sealed class IpcPipeServer : BackgroundService
     private readonly LocalLogger _log;
     private readonly ForegroundState _foregroundState;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
-    private readonly System.Collections.Generic.HashSet<StreamWriter> _clientWriters = new();
+
+    /// <summary>
+    /// Một kết nối Tray: writer + thông tin phiên Tray đã giới thiệu qua
+    /// message hello (trống khi Tray chưa kịp giới thiệu). Lệnh khóa và
+    /// cảnh báo chỉ giao tới writer KHÔNG phải admin; writer chưa rõ (chưa
+    /// có hello) vẫn nhận lệnh — miễn trừ chỉ áp dụng khi đã biết chắc
+    /// phiên đó là admin (fail-closed cho khóa máy). Mọi trường phiên chỉ
+    /// được ghi dưới <see cref="_writersLock"/> (nhánh hello) và đọc khi
+    /// chụp danh sách dưới cùng khóa đó (gửi message).
+    /// </summary>
+    private sealed class WriterEntry
+    {
+        public required StreamWriter Writer { get; init; }
+        public int? SessionId { get; set; }
+        public string? UserName { get; set; }
+        public bool IsAdmin { get; set; }
+        public bool HasHello { get; set; }
+    }
+
+    private readonly System.Collections.Generic.HashSet<WriterEntry> _clientWriters = new();
     private readonly object _writersLock = new();
 
     // Đếm vòng accept + thời điểm vòng accept gần nhất (ticks UTC, truy cập
@@ -96,29 +115,47 @@ public sealed class IpcPipeServer : BackgroundService
     }
 
     /// <summary>
-    /// Gửi một message xuống mọi Tray App đang kết nối. Nếu chưa Tray nào kết
-    /// nối thì bỏ qua (ghi log chống spam) chứ không xếp hàng — cảnh báo/khóa
-    /// sẽ được gửi lại ở lần kiểm tra rules tiếp theo.
+    /// Gửi một message xuống các Tray App đang kết nối. Lệnh khóa và cảnh báo
+    /// chỉ giao tới phiên KHÔNG phải admin (xem WriterEntry); mở khóa và
+    /// message khác tới mọi Tray. Nếu không còn Tray nào nhận được (chưa Tray
+    /// nào kết nối, hoặc chỉ còn phiên admin) thì bỏ qua (ghi log chống spam)
+    /// chứ không xếp hàng — cảnh báo/khóa sẽ được gửi lại ở lần kiểm tra
+    /// rules tiếp theo.
     /// </summary>
-    /// <returns>Số Tray đã ghi thành công (0 khi chưa Tray nào nối, chờ khóa
-    /// ghi quá hạn, hoặc mọi lần ghi đều lỗi). Nơi gọi dùng giá trị này để
-    /// quyết định có coi lệnh là "đã gửi" hay không — xem _lockSent.</returns>
+    /// <returns>Số Tray đã ghi thành công (0 khi chưa Tray nào nối, chỉ còn
+    /// phiên admin đang nối mà message là khóa/cảnh báo, chờ khóa ghi quá
+    /// hạn, hoặc mọi lần ghi đều lỗi). Nơi gọi dùng giá trị này để quyết
+    /// định có coi lệnh là "đã gửi" hay không — xem _lockSent.</returns>
     public async Task<int> SendToTrayAsync(IpcMessage message, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(message);
 
-        System.Collections.Generic.List<StreamWriter> writers;
+        // Giao lệnh theo phiên (17/11/2026): lệnh khóa và cảnh báo chỉ tới
+        // phiên KHÔNG phải admin — phiên admin (phụ huynh) không bị khóa
+        // theo khi khóa máy của con (log thật: 2 writer cùng nối, cả hai
+        // phiên cùng hiện màn khóa). Writer chưa giới thiệu (chưa có hello)
+        // vẫn nhận lệnh: miễn trừ chỉ áp dụng khi đã biết chắc là admin.
+        // Mở khóa và mọi message khác vẫn tới mọi writer. Chụp + lọc dưới
+        // CÙNG một lần giữ khóa: nhánh hello cũng ghi IsAdmin dưới khóa này,
+        // nên đọc ngoài khóa sẽ đua với lần ghi (review đợt này).
+        bool lockOrWarning = message.Type == IpcMessageTypes.Lock || message.Type == IpcMessageTypes.Warning;
+        System.Collections.Generic.List<WriterEntry> entries;
+        System.Collections.Generic.List<WriterEntry> targets;
         lock (_writersLock)
         {
-            writers = _clientWriters.ToList();
+            entries = _clientWriters.ToList();
+            targets = lockOrWarning
+                ? entries.Where(e => !e.IsAdmin).ToList()
+                : entries;
         }
 
         // Chẩn đoán 17/11/2026: ghi mọi lần gửi kèm số writer đang nối —
         // log bản 0.1.122 cho thấy handler đã bắt đầu đọc nhưng mọi lần gửi
         // đều thấy danh sách rỗng; dòng này cho biết phía gửi nhìn thấy gì.
-        _log.Info("IPC: gửi message " + message.Type + " (đang nối: " + writers.Count + " writer).");
+        _log.Info("IPC: gửi message " + message.Type + " (đang nối: " + entries.Count + " writer"
+            + (lockOrWarning ? ", giao tới " + targets.Count + " phiên không admin" : "") + ").");
 
-        if (writers.Count == 0)
+        if (targets.Count == 0)
         {
             bool due;
             DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -133,7 +170,9 @@ public sealed class IpcPipeServer : BackgroundService
 
             if (due)
             {
-                _log.Info("IPC: Tray chưa kết nối, bỏ qua message " + message.Type + ".");
+                _log.Info(entries.Count == 0
+                    ? "IPC: Tray chưa kết nối, bỏ qua message " + message.Type + "."
+                    : "IPC: chỉ có phiên admin đang nối, bỏ qua message " + message.Type + " (miễn khóa phiên admin).");
             }
 
             return 0;
@@ -158,20 +197,20 @@ public sealed class IpcPipeServer : BackgroundService
         int sent = 0;
         try
         {
-            foreach (StreamWriter writer in writers)
+            foreach (WriterEntry entry in targets)
             {
                 try
                 {
-                    await writer.WriteLineAsync(line);
-                    await writer.FlushAsync();
+                    await entry.Writer.WriteLineAsync(line);
+                    await entry.Writer.FlushAsync();
                     sent++;
                 }
                 catch (Exception ex)
                 {
-                    _log.Error("IPC: không gửi được message tới một Tray (writer #" + writer.GetHashCode() + "), gỡ khỏi danh sách.", ex);
+                    _log.Error("IPC: không gửi được message tới một Tray (writer #" + entry.Writer.GetHashCode() + "), gỡ khỏi danh sách.", ex);
                     lock (_writersLock)
                     {
-                        _clientWriters.Remove(writer);
+                        _clientWriters.Remove(entry);
                     }
                 }
             }
@@ -352,6 +391,7 @@ public sealed class IpcPipeServer : BackgroundService
         _log.Info("IPC: handler #" + handlerId + " bắt đầu đọc từ Tray App.");
 
         StreamWriter? writer = null;
+        WriterEntry? entry = null;
         long receivedCount = 0;
         try
         {
@@ -373,10 +413,11 @@ public sealed class IpcPipeServer : BackgroundService
             // tới được dòng đăng ký writer): dòng này phân biệt "chết khi
             // tạo reader/writer" với "chết khi đăng ký/vào vòng đọc".
             _log.Info("IPC: handler #" + handlerId + " — đã tạo reader/writer, đang đăng ký.");
+            entry = new WriterEntry { Writer = writer };
             int writerCount;
             lock (_writersLock)
             {
-                _clientWriters.Add(writer);
+                _clientWriters.Add(entry);
                 writerCount = _clientWriters.Count;
             }
 
@@ -487,7 +528,7 @@ public sealed class IpcPipeServer : BackgroundService
                     // kẹt không được treo vòng xử lý mãi. Quá hạn thì bỏ chờ,
                     // ghi log và đọc tiếp — tác vụ nền vẫn chạy, lỗi muộn
                     // của nó vẫn được ghi log.
-                    Task handleTask = HandleMessageAsync(message, ct);
+                    Task handleTask = HandleMessageAsync(message, entry, ct);
                     Task finished = await Task.WhenAny(handleTask, Task.Delay(TimeSpan.FromSeconds(15), ct)).ConfigureAwait(false);
                     if (ct.IsCancellationRequested)
                     {
@@ -553,17 +594,20 @@ public sealed class IpcPipeServer : BackgroundService
         }
         finally
         {
-            if (writer is not null)
+            if (entry is not null)
             {
                 int remainingWriters;
                 lock (_writersLock)
                 {
-                    _clientWriters.Remove(writer);
+                    _clientWriters.Remove(entry);
                     remainingWriters = _clientWriters.Count;
                 }
 
-                _log.Info("IPC: handler #" + handlerId + " đã gỡ writer #" + writer.GetHashCode() + " (còn " + remainingWriters + " writer).");
+                _log.Info("IPC: handler #" + handlerId + " đã gỡ writer #" + entry.Writer.GetHashCode() + " (còn " + remainingWriters + " writer).");
+            }
 
+            if (writer is not null)
+            {
                 try
                 {
                     writer.Dispose();
@@ -589,10 +633,27 @@ public sealed class IpcPipeServer : BackgroundService
         }
     }
 
-    private async Task HandleMessageAsync(IpcMessage message, CancellationToken ct)
+    private async Task HandleMessageAsync(IpcMessage message, WriterEntry entry, CancellationToken ct)
     {
         switch (message.Type)
         {
+            case IpcMessageTypes.Hello:
+                HelloPayload? hello = message.GetPayload<HelloPayload>();
+                if (hello is not null)
+                {
+                    lock (_writersLock)
+                    {
+                        entry.SessionId = hello.SessionId;
+                        entry.UserName = hello.UserName;
+                        entry.IsAdmin = hello.IsAdmin;
+                        entry.HasHello = true;
+                    }
+
+                    _log.Info("IPC: Tray phiên #" + hello.SessionId + " (" + hello.UserName + ") đã giới thiệu, admin=" + hello.IsAdmin
+                        + " — lệnh khóa/cảnh báo " + (hello.IsAdmin ? "sẽ MIỄN phiên này." : "sẽ giao tới phiên này."));
+                }
+                break;
+
             case IpcMessageTypes.UsageSample:
                 UsageSamplePayload? sample = message.GetPayload<UsageSamplePayload>();
                 if (sample is not null)
