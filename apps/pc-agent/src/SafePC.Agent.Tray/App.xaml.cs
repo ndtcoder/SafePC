@@ -64,7 +64,7 @@ public partial class App : System.Windows.Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "SafePC", "logs", "agent-tray.log");
         _log = new LocalLogger(logPath);
-        _log.Info("SafePC Tray khởi động (PID " + Environment.ProcessId + ", phiên bản " + AgentConstants.AgentVersion + ").");
+        _log.Info("SafePC Tray khởi động (PID " + Environment.ProcessId + ", phiên bản " + AgentConstants.AgentVersion + ", session " + LocalLogger.CurrentSessionId + ").");
 
         // Bước 1/6: gắn global exception handler NGAY sau khi log được tạo
         // (handler cần _log) và TRƯỚC mọi bước khác — một crash khởi động
