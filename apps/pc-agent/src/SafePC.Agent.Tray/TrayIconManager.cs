@@ -38,6 +38,7 @@ public sealed class TrayIconManager : IDisposable
     private readonly Action _requestExit;
     private TrayMenuWindow? _menuWindow;
     private DateTimeOffset _menuClosedAt;
+    private DateTimeOffset _menuOpenedAt;
     private bool _disposed;
 
     public TrayIconManager(LocalLogger log, System.Windows.Window anchor, Action showRemainingTime, Action showExtraTime, Action requestExit)
@@ -58,7 +59,7 @@ public sealed class TrayIconManager : IDisposable
         {
             // TODO Sprint 1: icon .ico riêng của SafePC thay cho icon hệ thống.
             Icon = SystemIcons.Information,
-            Text = "SafePC",
+            Text = "SafePC v" + AgentConstants.AgentVersion,
             Visible = true,
         };
         _icon.MouseUp += OnIconMouseUp;
@@ -88,6 +89,19 @@ public sealed class TrayIconManager : IDisposable
             }
 
             _log.Info("Tray: chuột phải vào icon khay.");
+
+            // Menu vừa MỞ chưa tới 500ms: bỏ qua chuột phải này. Log thật
+            // sáng 17/11/2026 (bản #111): mỗi lần mở menu xong lại có thêm
+            // một sự kiện chuột phải trong cùng giây, rơi đúng nhánh bật/tắt
+            // và đóng menu ngay — user chỉ thấy "chuột phải ko có menu".
+            // Dù sự kiện thứ hai là do shell gửi trùng hay do user bấm dồn,
+            // menu vừa mở cũng không được phép bị đóng ngay lập tức.
+            if (_menuWindow is { IsVisible: true }
+                && DateTimeOffset.UtcNow - _menuOpenedAt < TimeSpan.FromMilliseconds(500))
+            {
+                _log.Info("Tray: bỏ qua chuột phải (menu vừa mở dưới 500ms).");
+                return;
+            }
 
             // Menu đang mở: chuột phải thì đóng (bật/tắt, như tray chuẩn).
             if (_menuWindow is { IsVisible: true })
@@ -123,7 +137,11 @@ public sealed class TrayIconManager : IDisposable
 
             var menu = new TrayMenuWindow(_log, _showRemainingTime, _showExtraTime, _requestExit)
             {
-                Owner = _anchor,
+                // KHÔNG đặt Owner: menu là cửa sổ top-level độc lập. Gán Owner
+                // là cửa sổ neo 0x0 + ShowActivated=false đã khiến cửa sổ con
+                // không giữ được kích hoạt và không nhận chuột trên máy thật
+                // (menu mất kích hoạt trong 300ms dù SetForegroundWindow trả
+                // về True; hộp thoại hiện nhưng bấm không ăn — log 17/11/2026).
                 Left = -10000,
                 Top = -10000,
             };
@@ -149,6 +167,7 @@ public sealed class TrayIconManager : IDisposable
             // SetForegroundWindow xin quyền foreground cho cửa sổ menu.
             bool foreground = SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(menu).Handle);
             _log.Info("Tray: SetForegroundWindow cho menu trả về " + foreground + ".");
+            _menuOpenedAt = DateTimeOffset.UtcNow;
             _log.Info("Tray: menu đã mở (xong).");
         }
         catch (Exception ex)
@@ -231,6 +250,16 @@ public sealed class TrayIconManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    /// <summary>Chỉ dùng cho --self-test: mở menu y hệt chuột phải, trả về cửa sổ menu để kiểm tra.</summary>
+    internal TrayMenuWindow? OpenMenuForTest()
+    {
+        OpenMenu();
+        return _menuWindow;
+    }
+
+    /// <summary>Chỉ dùng cho --self-test: đóng menu đang mở.</summary>
+    internal void CloseMenuForTest() => CloseMenu();
 
     private void CloseMenu()
     {

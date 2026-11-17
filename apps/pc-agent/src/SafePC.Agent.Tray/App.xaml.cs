@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using SafePC.Agent.Shared;
 
@@ -15,8 +16,17 @@ namespace SafePC.Agent.Tray;
 /// nhìn thấy cửa sổ user) rồi gửi về Service qua IPC Named Pipe.
 ///
 /// Vì app không có cửa sổ chính, OnStartup tạo thêm một cửa sổ neo ẩn để
-/// làm Owner cho mọi cửa sổ và PlacementTarget cho menu chuột phải — nếu
-/// không, menu/cửa sổ rất dễ mất kích hoạt và kẹt (xem ghi chú ở OnStartup).
+/// giữ vòng đời app. Cửa sổ neo KHÔNG còn làm Owner cho cửa sổ nào nữa:
+/// gán Owner là neo 0x0 + ShowActivated=false đã khiến cửa sổ con không giữ
+/// được kích hoạt và không nhận chuột trên máy thật (log 17/11/2026, bản
+/// #111: menu mất kích hoạt trong 300ms dù SetForegroundWindow trả về True;
+/// hộp thoại hiện nhưng bấm X/Đóng không ăn). Mọi cửa sổ Tray giờ là
+/// top-level độc lập, như cửa sổ của app bình thường.
+///
+/// --self-test: chạy Tray với tham số này để tự kiểm tra giao diện (mở menu,
+/// hit-test nút, mở/đóng hộp thoại, đếm dispatcher exception) rồi thoát với
+/// exit code 0 (đạt) hoặc 1 (trượt). CI chạy nó trên máy Windows thật sau
+/// mỗi lần publish để lỗi cửa sổ bị bắt trước khi tới tay phụ huynh.
 ///
 /// Chỉ một instance trong mỗi phiên đăng nhập (mutex Local\) — xem OnStartup.
 ///
@@ -54,7 +64,7 @@ public partial class App : System.Windows.Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "SafePC", "logs", "agent-tray.log");
         _log = new LocalLogger(logPath);
-        _log.Info("SafePC Tray khởi động (PID " + Environment.ProcessId + ").");
+        _log.Info("SafePC Tray khởi động (PID " + Environment.ProcessId + ", phiên bản " + AgentConstants.AgentVersion + ").");
 
         // Bước 1/6: gắn global exception handler NGAY sau khi log được tạo
         // (handler cần _log) và TRƯỚC mọi bước khác — một crash khởi động
@@ -101,12 +111,11 @@ public partial class App : System.Windows.Application
         _sampler.Start();
         _log.Info("Tray khởi động: bước 4/6 — sampler foreground đã khởi động.");
 
-        // Cửa sổ neo ẩn (0x0, ngoài màn hình): làm Owner cho mọi cửa sổ Tray
-        // và PlacementTarget cho menu chuột phải. App không có cửa sổ chính
-        // (ShutdownMode.OnExplicitShutdown) nên menu/cửa sổ không có owner
-        // rất dễ mất kích hoạt và kẹt, nuốt mọi cú chuột — lỗi đơ gặp trên
-        // máy thật ngày 2026-11-16 (menu hiện nhưng không bấm được, cửa sổ
-        // không đóng được, bấm đúp thì mở thêm cửa sổ mới).
+        // Cửa sổ neo ẩn (0x0, ngoài màn hình): giữ vòng đời app khi không có
+        // cửa sổ nào hiện. KHÔNG dùng làm Owner cho cửa sổ nào nữa — xem ghi
+        // chú ở đầu file (log 17/11/2026: Owner là neo khiến cửa sổ con mất
+        // kích hoạt và đơ chuột). Giữ lại cửa sổ neo để không đổi cơ chế
+        // ShutdownMode/mutex; nó vô hại khi không ai dùng làm Owner.
         //
         // Tạo neo + tray icon nằm trong try/catch ghi log kèm stack rồi mới
         // ném lại: một crash khởi động ở đây PHẢI để lại dấu vết trong log
@@ -135,6 +144,177 @@ public partial class App : System.Windows.Application
             _log.Error("Tray: khởi động thất bại ở bước neo/tray icon (ném lại sau khi ghi log): " + ex.ToString());
             throw;
         }
+
+        // --self-test: CI chạy Tray thật trên máy Windows rồi tự kiểm tra
+        // menu + hộp thoại (xem RunSelfTestAsync). Xếp vào hàng đợi
+        // Dispatcher thay vì chạy ngay: OnStartup chạy trước khi vòng lặp
+        // message bắt đầu bơm, còn test cần layout/activation chạy thật.
+        bool selfTest = false;
+        foreach (string arg in e.Args)
+        {
+            if (arg == "--self-test")
+            {
+                selfTest = true;
+                break;
+            }
+        }
+
+        if (selfTest)
+        {
+            _log.Info("SELF-TEST: chế độ tự kiểm tra, chạy sau khi khởi động xong.");
+            Dispatcher.BeginInvoke(new Func<Task>(RunSelfTestAndShutdownAsync));
+        }
+    }
+
+    /// <summary>
+    /// Tự kiểm tra giao diện Tray trên Windows thật: mở menu, hit-test nút,
+    /// mở/đóng hộp thoại, đếm dispatcher exception. Chạy trên UI thread,
+    /// dùng await Task.Delay để vòng lặp message bơm bình thường giữa các
+    /// bước (layout/activation cần message thật). Ghi từng check PASS/FAIL
+    /// vào log rồi thoát với exit code 0 (đạt) hoặc 1 (trượt) để CI đọc.
+    /// IsActive chỉ ghi log, KHÔNG tính đạt/trượt: phiên chạy CI có thể
+    /// không cấp quyền foreground như máy người dùng.
+    /// </summary>
+    private async Task RunSelfTestAndShutdownAsync()
+    {
+        int exitCode;
+        try
+        {
+            exitCode = await RunSelfTestAsync();
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("SELF-TEST: lỗi ngoài dự kiến, tính là TRƯỢT.", ex);
+            exitCode = 1;
+        }
+
+        Shutdown(exitCode);
+    }
+
+    private async Task<int> RunSelfTestAsync()
+    {
+        int passed = 0;
+        int total = 0;
+        int dispatcherExceptions = 0;
+        void CountDispatcherException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+        {
+            dispatcherExceptions++;
+        }
+
+        void Check(string name, bool ok)
+        {
+            total++;
+            if (ok)
+            {
+                passed++;
+            }
+
+            _log?.Info("SELF-TEST: [" + (ok ? "PASS" : "FAIL") + "] " + name);
+        }
+
+        Dispatcher.UnhandledException += CountDispatcherException;
+        try
+        {
+            _log?.Info("SELF-TEST: bắt đầu (phiên bản " + AgentConstants.AgentVersion + ").");
+
+            // 1. Menu: mở, hiện, có kích thước, nằm trong vùng màn hình.
+            TrayMenuWindow? menu = _tray?.OpenMenuForTest();
+            await Task.Delay(800);
+            Check("menu hiện + có kích thước", menu is { IsVisible: true } && menu.ActualWidth > 0 && menu.ActualHeight > 0);
+            _log?.Info("SELF-TEST: menu IsVisible=" + menu?.IsVisible + " IsActive=" + menu?.IsActive
+                + " Left=" + menu?.Left + " Top=" + menu?.Top
+                + " W=" + menu?.ActualWidth + " H=" + menu?.ActualHeight + ".");
+            Check("menu nằm trong vùng màn hình", menu is not null
+                && menu.Left > -5000 && menu.Top > -5000 && menu.Left < 10000 && menu.Top < 10000);
+
+            // 2. Hit-test nút trong menu: kênh hit-test của WPF chết thì nút
+            // hiện nhưng bấm không ăn (triệu chứng trên máy thật 17/11/2026).
+            Check("hit-test nút trong menu", menu is not null && HitTestFirstButton(menu));
+
+            // 3. Đóng menu.
+            _tray?.CloseMenuForTest();
+            await Task.Delay(300);
+            Check("menu đóng được", menu is { IsVisible: false });
+
+            // 4. Hộp thoại thời gian còn lại: hiện, enabled, hit-test được nút Đóng.
+            ShowRemainingTime();
+            await Task.Delay(500);
+            Check("hộp thoại thời gian hiện + enabled", _remainingWindow is { IsVisible: true } && _remainingWindow.IsEnabled);
+            Check("hit-test nút Đóng", _remainingWindow is not null && HitTestFirstButton(_remainingWindow));
+            _remainingWindow?.Close();
+            await Task.Delay(300);
+            Check("hộp thoại đóng được", _remainingWindow is null);
+
+            // 5. Không có dispatcher exception nào trong suốt quá trình test
+            // (bão Win32Exception 1816 trên máy thật sẽ bị bắt ở đây).
+            _log?.Info("SELF-TEST: dispatcher exception trong lúc test: " + dispatcherExceptions + ".");
+            Check("không có dispatcher exception", dispatcherExceptions == 0);
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("SELF-TEST: lỗi trong lúc test.", ex);
+            Check("không lỗi ngoài dự kiến", false);
+        }
+        finally
+        {
+            Dispatcher.UnhandledException -= CountDispatcherException;
+        }
+
+        _log?.Info("SELF-TEST: " + (passed == total ? "PASS" : "FAIL") + " (" + passed + "/" + total + " check đạt).");
+        return passed == total ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Hit-test điểm giữa của Button đầu tiên trong cây visual của cửa sổ.
+    /// Trả về false khi không tìm thấy nút, hit-test không trúng gì, hoặc
+    /// kênh composition của WPF lỗi — đúng triệu chứng "hiện mà bấm không ăn".
+    /// </summary>
+    private bool HitTestFirstButton(System.Windows.Window window)
+    {
+        try
+        {
+            System.Windows.Controls.Button? button = FindVisualChild<System.Windows.Controls.Button>(window);
+            if (button is null)
+            {
+                _log?.Info("SELF-TEST: không tìm thấy Button trong " + window.GetType().Name + ".");
+                return false;
+            }
+
+            window.UpdateLayout();
+            var center = new System.Windows.Point(button.ActualWidth / 2, button.ActualHeight / 2);
+            System.Windows.Point point = button.TransformToAncestor(window).Transform(center);
+            System.Windows.Media.HitTestResult? hit = System.Windows.Media.VisualTreeHelper.HitTest(window, point);
+            _log?.Info("SELF-TEST: hit-test " + window.GetType().Name + " tại (" + point.X + "," + point.Y + ") -> "
+                + (hit?.VisualHit?.GetType().Name ?? "(null)") + ".");
+            return hit is not null;
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("SELF-TEST: hit-test lỗi.", ex);
+            return false;
+        }
+    }
+
+    private static T? FindVisualChild<T>(System.Windows.DependencyObject parent)
+        where T : System.Windows.DependencyObject
+    {
+        int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent);
+        for (int i = 0; i < count; i++)
+        {
+            System.Windows.DependencyObject child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T found)
+            {
+                return found;
+            }
+
+            T? nested = FindVisualChild<T>(child);
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -214,7 +394,7 @@ public partial class App : System.Windows.Application
                             {
                                 try
                                 {
-                                    var window = new WarningWindow(warning.Reason, warning.MinutesLeft) { Owner = _anchor };
+                                    var window = new WarningWindow(warning.Reason, warning.MinutesLeft);
                                     window.Closed += (_, _) => _log?.Info("Tray: cửa sổ cảnh báo đã đóng.");
                                     window.Show();
                                     _log?.Info("Tray: cửa sổ cảnh báo đã hiện.");
@@ -246,7 +426,7 @@ public partial class App : System.Windows.Application
                                 {
                                     if (_lockWindow is null)
                                     {
-                                        var created = new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime) { Owner = _anchor };
+                                        var created = new LockWindow(lockPayload?.Reason ?? "Hết giờ.", ShowExtraTime);
                                         created.Closed += (_, _) =>
                                         {
                                             if (ReferenceEquals(_lockWindow, created))
@@ -347,10 +527,7 @@ public partial class App : System.Windows.Application
                     // (từ cache rules + usage hôm nay) thay cho chuỗi placeholder này.
                     // Chỉ giữ một cửa sổ: bấm đúp nhiều lần thì đưa cửa sổ cũ lên
                     // trước thay vì mở thêm cửa sổ mới.
-                    _remainingWindow = new RemainingTimeWindow("Đang tải... (skeleton: TODO lấy thời gian còn lại từ Service qua IPC ở Sprint 1.)")
-                    {
-                        Owner = _anchor,
-                    };
+                    _remainingWindow = new RemainingTimeWindow("Đang tải... (skeleton: TODO lấy thời gian còn lại từ Service qua IPC ở Sprint 1.)");
                     _remainingWindow.Closed += (_, _) =>
                     {
                         _remainingWindow = null;
@@ -397,10 +574,7 @@ public partial class App : System.Windows.Application
                                 IpcMessageTypes.ExtraTimeRequest,
                                 new ExtraTimeRequestPayload(minutes, reason, DateTimeOffset.UtcNow)));
                         }
-                    })
-                    {
-                        Owner = _anchor,
-                    };
+                    });
                     _extraTimeWindow.Closed += (_, _) =>
                     {
                         _extraTimeWindow = null;
@@ -432,7 +606,7 @@ public partial class App : System.Windows.Application
             {
                 try
                 {
-                    var pinDialog = new PinDialog { Owner = _anchor };
+                    var pinDialog = new PinDialog();
                     bool? result = pinDialog.ShowDialog();
                     if (result == true)
                     {

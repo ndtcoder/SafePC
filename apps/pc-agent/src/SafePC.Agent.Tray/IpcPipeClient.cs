@@ -258,6 +258,11 @@ public sealed class IpcPipeClient : IDisposable
 
     private void CleanupConnection()
     {
+        // Ghi log MỌI lần dọn kết nối: log thật ngày 17/11/2026 cho thấy
+        // _writer thành null mà không có một dòng outcome nào — dòng này cho
+        // biết chính xác khi nào writer bị dọn, để lần sau phân biệt được
+        // "vòng đọc thoát" với "writer null bí ẩn".
+        _log.Warning("IPC: dọn kết nối (đóng writer/pipe, lần nối sau sẽ tạo mới).");
         try
         {
             _writer?.Dispose();

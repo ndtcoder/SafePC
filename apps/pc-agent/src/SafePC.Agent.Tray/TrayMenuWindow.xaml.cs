@@ -64,7 +64,18 @@ public partial class TrayMenuWindow : Window
             }
 
             _log.Info("Tray: menu mất kích hoạt, đóng.");
-            Close();
+            try
+            {
+                Close();
+            }
+            catch (InvalidOperationException)
+            {
+                // Menu đang đóng dở (chuột phải bật/tắt gọi Close() cùng lúc
+                // Deactivated chạy): lần đóng thứ hai ném InvalidOperationException
+                // "while a Window is closing" — cửa sổ vẫn đóng bình thường,
+                // chỉ bỏ qua exception này (gặp ở log thật ngày 17/11/2026).
+                _log.Info("Tray: menu đang đóng dở, bỏ qua lần đóng thứ hai.");
+            }
         };
         PreviewKeyDown += (_, e) =>
         {
