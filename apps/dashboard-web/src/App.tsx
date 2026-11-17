@@ -7,6 +7,8 @@ import TodayPage from './pages/TodayPage'
 import DevicesPage from './pages/DevicesPage'
 import RulesPage from './pages/RulesPage'
 import RequestsPage from './pages/RequestsPage'
+import ProfilesPage from './pages/ProfilesPage'
+import ProfilePage from './pages/ProfilePage'
 
 /**
  * Bảo vệ các trang bên trong:
@@ -42,6 +44,8 @@ export default function App() {
       >
         <Route path="/" element={<Navigate to="/hom-nay" replace />} />
         <Route path="/hom-nay" element={<TodayPage />} />
+        <Route path="/ho-so" element={<ProfilesPage />} />
+        <Route path="/ho-so/:childId/:tab?" element={<ProfilePage />} />
         <Route path="/thiet-bi" element={<DevicesPage />} />
         <Route path="/quy-tac" element={<RulesPage />} />
         <Route path="/yeu-cau" element={<RequestsPage />} />
