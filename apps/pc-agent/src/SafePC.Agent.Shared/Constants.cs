@@ -105,4 +105,7 @@ public static class StateKeys
 
     /// <summary>Thời điểm hết khóa nhập PIN (ISO-8601 UTC) sau khi sai quá số lần cho phép. Vắng mặt = không bị khóa.</summary>
     public const string PinLockoutUntil = "pin_lockout_until";
+
+    /// <summary>Hash của mã PIN vừa được dùng đúng để thoát Tray (mã PIN chỉ dùng một lần): Service giữ lại để thử xóa hash trên server cho tới khi server xác nhận đã gỡ. So sánh theo giá trị hash để không xóa nhầm mã PIN mới phụ huynh đặt sau đó.</summary>
+    public const string PinConsumedHash = "pin_consumed_hash";
 }

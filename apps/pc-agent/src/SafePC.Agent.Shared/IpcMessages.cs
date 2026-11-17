@@ -93,7 +93,8 @@ public sealed record ForegroundChangedPayload(string AppName, string? ExeName, s
 public sealed record WarningPayload(int MinutesLeft, string Reason);
 
 /// <summary>Payload của <see cref="IpcMessageTypes.Lock"/>.</summary>
-public sealed record LockPayload(string Reason);
+/// <summary>Lệnh khóa: Tray hiện màn hình khóa toàn màn hình. <c>Immediate</c> = true khi lệnh khóa tới sau khi độ trễ cảnh báo đã hết — con đã có thời gian lưu bài trong lúc chờ nên màn hình khóa không đếm ngược 60 giây nữa mà khóa phiên ngay (yêu cầu test máy thật 17/11/2026). Mặc định false để JSON cũ (không có trường này) vẫn hiểu là khóa có đếm ngược như trước.</summary>
+public sealed record LockPayload(string Reason, bool Immediate = false);
 
 /// <summary>Payload của <see cref="IpcMessageTypes.ExtraTimeRequest"/>.</summary>
 public sealed record ExtraTimeRequestPayload(int Minutes, string Reason, DateTimeOffset RequestedAt);
