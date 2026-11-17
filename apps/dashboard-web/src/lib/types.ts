@@ -76,6 +76,10 @@ export interface Rule {
   child_id: string
   type: RuleType
   config: Record<string, unknown>
+  // Tên do phụ huynh đặt (thêm ở migration 9). Truy vấn best-effort
+  // riêng — chưa áp dụng migration 9 thì trường này vắng mặt, hiển thị
+  // tên tự sinh từ loại quy tắc.
+  name?: string | null
   enabled: boolean
   created_at: string
 }
