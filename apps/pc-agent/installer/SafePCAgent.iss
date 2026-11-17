@@ -13,7 +13,9 @@
 ; - TODO Sprint 4: gỡ cài đặt yêu cầu mã PIN phụ huynh (hiện gỡ bình thường
 ;   bằng quyền Admin, vì Standard User không gỡ được app cài All Users).
 
+#ifndef AppVersion
 #define AppVersion "0.1.0"
+#endif
 
 [Setup]
 AppName=SafePC Agent
