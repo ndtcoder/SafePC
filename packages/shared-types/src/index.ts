@@ -82,6 +82,8 @@ export interface Device {
   enforcement_json?: EnforcementSnapshot | Record<string, unknown> | string | null;
   /** Thời điểm Agent ghi enforcement_json gần nhất (thêm ở migration 6). */
   enforcement_updated_at?: string | null;
+  /** Hash PBKDF2 của mã PIN thoát Tray (thêm ở migration 7). */
+  exit_pin_hash?: string | null;
   status: DeviceStatus;
   created_at: string;
 }
@@ -429,6 +431,10 @@ export interface RequestItem {
   decided_by: string | null;
   decided_at: string | null;
   created_at: string;
+  /** Số phút con xin thêm (thêm ở migration 7). */
+  minutes?: number | null;
+  /** Máy đã gửi yêu cầu (thêm ở migration 7). */
+  device_id?: string | null;
 }
 
 // ---------------------------------------------------------------------------
