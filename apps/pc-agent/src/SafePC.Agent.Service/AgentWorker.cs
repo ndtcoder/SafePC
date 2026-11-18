@@ -60,6 +60,10 @@ public sealed class AgentWorker : BackgroundService
     private readonly ForegroundState _foregroundState;
     private readonly TrayQueryState _queryState;
 
+    // Chống spam yêu cầu xin mở domain: domain đã gửi thành công thì không
+    // gửi lại trong 5 phút (xem DomainRequestThrottle).
+    private readonly DomainRequestThrottle _unblockDomainThrottle = new();
+
     // Denylist kill (tên đã chuẩn hóa bằng ExeNames, so khớp không phân biệt
     // hoa thường): tiến trình hệ thống + chính các exe của SafePC — không bao
     // giờ đóng, kể cả khi quy tắc của phụ huynh ghi nhầm tên.
@@ -439,6 +443,11 @@ public sealed class AgentWorker : BackgroundService
                 // outbox) lên bảng requests — cùng chu kỳ poll 15s để phụ
                 // huynh thấy yêu cầu gần như ngay khi con gửi.
                 await FlushExtraTimeRequestsAsync(ct);
+
+                // Đẩy các yêu cầu xin mở domain con đã gửi từ nút trên trang
+                // chặn của extension (NativeHost ghi vào domain_requests.jsonl)
+                // lên bảng requests — cùng chu kỳ poll 15s.
+                await FlushDomainRequestsAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -504,6 +513,224 @@ public sealed class AgentWorker : BackgroundService
             {
                 await _outbox.MarkFailedAsync(item.Id, ct);
             }
+        }
+    }
+
+    /// <summary>Trần kích thước file domain_requests.jsonl: vượt trần thì bỏ dòng cũ nhất.</summary>
+    private const int DomainRequestsMaxBytes = 1024 * 1024;
+
+    /// <summary>
+    /// Đẩy yêu cầu xin mở domain lên server từ file JSONL do NativeHost ghi
+    /// (<c>%ProgramData%\SafePC\shared\domain_requests.jsonl</c>, message
+    /// <c>requestUnblock</c> từ nút trên trang chặn của extension 0.1.9). Mỗi
+    /// dòng là một JSON {"domain","requestedAt?"} — chỉ tên miền, không
+    /// URL/path/query. Dòng gửi thành công, dòng trùng trong đợt, dòng bị
+    /// throttle và dòng hỏng đều được tiêu thụ; dòng gửi lỗi (mất mạng, RPC
+    /// chưa có) được giữ lại để chu kỳ sau gửi lại. Dòng dở cuối file
+    /// (NativeHost đang ghi dở, chưa có newline) không được tiêu thụ. Mỗi
+    /// dòng xử lý độc lập, lỗi một dòng không chặn các dòng sau và không
+    /// làm chết vòng poll lệnh.
+    /// </summary>
+    private async Task FlushDomainRequestsAsync(CancellationToken ct)
+    {
+        string path = DomainRulesPublisher.DomainRequestsFilePath;
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        byte[] snapshot;
+        try
+        {
+            await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var memory = new MemoryStream();
+            await stream.CopyToAsync(memory, ct);
+            snapshot = memory.ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("Không đọc được file domain_requests.jsonl, để lại chu kỳ sau.", ex);
+            return;
+        }
+
+        if (snapshot.Length == 0)
+        {
+            return;
+        }
+
+        // Chỉ tiêu thụ tới cuối dòng hoàn chỉnh cuối cùng: phần cuối chưa có
+        // '\n' có thể là dòng NativeHost đang ghi dở — để lại chu kỳ sau.
+        int consumedLength = LastNewlineOffset(snapshot) + 1;
+        if (consumedLength == 0)
+        {
+            // File chỉ có một dòng dở không có newline. Nếu đã vượt trần 1MB
+            // thì dòng đó là rác: cắt cả file để không kẹt mãi.
+            if (snapshot.Length > DomainRequestsMaxBytes)
+            {
+                _log.Warning("File domain_requests.jsonl vượt 1MB mà không có dòng hoàn chỉnh nào, cắt bỏ.");
+                // Cắt cả file: vị trí tiêu thụ = toàn bộ snapshot (không có
+                // dòng hoàn chỉnh nào để giữ, phần sau cũng rỗng).
+                await RewriteDomainRequestsFileAsync(path, Array.Empty<byte>(), snapshot.Length, ct);
+            }
+
+            return;
+        }
+
+        List<string> lines = SplitCompleteLines(snapshot, consumedLength);
+
+        // Trần 1MB: bỏ các dòng cũ nhất (mất yêu cầu cũ, có log cảnh báo) để
+        // file không phình vô hạn khi mất mạng dài ngày.
+        int droppedForCap = 0;
+        int bytesEstimate = lines.Sum(line => Encoding.UTF8.GetByteCount(line) + 1);
+        while (lines.Count > 0 && bytesEstimate > DomainRequestsMaxBytes)
+        {
+            bytesEstimate -= Encoding.UTF8.GetByteCount(lines[0]) + 1;
+            lines.RemoveAt(0);
+            droppedForCap++;
+        }
+
+        if (droppedForCap > 0)
+        {
+            _log.Warning("File domain_requests.jsonl vượt 1MB, đã bỏ " + droppedForCap + " dòng cũ nhất.");
+        }
+
+        var failedLines = new List<string>();
+        var seenInBatch = new HashSet<string>(StringComparer.Ordinal);
+        int invalid = 0;
+        int throttled = 0;
+        int sent = 0;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        foreach (string line in lines)
+        {
+            string? domain = DomainRequestLine.TryParseDomain(line);
+            if (domain is null)
+            {
+                invalid++;
+                continue;
+            }
+
+            // Trùng trong cùng đợt (con bấm nút nhiều lần trước một chu kỳ
+            // poll): chỉ gửi một lần, các dòng trùng được tiêu thụ luôn vì
+            // RPC cũng chống trùng theo yêu cầu pending.
+            if (!seenInBatch.Add(domain))
+            {
+                continue;
+            }
+
+            if (!_unblockDomainThrottle.ShouldSend(domain, now))
+            {
+                throttled++;
+                continue;
+            }
+
+            bool ok;
+            try
+            {
+                ok = await _api.PushUnblockDomainRequestAsync(domain, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Đẩy yêu cầu xin mở domain lỗi.", ex);
+                ok = false;
+            }
+
+            if (ok)
+            {
+                _unblockDomainThrottle.RecordSent(domain, now);
+                sent++;
+                _log.Info("Đã đẩy yêu cầu xin mở domain lên server để phụ huynh duyệt: " + domain + ".");
+            }
+            else
+            {
+                // Giữ nguyên dòng gốc để chu kỳ sau gửi lại.
+                failedLines.Add(line);
+            }
+        }
+
+        if (invalid > 0)
+        {
+            _log.Warning("Bỏ qua " + invalid + " dòng domain_requests.jsonl không hợp lệ.");
+        }
+
+        if (throttled > 0)
+        {
+            _log.Info("Bỏ qua " + throttled + " yêu cầu xin mở domain trong cửa sổ throttle 5 phút.");
+        }
+
+        if (failedLines.Count > 0)
+        {
+            _log.Warning("Gửi yêu cầu xin mở domain lỗi, giữ " + failedLines.Count + " dòng lại để chu kỳ sau gửi lại.");
+        }
+
+        // Viết lại file: các dòng gửi lỗi + phần sau vị trí đã tiêu thụ (dòng
+        // dở cuối snapshot + dòng NativeHost ghi thêm trong lúc gửi). Không
+        // dòng lỗi thì phần giữ lại rỗng, tức cắt đúng phần đã tiêu thụ.
+        byte[] keepPrefix = failedLines.Count == 0
+            ? Array.Empty<byte>()
+            : Encoding.UTF8.GetBytes(string.Join('\n', failedLines) + '\n');
+        await RewriteDomainRequestsFileAsync(path, keepPrefix, consumedLength, ct);
+        if (sent > 0)
+        {
+            _log.Info("Đã gửi yêu cầu xin mở domain lên server: " + sent + " yêu cầu.");
+        }
+    }
+
+    /// <summary>
+    /// Viết lại file domain_requests.jsonl gồm phần giữ lại (dòng gửi lỗi)
+    /// + phần sau vị trí đã tiêu thụ trong lần đọc mới nhất (dòng dở cuối
+    /// snapshot + dòng NativeHost ghi thêm trong lúc gửi). Vẫn còn một cửa
+    /// sổ đua hẹp nếu NativeHost ghi thêm đúng lúc cắt file — yêu cầu là
+    /// best-effort (con bấm lại được, RPC chống trùng) nên chấp nhận, cùng
+    /// lý do như file web_usage.jsonl.
+    /// </summary>
+    private async Task RewriteDomainRequestsFileAsync(string path, byte[] keepPrefix, int consumedLength, CancellationToken ct)
+    {
+        byte[] suffix;
+        try
+        {
+            await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (stream.Length <= consumedLength)
+            {
+                suffix = Array.Empty<byte>();
+            }
+            else
+            {
+                suffix = new byte[stream.Length - consumedLength];
+                stream.Seek(consumedLength, SeekOrigin.Begin);
+                int read = 0;
+                while (read < suffix.Length)
+                {
+                    int n = await stream.ReadAsync(suffix.AsMemory(read), ct);
+                    if (n == 0)
+                    {
+                        break;
+                    }
+
+                    read += n;
+                }
+
+                if (read < suffix.Length)
+                {
+                    Array.Resize(ref suffix, read);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("Không đọc được phần còn lại của domain_requests.jsonl sau khi gửi, giữ nguyên file.", ex);
+            return;
+        }
+
+        try
+        {
+            await using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            await stream.WriteAsync(keepPrefix, ct);
+            await stream.WriteAsync(suffix, ct);
+            await stream.FlushAsync(ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("Không cắt được file domain_requests.jsonl sau khi gửi.", ex);
         }
     }
 

@@ -404,6 +404,37 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Đẩy một yêu cầu xin mở domain của con lên bảng <c>requests</c>
+    /// (migration 18, RPC <c>safepc_push_unblock_domain_request</c>). Chỉ
+    /// tên miền, không URL/path/query. Trả về true khi server trả về id yêu
+    /// cầu — kể cả khi RPC trả về yêu cầu pending đã có (chống trùng phía
+    /// server), vì yêu cầu đã nằm trên server để phụ huynh duyệt. Lỗi
+    /// mạng/server đều trả false để AgentWorker giữ dòng trong file và thử
+    /// lại chu kỳ sau.
+    /// </summary>
+    public async Task<bool> PushUnblockDomainRequestAsync(string domain, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(domain);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? notReadyReason))
+        {
+            LogThrottled("not-ready", "Gửi yêu cầu xin mở domain bỏ qua: " + notReadyReason + ".");
+            return false;
+        }
+
+        JsonElement? result = await PostRpcAsync<JsonElement>(
+            "safepc_push_unblock_domain_request",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_domain = domain,
+            },
+            ct);
+        return result.HasValue;
+    }
+
+    /// <summary>
     /// Gỡ mã PIN thoát khỏi server sau khi mã đã dùng đúng một lần (migration
     /// 8, RPC <c>safepc_clear_exit_pin</c>): đặt <c>devices.exit_pin_hash</c>
     /// về NULL, nhưng CHỈ khi hash trên server đúng bằng

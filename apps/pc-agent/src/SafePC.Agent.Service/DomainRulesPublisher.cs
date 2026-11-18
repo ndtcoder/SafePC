@@ -59,6 +59,9 @@ public sealed class DomainRulesPublisher
     /// <summary>File JSONL NativeHost ghi lượt thăm web vào, Service đọc lên server.</summary>
     public static string WebUsageFilePath => Path.Combine(SharedDirectory, "web_usage.jsonl");
 
+    /// <summary>File JSONL NativeHost ghi yêu cầu xin mở domain vào (extension 0.1.9), Service đọc trong chu kỳ poll lệnh.</summary>
+    public static string DomainRequestsFilePath => Path.Combine(SharedDirectory, "domain_requests.jsonl");
+
     /// <summary>File NativeHost ghi đè mỗi khi extension liên hệ (chỉ chứa timestamp UTC ISO), Service đọc để báo extension còn sống.</summary>
     public static string ExtensionHeartbeatFilePath => Path.Combine(SharedDirectory, "extension_heartbeat.txt");
 
