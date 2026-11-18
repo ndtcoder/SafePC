@@ -8,7 +8,7 @@ namespace SafePC.Agent.Service;
 /// Lệnh ghép nối chạy một lần từ dòng lệnh (bắt buộc quyền Admin):
 ///   SafePC.Agent.Service.exe pair 123456 [--force]
 ///
-/// Đổi mã 6 số (phụ huynh tạo trên Dashboard, hiệu lực 10 phút) lấy device
+/// Đổi mã 6 số (phụ huynh tạo trên Dashboard, hiệu lực 5 phút) lấy device
 /// token qua RPC, rồi lưu (device_id, token) mã hóa DPAPI xuống
 /// %ProgramData%\SafePC. Service đang chạy tự nhận thông tin ghép nối mới
 /// trong vòng 1 phút (SupabaseApiClient đọc token ở mỗi lần gọi) nên không
@@ -63,7 +63,7 @@ public static class PairingCli
         if (code is null || code.Length != 6 || !code.All(char.IsDigit))
         {
             Print("Cách dùng: SafePC.Agent.Service.exe pair <mã 6 số> [--force]");
-            Print("Mã 6 số do phụ huynh tạo trên Dashboard (mục Thiết bị > Ghép nối máy mới), hiệu lực 10 phút.");
+            Print("Mã 6 số do phụ huynh tạo trên Dashboard (mục Thiết bị > Ghép nối máy mới), hiệu lực 5 phút.");
             Print("Chạy lệnh này trong PowerShell/Terminal với quyền Administrator.");
             return 1;
         }
@@ -101,7 +101,7 @@ public static class PairingCli
 
         if (result is null)
         {
-            Print("Ghép nối thất bại. Kiểm tra: mã còn hạn (10 phút), mã gõ đúng, máy có mạng.");
+            Print("Ghép nối thất bại. Kiểm tra: mã còn hạn (5 phút), mã gõ đúng, máy có mạng.");
             Print("Chi tiết xem file log: " + logPath);
             return 3;
         }
