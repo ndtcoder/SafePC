@@ -15,6 +15,7 @@ import {
   secondaryButtonClassName,
 } from '../components/ui'
 import FamilyInviteSection from '../components/FamilyInviteSection'
+import MfaSection from '../components/MfaSection'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -111,6 +112,9 @@ export default function ProfilesPage() {
         <div className="mt-6">
           <FamilyInviteSection />
         </div>
+        <div className="mt-6">
+          <MfaSection />
+        </div>
       </div>
     )
   }
@@ -184,6 +188,9 @@ export default function ProfilesPage() {
       </div>
       <div className="mt-6">
         <FamilyInviteSection />
+      </div>
+      <div className="mt-6">
+        <MfaSection />
       </div>
     </div>
   )
