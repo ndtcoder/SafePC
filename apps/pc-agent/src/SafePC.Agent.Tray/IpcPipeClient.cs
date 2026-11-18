@@ -335,7 +335,12 @@ public sealed class IpcPipeClient : IDisposable
     /// nối. Chờ khóa ghi tối đa 5 giây: quá hạn thì bỏ message đó chứ không
     /// chặn sampler/UI thread vô hạn.
     /// </summary>
-    public async Task SendAsync(IpcMessage message)
+    /// <returns>True khi đã ghi + flush thành công; false khi chưa kết nối,
+    /// chờ khóa ghi quá hạn, hoặc ghi lỗi — nơi gọi dùng giá trị này để
+    /// quyết định có thử lại không (xem ForegroundSampler: báo cáo
+    /// foreground-changed bị rớt phải được gửi lại ở mẫu sau, không được
+    /// coi như đã gửi).</returns>
+    public async Task<bool> SendAsync(IpcMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -358,7 +363,7 @@ public sealed class IpcPipeClient : IDisposable
                 _log.Warning("IPC: [client #" + GetHashCode() + "] chưa kết nối tới Service, bỏ qua message " + message.Type + ".");
             }
 
-            return;
+            return false;
         }
 
         // Không kiểm tra _pipe.IsConnected (xem ghi chú ở đầu file): cứ ghi,
@@ -368,17 +373,19 @@ public sealed class IpcPipeClient : IDisposable
         if (!entered)
         {
             _log.Warning("IPC: chờ khóa ghi quá 5 giây, bỏ qua message " + message.Type + " (không chặn sampler).");
-            return;
+            return false;
         }
 
         try
         {
             await writer.WriteLineAsync(message.ToLine()).ConfigureAwait(false);
             await writer.FlushAsync().ConfigureAwait(false);
+            return true;
         }
         catch (Exception ex)
         {
             _log.Error("IPC: không gửi được message tới Service.", ex);
+            return false;
         }
         finally
         {
