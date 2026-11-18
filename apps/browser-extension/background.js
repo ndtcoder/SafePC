@@ -12,6 +12,15 @@
 // URL, path, query, tiêu đề trang hay nội dung. Hostname lấy từ tab.url rồi
 // bỏ URL ngay (xem domainUtils.js).
 //
+// Tab watcher (0.1.5): DNR không thấy điều hướng trong trang (SPA đổi URL
+// bằng history.pushState, ví dụ bấm từ trang chủ YouTube vào Shorts) hay
+// trang đang hiển thị từ bộ nhớ đệm, nên background.js nghe
+// chrome.tabs.onUpdated và đánh giá lại mọi tab sau mỗi lần rebuild rule,
+// chuyển tab thuộc diện chặn sang trang chặn. Watcher chỉ đánh giá URL
+// trong bộ nhớ (không gửi/lưu/log full URL, path, query) và chỉ thi hành
+// tập con vô điều kiện (chặn domain, mẫu URL, chặn tạm thời, trừ cho phép
+// tạm thời) — xem isTabUrlBlocked.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -675,6 +684,11 @@ async function rebuildDynamicRules() {
   } catch (storeError) {
     console.warn("[SafePC] Không lưu được chẩn đoán DNR:", storeError);
   }
+
+  // Tab watcher (0.1.5): rule vừa áp thành công thì đánh giá lại mọi tab
+  // đang mở để lật trang từ bộ nhớ đệm sang trang chặn. Chỉ chạy khi cả
+  // hai nhóm rule đã áp được (error === null); fire-and-forget, không throw.
+  if (error === null) void sweepOpenTabs();
 }
 
 async function refreshRulesAndRebuild() {
@@ -682,6 +696,217 @@ async function refreshRulesAndRebuild() {
   // Dù fetch thất bại vẫn rebuild từ rules cũ: khung giờ/ngân sách/ghi đè
   // tạm thời được đánh giá lại theo thời gian hiện tại.
   await rebuildDynamicRules();
+}
+
+// ---------------------------------------------------------------------------
+// Tab watcher (0.1.5): lưới dự phòng cho DNR.
+//
+// DNR chỉ đánh giá request mạng. Hai trường hợp DNR không bao giờ thấy:
+//  (1) tab đang mở hiển thị trang từ bộ nhớ đệm (đệm HTTP / service worker /
+//      trang tải trước): không có request main_frame mới nên trang cũ vẫn
+//      hiện dù rule đã đổi;
+//  (2) điều hướng trong trang (SPA đổi URL bằng history.pushState, ví dụ
+//      bấm từ trang chủ YouTube vào Shorts): URL đổi nhưng không có request
+//      main_frame mới nên rule đường dẫn không chặn được.
+// Watcher lấp hai lỗ này: nghe chrome.tabs.onUpdated (changeInfo.url xuất
+// hiện cả khi pushState) và đánh giá lại mọi tab sau mỗi lần rebuild rule
+// thành công; tab nào thuộc diện chặn thì chuyển sang trang chặn bằng
+// chrome.tabs.update.
+//
+// CHỈ thi hành tập con vô điều kiện (xem isTabUrlBlocked): chặn domain,
+// mẫu URL, chặn tạm thời — trừ cho phép tạm thời. Chặn theo giờ, giới hạn
+// thời gian, focus, allowlist KHÔNG thi hành ở đây: chúng phụ thuộc thời
+// gian/ngữ cảnh mà DNR đã lo ở request mới; watcher chỉ là lưới dự phòng,
+// không được đoán sai và chặn nhầm trang được phép.
+// ---------------------------------------------------------------------------
+
+// Làm tươi rule khi điều hướng: alarm 1 phút có thể bị trình duyệt trì hoãn
+// (đã thấy giờ đồng bộ cũ hơn 3 phút trên máy thật), nên mỗi lần tab đổi URL
+// thì làm tươi rule nếu lần fetch thành công gần nhất đã quá 15 giây.
+// Throttle này tránh spawn NativeHost liên tục khi đổi tab nhanh; alarm 1
+// phút vẫn là dự phòng. lastSyncAt chỉ được fetchRules cập nhật khi fetch
+// thành công nên mốc này đo đúng "lần fetch thành công gần nhất".
+const NAVIGATION_REFRESH_MIN_INTERVAL_MS = 15000;
+let navigationRefreshPromise = null;
+
+async function maybeRefreshRulesForNavigation() {
+  const lastOkMs = lastSyncAt ? Date.parse(lastSyncAt) : Number.NaN;
+  if (!Number.isNaN(lastOkMs) && Date.now() - lastOkMs <= NAVIGATION_REFRESH_MIN_INTERVAL_MS) {
+    return;
+  }
+  // Đang có lần làm tươi chạy dở (điều hướng dồn dập): chờ nó thay vì spawn
+  // thêm NativeHost. Lỗi thì bỏ qua, dùng rules cũ.
+  if (navigationRefreshPromise) {
+    try {
+      await navigationRefreshPromise;
+    } catch {
+      // Dùng rules cũ, lần điều hướng sau thử lại.
+    }
+    return;
+  }
+  navigationRefreshPromise = (async () => {
+    try {
+      await fetchRules();
+    } catch (error) {
+      console.warn("[SafePC] Làm tươi rule khi điều hướng lỗi:", error);
+    }
+  })();
+  try {
+    await navigationRefreshPromise;
+  } finally {
+    navigationRefreshPromise = null;
+  }
+}
+
+// Quyết định watcher có phải chặn URL này không. Trả về chuỗi lý do DNR
+// ("blocked" | "tempblock") khi phải chặn, null khi không chặn. Hàm thuần
+// (không chạm chrome.*) để kiểm thử được ngoài trình duyệt.
+//
+// TẬP CON THI HÀNH — khớp đúng ngữ nghĩa DNR cho tập con này, theo thang
+// ưu tiên đã khóa ở PRIORITY:
+//   1. tempBlock chưa hết hạn thắng mọi thứ trong tập con (ưu tiên 100,
+//      cao hơn cả cho phép tạm thời 57) -> lý do "tempblock".
+//   2. tempAllow chưa hết hạn thắng chặn domain/mẫu URL (ưu tiên 57 > 30)
+//      -> không chặn. (Trong giờ tập trung, DNR không dựng rule tempAllow;
+//      watcher không đánh giá focus nên trường hợp đó DNR vẫn chặn ở
+//      request mới — watcher chỉ bỏ qua, không mở thêm gì.)
+//   3. Hostname thuộc `blocked` (ngữ nghĩa requestDomains: domain + mọi
+//      tên miền con) -> lý do "blocked".
+//   4. URL khớp một mẫu trong `urlPatterns`, dùng ĐÚNG regex mà DNR dùng
+//      (buildUrlPatternRegex) -> lý do "blocked".
+// KHÔNG thi hành: chặn theo giờ, giới hạn thời gian, focus, allowlist.
+// Guard: chỉ URL http/https có hostname; mọi URL khác (chrome://,
+// chrome-extension://, edge://, about:, file://, URL hỏng) đều bỏ qua.
+// Không bao giờ throw: dữ liệu lạ -> fail-open (null).
+function isTabUrlBlocked(url, rules, now) {
+  if (typeof url !== "string" || url.length === 0) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  const hostname = parsed.hostname.toLowerCase();
+  if (!hostname) return null;
+  if (!rules || typeof rules !== "object") return null;
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+
+  const tempBlocked = unexpiredTempDomains(rules.tempBlock, nowMs);
+  for (const domain of tempBlocked) {
+    if (domainMatches(hostname, domain)) return "tempblock";
+  }
+
+  const tempAllowed = unexpiredTempDomains(rules.tempAllow, nowMs);
+  for (const domain of tempAllowed) {
+    if (domainMatches(hostname, domain)) return null;
+  }
+
+  const blocked = normalizeDomainSet(rules.blocked);
+  for (const domain of blocked) {
+    if (domainMatches(hostname, domain)) return "blocked";
+  }
+
+  const rawPatterns = Array.isArray(rules.urlPatterns) ? rules.urlPatterns : [];
+  for (const pattern of rawPatterns) {
+    const filter = buildUrlPatternRegex(pattern);
+    if (!filter) continue;
+    try {
+      if (new RegExp(filter).test(url)) return "blocked";
+    } catch {
+      // Regex do builder sinh ra không thể hỏng; phòng thủ, bỏ qua mẫu này.
+      continue;
+    }
+  }
+  return null;
+}
+
+// Chống lặp chuyển hướng: không chuyển cùng một tab tới cùng một URL đích
+// 2 lần trong 5 giây. Bình thường sau khi chuyển, URL tab thành
+// chrome-extension://... nên không khớp nữa; throttle này phòng trường hợp
+// tabs.update lỗi rồi watcher thử lại liên tục. Ghi dấu cả khi chuyển lỗi
+// để lần thử lại cũng bị chặn trong cửa sổ throttle.
+const WATCHER_REDIRECT_THROTTLE_MS = 5000;
+const watcherRedirectThrottle = new Map();
+
+function watcherRedirectAllowed(tabId, target) {
+  const key = tabId + "\n" + target;
+  const nowMs = Date.now();
+  const last = watcherRedirectThrottle.get(key);
+  if (last !== undefined && nowMs - last < WATCHER_REDIRECT_THROTTLE_MS) return false;
+  watcherRedirectThrottle.set(key, nowMs);
+  if (watcherRedirectThrottle.size > 200) {
+    for (const [oldKey, oldMs] of watcherRedirectThrottle) {
+      if (nowMs - oldMs >= WATCHER_REDIRECT_THROTTLE_MS) watcherRedirectThrottle.delete(oldKey);
+    }
+  }
+  return true;
+}
+
+// Đánh giá tab và chuyển sang trang chặn nếu thuộc diện chặn. candidateUrl
+// là URL quan sát được (từ sự kiện hoặc từ tabs.query); trước khi chuyển,
+// đọc lại URL hiện tại của tab để không hành động trên URL đã cũ (tab có
+// thể đã điều hướng đi nơi khác trong lúc chờ làm tươi rule). Mọi lỗi tabs
+// API bắt tại chỗ, không throw. Log chỉ ghi tab id + hostname + lý do,
+// không bao giờ ghi full URL.
+async function redirectTabIfBlocked(tabId, candidateUrl) {
+  let liveUrl = candidateUrl;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    // Không xác minh được URL hiện tại thì fail-open: lần sweep/sự kiện
+    // sau sẽ đánh giá lại, thay vì hành động trên URL có thể đã cũ.
+    if (!tab || typeof tab.url !== "string") return;
+    liveUrl = tab.url;
+  } catch {
+    return; // Tab đã đóng trước khi đọc được.
+  }
+  const reason = isTabUrlBlocked(liveUrl, currentRules, new Date());
+  if (!reason) return;
+  const target = chrome.runtime.getURL("blocked.html?reason=" + reason);
+  if (liveUrl === target) return;
+  if (!watcherRedirectAllowed(tabId, target)) return;
+  try {
+    await chrome.tabs.update(tabId, { url: target });
+    const hostname = hostnameFromUrl(liveUrl);
+    console.warn(
+      "[SafePC] Tab watcher: đã chuyển tab #" +
+        tabId +
+        " (" +
+        (hostname || "?") +
+        ") sang trang chặn (lý do: " +
+        reason +
+        ").",
+    );
+  } catch (error) {
+    console.warn("[SafePC] Tab watcher: không chuyển được tab #" + tabId + ":", error);
+  }
+}
+
+async function handleTabUrlChange(tabId, eventUrl) {
+  try {
+    await maybeRefreshRulesForNavigation();
+    await redirectTabIfBlocked(tabId, eventUrl);
+  } catch (error) {
+    console.warn("[SafePC] Tab watcher lỗi:", error);
+  }
+}
+
+// Đánh giá lại mọi tab đang mở sau mỗi lần rebuild rule thành công: tab
+// nào đang hiển thị trang từ bộ nhớ đệm mà nay thuộc diện chặn sẽ bị lật
+// sang trang chặn. Không throw.
+async function sweepOpenTabs() {
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (error) {
+    console.warn("[SafePC] Tab watcher: không đọc được danh sách tab:", error);
+    return;
+  }
+  if (!Array.isArray(tabs)) return;
+  for (const tab of tabs) {
+    if (!tab || !Number.isInteger(tab.id) || typeof tab.url !== "string") continue;
+    await redirectTabIfBlocked(tab.id, tab.url);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -867,6 +1092,15 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   activeTabId = tabId;
   activeHostname = hostnameFromUrl(changeInfo.url);
   activeSince = nowMs;
+});
+
+// Tab watcher (0.1.5) — listener RIÊNG với listener đếm usage ở trên: mọi
+// tab (không chỉ tab đang hiển thị), chỉ khi changeInfo.url xuất hiện (bao
+// gồm điều hướng pushState của SPA). Không chạy khi chỉ đổi trạng thái,
+// title hay favicon.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (typeof changeInfo.url !== "string") return;
+  void handleTabUrlChange(tabId, changeInfo.url);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
