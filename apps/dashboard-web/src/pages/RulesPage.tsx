@@ -53,6 +53,8 @@ import {
   parseDomainsInput,
   parseTimeWindowConfig,
   parseWebsiteConfig,
+  parseWebsiteEntriesInput,
+  rejectUrlPatternsError,
   timeWindowConfigToDraft,
   timeWindowDraftToConfig,
   validateAllowlistByTimeDraft,
@@ -67,7 +69,7 @@ import {
   validateFocusDraft,
   validateForcedBreakDraft,
   validateTimeWindowDraft,
-  validateWebsiteDomainsText,
+  validateWebsiteEntriesText,
   websiteConfigToAllowlistByTimeDraft,
   websiteConfigToBlockByTimeDraft,
   websiteConfigToDomainsDraft,
@@ -780,6 +782,19 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       setActionError(parsedDomains.error)
       return
     }
+    // Ghi đè tạm thời chỉ làm việc với toàn bộ domain (đợt 4): ô nhập
+    // dùng chung với form quy tắc nên có thể mang mục đường dẫn
+    // ("bing.com/videos"); từ chối rõ ràng thay vì lặng lẽ cắt thành
+    // domain và chặn/cho phép cả domain.
+    if (formType === 'website') {
+      const splitEntries = parseWebsiteEntriesInput(websiteDomainsDraft.domainsText)
+      if (splitEntries.urlPatterns.length > 0) {
+        setActionError(
+          'Ghi đè tạm thời chỉ áp dụng cho toàn bộ domain, chưa hỗ trợ theo đường dẫn. Hãy bỏ các mục có dấu / (ví dụ: bing.com/videos) rồi gửi lại, hoặc tạo quy tắc chặn theo đường dẫn.',
+        )
+        return
+      }
+    }
     const appValidationError = formType === 'app' ? validateAppListDraft(appListDraft) : null
     if (appValidationError) {
       setActionError(appValidationError)
@@ -923,16 +938,22 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
           websiteListKind,
           websiteTimeKind === 'by_time' ? 'by_time' : 'always',
         )
-        if (mode === 'block_domains' || mode === 'allowlist') {
-          const validationError = validateWebsiteDomainsText(websiteDomainsDraft.domainsText)
+        if (mode === 'block_domains') {
+          const validationError = validateWebsiteEntriesText(websiteDomainsDraft.domainsText)
           if (validationError) {
             setActionError(validationError)
             return
           }
-          config =
-            mode === 'block_domains'
-              ? buildBlockDomainsConfig(websiteDomainsDraft.domainsText)
-              : buildAllowlistConfig(websiteDomainsDraft.domainsText)
+          config = buildBlockDomainsConfig(websiteDomainsDraft.domainsText)
+        } else if (mode === 'allowlist') {
+          // Allowlist chưa thi hành đường dẫn: từ chối mục có dấu / thay vì
+          // lưu lặng lẽ rồi không chặn (đợt 4 chỉ thi hành ở block_domains).
+          const validationError = rejectUrlPatternsError(websiteDomainsDraft.domainsText)
+          if (validationError) {
+            setActionError(validationError)
+            return
+          }
+          config = buildAllowlistConfig(websiteDomainsDraft.domainsText)
         } else if (mode === 'block_domains_by_time') {
           const validationError = validateBlockDomainsByTimeDraft(blockByTimeDraft)
           if (validationError) {
