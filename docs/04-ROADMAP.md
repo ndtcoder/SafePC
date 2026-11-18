@@ -30,13 +30,14 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 
 ### Đợt hiện tại — theo yêu cầu ngày 17/11/2026 🔨
 - [x] Khóa có độ trễ 0–5 phút + cửa sổ cảnh báo nhỏ + giao lệnh khóa theo phiên (đã kiểm chứng trên máy thật tối 17/11: độ trễ + cảnh báo nhỏ đúng, phiên admin miễn khóa qua đường Limited-token).
-- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (PIN một lần đã kiểm chứng trên máy thật tối 17/11; yêu cầu xin giờ + khóa nhập PIN đã thấy trong log máy thật; migration 8 chờ áp).
+- [x] PIN thoát Tray, xin thêm giờ đầu-cuối, xem giờ còn lại thật (PIN một lần đã kiểm chứng trên máy thật tối 17/11; yêu cầu xin giờ + khóa nhập PIN đã thấy trong log máy thật; migration 8 đã áp sáng 18/11).
 - [x] Đợt sửa theo 7 yêu cầu test máy thật 17/11: PIN chỉ dùng một lần, đồng bộ trạng thái khi Tray nối lại, duyệt xin giờ mở khóa luôn, lệnh khóa sau thắng ghi đè mở khóa trước, hết độ trễ khóa ngay không đếm ngược, hồ sơ theo con (Tổng quan / Hồ sơ / Yêu cầu), mã ghép nối 5 phút (CI xanh run #159, v0.1.159, chưa kiểm chứng trên máy thật).
 - [x] Đợt sửa sau test v0.1.159 (đêm 17→18/11): đồng bộ trạng thái khóa ngay không đếm ngược, snapshot thi hành gửi ngay khi đổi (bỏ chặn 5 phút), duyệt xin giờ = mở khóa đúng N phút, thẻ thiết bị nhất quán sau Khóa ngay (tải lại + nhận diện lock_now), installer nướng ID extension Edge thật, extension 0.1.1 (chẩn đoán DNR trong popup), thiết kế lại trang Quy tắc + tên rule + mẫu của phụ huynh + mẫu Chỉ cho phép Edge, migration 9 (CI xanh run #167: Tray 19/19, Service IPC 13/13; run #170: build-dashboard xanh; v0.1.167 chờ kiểm chứng trên máy thật).
-- [ ] Áp migration 8 (gỡ PIN đã dùng khỏi server) + migration 9 (tên rule + bảng rule_templates) lên Supabase.
-- [ ] Kiểm chứng v0.1.167 trên máy thật: duyệt giờ giữ mở đủ N phút; đăng nhập lại khi đang khóa thì khóa ngay không đếm ngược; thẻ thiết bị nhất quán; giao diện Quy tắc mới trên điện thoại thật.
-- [ ] Kiểm chứng chặn domain đầu-cuối với extension 0.1.1: reload extension từ zip mới, thử youtube.com ở TAB MỚI, đọc chẩn đoán popup (số domain đang chặn / số quy tắc đang áp / lỗi áp quy tắc).
-- [ ] Rule mẫu URL có đường dẫn (`bing.com/videos`) bên cạnh rule domain.
+- [x] Đợt 4 + đợt sửa retest (sáng 18/11): rule chặn theo đường dẫn URL (Dashboard tách domain/đường dẫn, chỉ mode block_domains; publisher xuất urlPatterns; extension 0.1.3 regexFilter với ranh giới đường dẫn), Khóa ngay độ trễ 0 + khóa tạm thời khóa ngay không đếm ngược, thẻ thiết bị ưu tiên trạng thái mở khóa (hết xung đột khóa/mở), snapshot thi hành đẩy ngay khi đổi từ vòng tick 15s (CI xanh run #183: Tray 19/19, Service IPC 13/13; v0.1.183 chờ kiểm chứng trên máy thật).
+- [x] Áp migration 8 (gỡ PIN đã dùng khỏi server) + migration 9 (tên rule + bảng rule_templates) lên Supabase (đã áp sáng 18/11; lệnh gỡ PIN chờ từ tối qua đã hoàn tất trên server).
+- [x] Kiểm chứng v0.1.167 trên máy thật (sáng 18/11): đăng nhập lại khi đang khóa thì khóa ngay không đếm ngược ✅; duyệt giờ mở ngay ✅ nhưng thẻ thiết bị xung đột khóa/mở; Khóa ngay độ trễ 0 vẫn đếm ngược — 2 lỗi đã sửa ở v0.1.183.
+- [x] Kiểm chứng chặn domain đầu-cuối với extension 0.1.2 (sáng 18/11): chặn được (YouTube hiện "You're offline"), popup hiện đúng version + domain + rule đang áp; trang chặn SafePC chưa hiện thay vỏ trang đệm. Chặn app / mẫu Chỉ cho phép Edge cũng đã kiểm chứng (Chrome bị đóng 2 lần + hộp cảnh báo).
+- [ ] Kiểm chứng v0.1.183 + extension 0.1.3 trên máy thật: rule bing.com/videos (chặn /videos, mở được /abc); Khóa ngay độ trễ 0 không đếm ngược; thẻ thiết bị hết xung đột khóa/mở; giao diện Quy tắc mới trên điện thoại thật.
 
 ### Sprint 4 — Cứng hóa + Beta gia đình ⏳
 - [ ] Tamper resistance: PIN gỡ cài đặt, watchdog, cảnh báo offline.
