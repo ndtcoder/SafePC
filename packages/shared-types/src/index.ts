@@ -273,10 +273,12 @@ export type AppRuleConfig =
 
 /**
  * Quy tắc website (Sprint 2 đợt 2): một dòng rule type='website' mang đúng
- * 1 chế độ (`mode`). Chỉ lưu domain (kể cả tên miền con), không lưu
- * path/query. Hình dạng cũ `{"domain","action"}` (1 domain) vẫn được
- * Dashboard đọc như `block_domains` (hoặc `allowlist` khi action là
- * "allow") để tương thích dữ liệu cũ; Dashboard chỉ ghi hình dạng mới này.
+ * 1 chế độ (`mode`). `domains` lưu tên miền (kể cả tên miền con);
+ * `urlPatterns` (đợt 4, tùy chọn) lưu các mục "host/path" chỉ khớp link
+ * bắt đầu bằng phần đó (vd "bing.com/videos"). Hình dạng cũ
+ * `{"domain","action"}` (1 domain) vẫn được Dashboard đọc như
+ * `block_domains` (hoặc `allowlist` khi action là "allow") để tương thích
+ * dữ liệu cũ; Dashboard chỉ ghi hình dạng mới này.
  */
 export type WebsiteMode =
   | "block_domains"
@@ -291,12 +293,16 @@ export type WebsiteMode =
 export interface BlockDomainsConfig {
   mode: "block_domains";
   domains: string[];
+  /** Đường dẫn chặn theo tiền tố (đợt 4): "host/path", vd "bing.com/videos". Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[];
 }
 
 /** Chặn các domain trong danh sách, chỉ trong các khung giờ theo thứ (giờ địa phương của máy con). */
 export interface BlockDomainsByTimeConfig {
   mode: "block_domains_by_time";
   domains: string[];
+  /** Đường dẫn chặn theo tiền tố (đợt 4), cùng khung giờ với `domains`. Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[];
   windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
 }
 
@@ -304,6 +310,8 @@ export interface BlockDomainsByTimeConfig {
 export interface AllowlistConfig {
   mode: "allowlist";
   domains: string[];
+  /** Đường dẫn cho phép theo tiền tố (đợt 4): "host/path". Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[];
 }
 
 /**
@@ -316,6 +324,8 @@ export interface AllowlistConfig {
 export interface AllowlistByTimeConfig {
   mode: "allowlist_by_time";
   domains: string[];
+  /** Đường dẫn cho phép theo tiền tố (đợt 4), cùng khung giờ với `domains`. Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[];
   windowsByWeekday: Partial<Record<Weekday, TimeRange[]>>;
 }
 
@@ -323,6 +333,8 @@ export interface AllowlistByTimeConfig {
 export interface DomainTimeLimitConfig {
   mode: "domain_time_limit";
   domains: string[];
+  /** Đường dẫn giới hạn theo tiền tố (đợt 4): "host/path". Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[];
   minutes_per_day: number;
 }
 
