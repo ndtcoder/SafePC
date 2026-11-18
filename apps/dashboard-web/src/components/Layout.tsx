@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: '/hom-nay', label: 'Hôm nay' },
   { to: '/ho-so', label: 'Hồ sơ' },
   { to: '/yeu-cau', label: 'Yêu cầu' },
+  { to: '/bao-cao', label: 'Báo cáo' },
 ]
 
 function navLinkClassName({ isActive }: { isActive: boolean }): string {
@@ -45,6 +46,12 @@ function TabIcon({ to }: { to: string }) {
       <>
         <rect x="3" y="5" width="18" height="14" rx="2" />
         <path d="M3 7l9 6 9-6" />
+      </>
+    ),
+    '/bao-cao': (
+      <>
+        <path d="M5 20v-6M11 20V6M17 20v-9" />
+        <path d="M3 20h18" />
       </>
     ),
   }
@@ -157,7 +164,7 @@ export default function Layout() {
         aria-label="Điều hướng chính"
         className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
       >
-        <ul className="grid grid-cols-3">
+        <ul className="grid grid-cols-4">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
               <NavLink to={item.to} className={tabLinkClassName}>
