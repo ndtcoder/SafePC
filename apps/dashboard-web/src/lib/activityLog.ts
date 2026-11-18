@@ -11,25 +11,32 @@
 //   được "bạn" hay "phụ huynh khác" qua id user hiện tại — Dashboard
 //   không tra cứu được email từ user id.
 // - audit_logs: sự kiện can thiệp (migration 5) + sự kiện thi hành theo
-//   quy tắc (migration 10). Lịch sử thi hành chỉ bắt đầu từ khi migration
-//   10 được áp + bản Agent/extension mới được cài trên máy con.
+//   quy tắc (migration 10) + lịch sử đổi quy tắc/mẫu (migration 16).
+//   Lịch sử thi hành chỉ bắt đầu từ khi migration 10 được áp + bản
+//   Agent/extension mới được cài trên máy con; lịch sử đổi quy tắc chỉ
+//   bắt đầu từ khi migration 16 được áp + Dashboard mới được triển khai
+//   (thay đổi trước đó không có nguồn nên không hiện — ghi chú rõ
+//   trong UI).
 //
-// KHÔNG có nguồn cho "ai đổi quy tắc nào": bảng rules không có lịch sử sửa
-// đổi và Dashboard không ghi audit khi sửa rule. Trang này không bịa
-// mục đó — ghi chú rõ trong UI, để đợt migration + trigger ghi audit
-// riêng sau.
+// Lịch sử đổi quy tắc do Dashboard tự ghi qua RPC safepc_log_rule_change
+// (xem lib/ruleAudit.ts): actor luôn là id user đã đăng nhập lúc đổi
+// nên phân biệt được "bạn" hay "phụ huynh khác" như quyết định duyệt.
+// Ghi đè tạm thời KHÔNG ghi audit riêng — chúng đã hiện ở đây qua bảng
+// commands (loại "Lệnh phụ huynh").
 
-import { enforcementReasonLabel, formatTimeVi, overrideActionLabel, requestTypeLabel, tamperEventLabel } from './format'
-import type { AppRequest, AuditLog, Command, CommandStatus, Device, TemporaryOverrideAction } from './types'
+import { enforcementReasonLabel, formatTimeVi, overrideActionLabel, requestTypeLabel, ruleTypeLabel, tamperEventLabel } from './format'
+import type { AppRequest, AuditLog, Command, CommandStatus, Device, RuleType, TemporaryOverrideAction } from './types'
+import { RULE_CHANGE_ACTIONS, type RuleChangeAction } from './ruleAudit'
 import { dateKeyLocal, driftMinutes, ENFORCEMENT_ACTIONS, startOfDayLocal, TAMPER_ACTIONS, weekdayLabel } from './weekReport'
 import type { WeekdayNumber } from './ruleConfig'
 
-export type ActivityCategory = 'command' | 'request' | 'decision' | 'enforcement' | 'tamper'
+export type ActivityCategory = 'command' | 'request' | 'decision' | 'rule_change' | 'enforcement' | 'tamper'
 
 export const ACTIVITY_CATEGORIES: Array<{ value: ActivityCategory; label: string }> = [
   { value: 'command', label: 'Lệnh phụ huynh' },
   { value: 'request', label: 'Con xin phép' },
   { value: 'decision', label: 'Quyết định duyệt' },
+  { value: 'rule_change', label: 'Đổi quy tắc' },
   { value: 'enforcement', label: 'Thi hành theo quy tắc' },
   { value: 'tamper', label: 'Cảnh báo can thiệp' },
 ]
@@ -313,9 +320,107 @@ function warningKindDetail(details: Record<string, unknown>): string | null {
   }
 }
 
+const RULE_TYPE_VALUES: readonly string[] = ['daily_limit', 'bedtime', 'time_window', 'app', 'website']
+
+function isRuleTypeValue(value: string): value is RuleType {
+  return RULE_TYPE_VALUES.includes(value)
+}
+
+/** Nhãn "Bạn" / "Phụ huynh khác" cho actor của một hàng audit_logs (cùng mẫu quyết định duyệt). */
+function actorLabel(actor: string | null, currentUserId: string | null): string | null {
+  if (actor === null) return null
+  if (currentUserId !== null && actor === currentUserId) return 'Bạn'
+  return 'Phụ huynh khác'
+}
+
+/** Tiêu đề cho một lần đổi quy tắc/mẫu (migration 16): tên trong details, thiếu tên thì dùng nhãn loại. */
+function ruleChangeTitle(action: RuleChangeAction, details: Record<string, unknown>): string {
+  const ruleName = asString(details['rule_name'])
+  const templateName = asString(details['template_name'])
+  const ruleType = asString(details['rule_type'])
+  const rulePart = `quy tắc “${ruleName ?? (ruleType !== null && isRuleTypeValue(ruleType) ? ruleTypeLabel(ruleType) : 'quy tắc')}”`
+  const templatePart = templateName !== null ? `mẫu quy tắc “${templateName}”` : 'mẫu quy tắc'
+  const appliedPart = templateName !== null ? `mẫu “${templateName}”` : 'mẫu'
+  switch (action) {
+    case 'rule_created':
+      return `Đã tạo ${rulePart}`
+    case 'rule_updated':
+      return `Đã sửa ${rulePart}`
+    case 'rule_deleted':
+      return `Đã xoá ${rulePart}`
+    case 'rule_enabled':
+      return `Đã bật ${rulePart}`
+    case 'rule_disabled':
+      return `Đã tắt ${rulePart}`
+    case 'template_created':
+      return `Đã tạo ${templatePart}`
+    case 'template_updated':
+      return `Đã sửa ${templatePart}`
+    case 'template_deleted':
+      return `Đã xoá ${templatePart}`
+    case 'template_applied':
+    case 'preset_applied':
+      return `Đã áp dụng ${appliedPart}`
+  }
+}
+
+/**
+ * Chi tiết cho một lần đổi quy tắc/mẫu: ai làm + tóm tắt thay đổi. Sửa
+ * quy tắc thì hiện "trước → nay" ở dòng tóm tắt đầu khi khác nhau; áp
+ * mẫu thì hiện số quy tắc mới; sửa mẫu đổi tên thì hiện tên cũ; sửa
+ * quy tắc chuyển con thì hiện con cũ → con mới.
+ */
+function ruleChangeDetail(
+  action: RuleChangeAction,
+  details: Record<string, unknown>,
+  actor: string | null,
+  childId: string | null,
+  childName: string | null,
+  ctx: ActivityContext,
+): string | null {
+  const parts: string[] = []
+  if (actor !== null) parts.push(actor)
+  const summary = asStringArray(details['summary'])
+  const previousSummary = asStringArray(details['previous_summary'])
+  const ruleCount = asNumber(details['rule_count'])
+  if (action === 'template_applied' || action === 'preset_applied') {
+    if (ruleCount !== null) parts.push(`Thêm ${ruleCount} quy tắc mới`)
+  } else if (action === 'template_created' || action === 'template_updated' || action === 'template_deleted') {
+    if (ruleCount !== null) parts.push(`Mẫu có ${ruleCount} quy tắc`)
+  } else if (
+    action === 'rule_updated' &&
+    previousSummary.length > 0 &&
+    summary.length > 0 &&
+    previousSummary[0] !== summary[0]
+  ) {
+    parts.push(`${previousSummary[0]} → ${summary[0]}`)
+  } else if (summary.length > 0) {
+    parts.push(summary.slice(0, 2).join(' · '))
+  }
+  // Đổi tên quy tắc/mẫu: tên mới đã ở tiêu đề, chi tiết ghi thêm tên cũ.
+  const previousName = asString(details['previous_name'])
+  const currentName = asString(details['rule_name'] ?? details['template_name'])
+  if (
+    (action === 'rule_updated' || action === 'template_updated') &&
+    previousName !== null &&
+    currentName !== null &&
+    currentName !== previousName
+  ) {
+    parts.push(`Đổi tên từ “${previousName}”`)
+  }
+  const previousChildId = asString(details['previous_child_id'])
+  if (previousChildId !== null && previousChildId !== childId) {
+    const previousChildName = ctx.childNameById.get(previousChildId) ?? null
+    if (previousChildName !== null && childName !== null) {
+      parts.push(`Chuyển từ ${previousChildName} sang ${childName}`)
+    }
+  }
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 /**
  * Một hàng audit_logs thành một sự kiện, hoặc null khi action không
- * thuộc 2 tập đã biết (truy vấn đã lọc action nên trường hợp này chỉ
+ * thuộc 3 tập đã biết (truy vấn đã lọc action nên trường hợp này chỉ
  * xảy ra khi dữ liệu lạ lọt vào — bỏ qua thay vì hiện nhãn sai).
  */
 export function auditLogToEvent(
@@ -325,8 +430,10 @@ export function auditLogToEvent(
 ): ActivityEvent | null {
   const isTamper = (TAMPER_ACTIONS as readonly string[]).includes(log.action)
   const isEnforcement = (ENFORCEMENT_ACTIONS as readonly string[]).includes(log.action)
-  if (!isTamper && !isEnforcement) return null
+  const isRuleChange = (RULE_CHANGE_ACTIONS as readonly string[]).includes(log.action)
+  if (!isTamper && !isEnforcement && !isRuleChange) return null
   const childId = resolveLogChildId(log, deviceChildById)
+  const childName = childId !== null ? (ctx.childNameById.get(childId) ?? null) : null
   const deviceId =
     log.device_id ?? (log.target && ctx.deviceById.has(log.target) ? log.target : null)
   const device = deviceId !== null ? ctx.deviceById.get(deviceId) : undefined
@@ -342,6 +449,10 @@ export function auditLogToEvent(
       const version = asString(details['agent_version'])
       if (version !== null) detail = `Phiên bản Agent ${version}`
     }
+  } else if (isRuleChange) {
+    const action = log.action as RuleChangeAction
+    title = ruleChangeTitle(action, details)
+    detail = ruleChangeDetail(action, details, actorLabel(log.actor, ctx.currentUserId), childId, childName, ctx)
   } else {
     switch (log.action) {
       case 'lock_started': {
@@ -376,11 +487,11 @@ export function auditLogToEvent(
   }
   return {
     id: `log:${log.id}`,
-    category: isTamper ? 'tamper' : 'enforcement',
+    category: isTamper ? 'tamper' : isRuleChange ? 'rule_change' : 'enforcement',
     at: log.created_at,
     atMs: parseMs(log.created_at),
     childId,
-    childName: childId !== null ? (ctx.childNameById.get(childId) ?? null) : null,
+    childName,
     deviceId,
     deviceName: device?.hostname ?? null,
     title,
