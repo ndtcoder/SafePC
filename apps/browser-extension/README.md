@@ -31,8 +31,9 @@ Extension làm:
   theo ngày địa phương của máy con.
 - Bật SafeSearch cho Google/Bing và chế độ hạn chế (Restricted Mode) cho
   YouTube.
-- Báo cáo **chỉ domain + thời lượng xem** về backend để phụ huynh xem báo
-  cáo.
+- Báo cáo **domain + đường dẫn + thời lượng xem** về backend để phụ huynh
+  xem báo cáo và tìm kiếm lịch sử web (từ 0.1.10; đường dẫn đã bỏ phần
+  truy vấn và fragment, giữ 90 ngày — xem mục 6).
 
 Extension không thay thế PC Agent: giới hạn giờ dùng máy, chặn app, khóa
 máy vẫn do Agent trên Windows đảm nhiệm.
@@ -47,7 +48,7 @@ Dashboard (phụ huynh đặt rule type=website)
   -> NativeHost (SafePC.Agent.NativeHost.exe, giao thức stdio)
   -> Extension (getRules mỗi phút) -> declarativeNetRequest dynamic rules
 
-Extension đếm thời gian xem theo domain
+Extension đếm thời gian xem theo cặp (domain, đường dẫn)
   -> NativeHost (reportUsage mỗi phút) -> web_usage.jsonl
   -> PC Agent (đọc mỗi 5 phút) -> RPC safepc_push_web_visits -> bảng web_visits
 
@@ -145,22 +146,26 @@ trang hay lịch sử. Trang chặn `blocked.html` được khai báo trong
 `web_accessible_resources` (khớp `http://*/*`, `https://*/*`) để trình
 duyệt được phép chuyển hướng tới.
 
-## 6. Nguyên tắc chỉ domain
+## 6. Nguyên tắc thu thập tối thiểu (domain + đường dẫn)
 
-- Chỉ xử lý, lưu và gửi **domain** (hostname đã chữ thường), ví dụ
-  `youtube.com`, kèm thời lượng xem (giây). Cắt bỏ path và query trước khi
-  lưu/log/gửi: từ `https://www.youtube.com/results?search_query=...` chỉ
-  giữ `www.youtube.com`.
+- Lượt xem thường ghi **domain** (hostname đã chữ thường) + **đường dẫn**
+  (pathname) + thời lượng xem (giây). Đường dẫn được cắt bỏ phần truy vấn
+  (query) và fragment ngay tại điểm thu thập, trần 500 ký tự: từ
+  `https://www.youtube.com/results?search_query=...` chỉ giữ
+  `www.youtube.com` + `/results`. Quyết định của phụ huynh ngày 18/11/2026
+  (trước 0.1.10 chỉ ghi domain); lịch sử tự xóa sau 90 ngày (migration 19).
+- Lượt web bị chặn vẫn chỉ ghi **tên miền**, không có đường dẫn.
 - **Không bỏ tiền tố `www`**: `www.youtube.com` và `youtube.com` là hai
   hostname khác nhau, được ghi nhận đúng như hostname thật. Rule
   `youtube.com` vẫn khớp cả hai nhờ khớp hậu tố (rule khớp hostname bằng
   chính nó hoặc kết thúc bằng `.` + rule), nhưng **không** khớp
   `notyoutube.com`.
 - Không gửi full URL lên server. Không log full URL (kể cả `console`).
+  Không gửi phần truy vấn hay fragment ở bất kỳ đâu.
 - Không đọc tiêu đề cửa sổ, nội dung trang, phím gõ, mic, camera.
 - Bảng đích ở backend là `web_visits` (`device_id`, `child_id`, `domain`,
-  `visited_at`, `duration_sec`, `blocked`) — xem `docs/02-ARCHITECTURE.md`
-  mục 3. Bảng này chỉ có cột `domain`, không có cột full URL.
+  `path`, `visited_at`, `duration_sec`, `blocked`) — xem `docs/02-ARCHITECTURE.md`
+  mục 3. Bảng này không có cột full URL, query hay fragment.
 
 ## 7. Cách hoạt động (chi tiết) và giới hạn thành thật
 
@@ -173,7 +178,9 @@ kèm thời điểm hết hạn tuyệt đối; extension chỉ áp dụng khi c
 
 **Ngân sách theo domain:** extension đếm thời gian tab đang hiển thị *và*
 cửa sổ trình duyệt đang focus, cộng dồn theo hostname trong ngày địa
-phương. Hết ngân sách thì domain bị chặn tới ngày hôm sau. Thời lượng tính
+phương (ngân sách gộp mọi đường dẫn của cùng domain; hàng đợi gửi lên
+thì tách theo từng đường dẫn để lịch sử web có đủ trang đã xem). Hết
+ngân sách thì domain bị chặn tới ngày hôm sau. Thời lượng tính
 bằng hiệu timestamp nên tổng vẫn đúng dù service worker ngủ đông; mỗi đoạn
 xem tính tối đa 10 phút để máy sleep không làm phình số liệu.
 

@@ -6,11 +6,16 @@
 // -> declarativeNetRequest dynamic rules. Extension KHÔNG gọi Supabase, không
 // có secret/key, không đọc nội dung trang.
 //
-// Luồng báo cáo: extension đếm thời gian tab đang hiển thị theo domain, gửi
-// về NativeHost (reportUsage mỗi phút) -> web_usage.jsonl -> Agent đẩy lên
-// bảng web_visits. CHỈ DOMAIN + THỜI LƯỢNG: không bao giờ gửi/lưu/log full
-// URL, path, query, tiêu đề trang hay nội dung. Hostname lấy từ tab.url rồi
-// bỏ URL ngay (xem domainUtils.js).
+// Luồng báo cáo: extension đếm thời gian tab đang hiển thị theo domain,
+// gửi về NativeHost (reportUsage mỗi phút) -> web_usage.jsonl -> Agent
+// đẩy lên bảng web_visits. LƯỢT XEM THƯỜNG mang DOMAIN + ĐƯỜNG DẪN +
+// THỜI LƯỢNG (từ 0.1.10, theo quyết định của phụ huynh 18/11/2026): đường
+// dẫn đã cắt bỏ phần truy vấn (query) và fragment ngay tại điểm thu thập
+// (xem pathFromUrl trong domainUtils.js), trần 500 ký tự; không bao giờ
+// gửi/lưu/log full URL, query, fragment, tiêu đề trang hay nội dung.
+// Hostname + đường dẫn lấy từ tab.url rồi bỏ URL ngay. Lượt web bị chặn
+// vẫn CHỈ DOMAIN (xem mục 0.1.7 dưới đây). Lịch sử web tự xóa sau 90
+// ngày (lịch dọn dẹp migration 19).
 //
 // Tab watcher (0.1.5): DNR không thấy điều hướng trong trang (SPA đổi URL
 // bằng history.pushState, ví dụ bấm từ trang chủ YouTube vào Shorts) hay
@@ -51,6 +56,13 @@
 // không URL/path/query. Duyệt xong, lệnh cho phép tạm thời đi theo đúng
 // đường ghi đè domain hiện có (tempAllow); con quay lại rồi mở lại trang thì mở được.
 //
+// Lịch sử web lưu đường dẫn (0.1.10): lượt xem thường ghi thêm đường dẫn
+// (đã cắt query/fragment) để phụ huynh tìm kiếm/kiểm tra nội dung trong
+// mục Báo cáo tuần. Hàng đợi `pending` tách theo cặp (domain, đường dẫn)
+// để thời lượng không gộp nhầm giữa các trang cùng domain; ngân sách theo
+// domain (`usage.seconds`) vẫn gộp theo domain như trước, và lượt bị chặn
+// vẫn chỉ ghi tên miền.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -60,7 +72,7 @@
 
 importScripts("domainUtils.js");
 
-const { normalizeDomain, domainMatches, hostnameFromUrl, localDateKey, hhmmToMinutes } =
+const { normalizeDomain, domainMatches, hostnameFromUrl, pathFromUrl, localDateKey, hhmmToMinutes } =
   globalThis.SafePCDomain;
 
 const NATIVE_HOST = "com.safepc.agent";
@@ -147,6 +159,10 @@ const PRIORITY = {
 let currentRules = null;
 let lastSyncAt = null;
 let usage = { date: localDateKey(new Date()), seconds: {} };
+// Hàng đợi lượt xem chưa gửi: khóa "domain\nđường dẫn" (từ 0.1.10; khóa
+// cũ chỉ domain vẫn đọc được, xem pendingKeyParts) -> {startedAt,
+// seconds}. Lưu bền vững cùng usage để service worker ngủ đông không
+// làm mất dữ liệu chưa gửi.
 let pending = {};
 // Hàng đợi lượt web bị chặn chưa gửi: [{domain, startedAt}] — rời rạc từng
 // lượt, không gộp theo domain như usage. Lưu bền vững cùng usage để
@@ -175,6 +191,11 @@ const unblockRequestDedupe = new Map();
 let blockedPagePrefix = null;
 let activeTabId = null;
 let activeHostname = null;
+// Đường dẫn của tab đang hiển thị (đã cắt query/fragment, xem
+// pathFromUrl): null khi tab không phải trang http/https, cùng lúc với
+// activeHostname = null. Đổi đường dẫn trong cùng domain cũng đóng đoạn
+// xem cũ để thời lượng không gộp nhầm sang trang khác.
+let activePath = null;
 let activeSince = 0;
 let windowFocused = true;
 let initStarted = false;
@@ -1445,13 +1466,31 @@ function enforcePendingCap() {
   for (let i = 0; i < keys.length - MAX_PENDING; i++) delete pending[keys[i]];
 }
 
-function addUsage(hostname, seconds, nowMs) {
+// Tách khóa hàng đợi pending thành {domain, path}. Khóa mới (0.1.10) có
+// dạng "domain\nđường dẫn"; đường dẫn không bao giờ chứa ký tự xuống
+// dòng (pathname của URL API — ký tự điều khiển được percent-encode
+// thành ASCII, không còn ký tự xuống dòng literal) nên "\n" là ranh
+// giới an toàn. Khóa cũ (chỉ domain, lưu từ bản trước 0.1.10) không có
+// "\n" → đường dẫn null, lượt đó gửi đi không có path như trước.
+function pendingKeyParts(key) {
+  const sep = key.indexOf("\n");
+  if (sep < 0) return { domain: key, path: null };
+  const path = key.slice(sep + 1);
+  return { domain: key.slice(0, sep), path: path.length > 0 ? path : null };
+}
+
+function addUsage(hostname, path, seconds, nowMs) {
   rolloverIfNeeded(new Date(nowMs));
+  // Ngân sách theo domain vẫn gộp theo hostname (giới hạn theo domain
+  // tính trên mọi đường dẫn của domain đó, không đổi).
   usage.seconds[hostname] = (usage.seconds[hostname] || 0) + seconds;
-  let entry = pending[hostname];
+  // Hàng đợi gửi lên tách theo cặp (domain, đường dẫn) để thời lượng
+  // không gộp nhầm giữa các trang cùng domain.
+  const key = typeof path === "string" && path.length > 0 ? hostname + "\n" + path : hostname;
+  let entry = pending[key];
   if (!entry) {
     entry = { startedAt: new Date(nowMs - seconds * 1000).toISOString(), seconds: 0 };
-    pending[hostname] = entry;
+    pending[key] = entry;
   }
   entry.seconds += seconds;
   enforcePendingCap();
@@ -1462,7 +1501,7 @@ function addUsage(hostname, seconds, nowMs) {
 function closeSegment(nowMs) {
   if (activeHostname !== null && windowFocused && activeSince > 0 && nowMs > activeSince) {
     const elapsed = Math.min(MAX_SEGMENT_SECONDS, Math.floor((nowMs - activeSince) / 1000));
-    if (elapsed > 0) addUsage(activeHostname, elapsed, nowMs);
+    if (elapsed > 0) addUsage(activeHostname, activePath, elapsed, nowMs);
   }
   activeSince = nowMs;
 }
@@ -1476,9 +1515,11 @@ async function syncActiveTab() {
     if (tab) {
       activeTabId = tab.id === undefined ? null : tab.id;
       activeHostname = hostnameFromUrl(tab.url);
+      activePath = pathFromUrl(tab.url);
     } else {
       activeTabId = null;
       activeHostname = null;
+      activePath = null;
     }
     activeSince = nowMs;
   } catch {
@@ -1564,11 +1605,14 @@ async function flushUsage() {
   // nằm sau vị trí đã chụp và được giữ lại, cùng nguyên tắc với usage.
   const blockedEntries = pendingBlocked.slice();
   if (entries.length === 0 && blockedEntries.length === 0) return;
-  const visits = entries.map(([domain, entry]) => ({
-    domain,
-    startedAt: entry.startedAt,
-    durationSec: entry.seconds,
-  }));
+  const visits = entries.map(([key, entry]) => {
+    const { domain, path } = pendingKeyParts(key);
+    const visit = { domain, startedAt: entry.startedAt, durationSec: entry.seconds };
+    // Đường dẫn chỉ có ở lượt xem thường ghi từ 0.1.10; lượt từ trạng
+    // thái cũ (khóa chỉ domain) gửi đi không có path như trước.
+    if (path !== null) visit.path = path;
+    return visit;
+  });
   // Lượt bị chặn đi cùng batch reportUsage, mang blocked = true và
   // durationSec = 0 (không xem được gì). Không cần message type mới:
   // NativeHost và Service đều đọc thêm trường blocked tùy chọn.
@@ -1578,15 +1622,15 @@ async function flushUsage() {
   // Chụp số giây đã gửi thành số nguyên (không giữ tham chiếu tới entry):
   // entry trong pending có thể được cộng thêm trong lúc đang gửi, và phép
   // trừ sau đó phải trừ đúng số đã gửi, không phải số đã bị cộng thêm.
-  const sentSeconds = entries.map(([domain, entry]) => ({ domain, seconds: entry.seconds }));
+  const sentSeconds = entries.map(([key, entry]) => ({ key, seconds: entry.seconds }));
   const response = await sendNativeMessage({ type: "reportUsage", visits });
   if (response && response.ok === true) {
     // Trừ đúng số giây đã gửi: dữ liệu cộng thêm trong lúc gửi được giữ lại.
-    for (const { domain, seconds } of sentSeconds) {
-      const current = pending[domain];
+    for (const { key, seconds } of sentSeconds) {
+      const current = pending[key];
       if (!current) continue;
       current.seconds -= seconds;
-      if (current.seconds <= 0) delete pending[domain];
+      if (current.seconds <= 0) delete pending[key];
     }
     // Xóa đúng số lượt chặn đã gửi: lượt ghi thêm trong lúc gửi còn lại.
     pendingBlocked.splice(0, blockedEntries.length);
@@ -1634,6 +1678,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
       closeSegment(nowMs);
       activeTabId = tab.id === undefined ? null : tab.id;
       activeHostname = hostnameFromUrl(tab.url);
+      activePath = pathFromUrl(tab.url);
       activeSince = nowMs;
     } catch {
       // Tab đã đóng trước khi đọc được: bỏ qua.
@@ -1647,6 +1692,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   closeSegment(nowMs);
   activeTabId = tabId;
   activeHostname = hostnameFromUrl(changeInfo.url);
+  activePath = pathFromUrl(changeInfo.url);
   activeSince = nowMs;
 });
 
@@ -1682,6 +1728,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   closeSegment(nowMs);
   activeTabId = null;
   activeHostname = null;
+  activePath = null;
   activeSince = nowMs;
 });
 
