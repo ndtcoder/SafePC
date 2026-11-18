@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { isValidInviteNextPath } from '../lib/familyInvites'
 import { toVietnameseError } from '../lib/format'
-import { Field, inputClassName, primaryButtonClassName } from '../components/ui'
+import { AlertBox, AuthShell, Field, inputClassName, primaryButtonClassName, textLinkClassName } from '../components/ui'
 
 type Mode = 'login' | 'signup' | 'forgot'
 
@@ -91,19 +91,21 @@ export default function LoginPage() {
   const formDisabled = !configured || submitting
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4 py-10">
-      <div className="mb-6 flex flex-col items-center gap-2 text-center">
-        <img src="/icons/icon.svg" alt="Logo SafePC" className="h-14 w-14" />
-        <p className="text-xl font-bold tracking-tight text-slate-900">SafePC</p>
-        <p className="text-sm text-slate-600">Dashboard phụ huynh — quản lý máy tính của con</p>
-      </div>
-
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+    <AuthShell
+      subtitle="Dashboard phụ huynh — quản lý máy tính của con"
+      footer={
+        <p className="mt-6 text-center text-xs text-slate-500">
+          <Link to="/hom-nay" className="inline-flex min-h-[44px] items-center rounded-lg px-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
+            Xem trang tổng quan (chỉ hiển thị hướng dẫn khi chưa cấu hình)
+          </Link>
+        </p>
+      }
+    >
         <h1 className="text-lg font-semibold text-slate-900">{copy.title}</h1>
         <p className="mt-1 text-sm text-slate-600">{copy.description}</p>
 
         {!configured && (
-          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4" role="status">
+          <AlertBox tone="warning" className="mt-4">
             <p className="text-sm font-medium text-amber-900">Chưa cấu hình Supabase</p>
             <p className="mt-1 text-sm text-amber-800">
               Form đăng nhập đang bị vô hiệu hoá vì chưa có project Supabase. Hãy copy file{' '}
@@ -112,18 +114,18 @@ export default function LoginPage() {
               anon key từ Supabase Dashboard, rồi khởi động lại ứng dụng. App không đăng nhập giả khi chưa có
               backend thật.
             </p>
-          </div>
+          </AlertBox>
         )}
 
         {error && (
-          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+          <AlertBox tone="error" className="mt-4">
             {error}
-          </div>
+          </AlertBox>
         )}
         {notice && (
-          <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+          <AlertBox tone="success" className="mt-4">
             {notice}
-          </div>
+          </AlertBox>
         )}
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4" noValidate={false}>
@@ -162,7 +164,7 @@ export default function LoginPage() {
             </Field>
           )}
 
-          <button type="submit" disabled={formDisabled} className={`${primaryButtonClassName} w-full py-2.5`}>
+          <button type="submit" disabled={formDisabled} className={`${primaryButtonClassName} w-full`}>
             {submitting ? 'Đang xử lý…' : copy.submit}
           </button>
         </form>
@@ -171,13 +173,13 @@ export default function LoginPage() {
           {mode === 'login' && (
             <>
               <p>
-                <button type="button" onClick={() => switchMode('forgot')} className="inline-flex min-h-[44px] items-center px-2 font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded-lg">
+                <button type="button" onClick={() => switchMode('forgot')} className={textLinkClassName}>
                   Quên mật khẩu?
                 </button>
               </p>
               <p className="text-slate-600">
                 Chưa có tài khoản?{' '}
-                <button type="button" onClick={() => switchMode('signup')} className="inline-flex min-h-[44px] items-center px-2 font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded-lg">
+                <button type="button" onClick={() => switchMode('signup')} className={textLinkClassName}>
                   Đăng ký tài khoản phụ huynh
                 </button>
               </p>
@@ -185,19 +187,12 @@ export default function LoginPage() {
           )}
           {mode !== 'login' && (
             <p className="text-slate-600">
-              <button type="button" onClick={() => switchMode('login')} className="inline-flex min-h-[44px] items-center px-2 font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded-lg">
+              <button type="button" onClick={() => switchMode('login')} className={textLinkClassName}>
                 Quay lại đăng nhập
               </button>
             </p>
           )}
         </div>
-      </div>
-
-      <p className="mt-6 text-center text-xs text-slate-500">
-        <Link to="/hom-nay" className="inline-block rounded-lg px-2 py-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
-          Xem trang tổng quan (chỉ hiển thị hướng dẫn khi chưa cấu hình)
-        </Link>
-      </p>
-    </div>
+    </AuthShell>
   )
 }

@@ -15,7 +15,6 @@ import type {
   Child,
   Command,
   Device,
-  EnforcementDecision,
   EnforcementSnapshot,
   Rule,
   WebVisit,
@@ -42,13 +41,18 @@ import {
 } from '../lib/todayOverview'
 import { countBlockedVisits, sumDurationSec, topDomains } from '../lib/weekReport'
 import {
+  AlertBox,
   Card,
+  DEVICE_STATUS_BADGE_TONE,
+  ENFORCEMENT_BADGE_TONE,
   EmptyState,
   ErrorState,
   LoadingState,
   NotConfiguredState,
   PageHeader,
   Spinner,
+  badgeBaseClassName,
+  primaryButtonClassName,
   secondaryButtonClassName,
 } from '../components/ui'
 
@@ -59,19 +63,6 @@ interface TopApp {
 }
 
 type LoadState = 'loading' | 'ready' | 'error'
-
-/** Cùng bảng màu huy hiệu với trang Thiết bị. */
-const STATUS_BADGE: Record<Device['status'], string> = {
-  online: 'bg-emerald-100 text-emerald-800',
-  offline: 'bg-slate-200 text-slate-700',
-  locked: 'bg-red-100 text-red-800',
-}
-
-const ENFORCEMENT_BADGE: Record<EnforcementDecision, string> = {
-  allow: 'bg-emerald-100 text-emerald-800',
-  warn: 'bg-amber-100 text-amber-800',
-  lock: 'bg-red-100 text-red-800',
-}
 
 const EXTENSION_TONE_CLASS: Record<'ok' | 'warn' | 'unknown', string> = {
   ok: 'font-medium text-emerald-700',
@@ -424,7 +415,7 @@ export default function TodayPage() {
         >
           <Link
             to="/thiet-bi"
-            className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
+            className={primaryButtonClassName}
           >
             Tới trang Thiết bị
           </Link>
@@ -434,10 +425,10 @@ export default function TodayPage() {
       {state === 'ready' && hasAnything && (
         <div className="space-y-4 sm:space-y-6">
           {truncated && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800" role="status">
+            <AlertBox tone="warning">
               Dữ liệu hôm nay rất nhiều nên số liệu dưới đây có thể chưa đủ (đã đọc tối đa 20.000
               dòng mỗi loại). Các con số vẫn đúng với phần dữ liệu đã đọc.
-            </div>
+            </AlertBox>
           )}
 
           <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
@@ -509,7 +500,7 @@ export default function TodayPage() {
                             </span>
                           ) : (
                             <span
-                              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[device.status]}`}
+                              className={`${badgeBaseClassName} ${DEVICE_STATUS_BADGE_TONE[device.status]}`}
                             >
                               {deviceStatusLabel(device.status)}
                             </span>
@@ -550,7 +541,7 @@ export default function TodayPage() {
                             {snapshot ? (
                               <span className="inline-flex flex-col items-end gap-1">
                                 <span
-                                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${enforcementSupersededByUnlock ? 'bg-amber-100 text-amber-800' : ENFORCEMENT_BADGE[snapshot.decision]}`}
+                                  className={`${badgeBaseClassName} ${enforcementSupersededByUnlock ? 'bg-amber-100 text-amber-800' : ENFORCEMENT_BADGE_TONE[snapshot.decision]}`}
                                 >
                                   {enforcementSupersededByUnlock
                                     ? 'Đang mở khóa'

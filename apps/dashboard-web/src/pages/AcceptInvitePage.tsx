@@ -5,10 +5,13 @@ import { supabase } from '../lib/supabase'
 import { isValidInviteTokenFormat, sha256HexLower } from '../lib/familyInvites'
 import { toVietnameseError } from '../lib/format'
 import {
+  AlertBox,
+  AuthShell,
   NotConfiguredState,
   Spinner,
   primaryButtonClassName,
   secondaryButtonClassName,
+  textLinkClassName,
 } from '../components/ui'
 
 type AcceptStatus = 'accepted' | 'email_mismatch' | 'already_has_family' | 'invalid'
@@ -94,14 +97,7 @@ export default function AcceptInvitePage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4 py-10">
-      <div className="mb-6 flex flex-col items-center gap-2 text-center">
-        <img src="/icons/icon.svg" alt="Logo SafePC" className="h-14 w-14" />
-        <p className="text-xl font-bold tracking-tight text-slate-900">SafePC</p>
-        <p className="text-sm text-slate-600">Lời mời làm phụ huynh</p>
-      </div>
-
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+    <AuthShell subtitle="Lời mời làm phụ huynh">
         {loading ? (
           <Spinner label="Đang kiểm tra phiên đăng nhập…" />
         ) : !configured ? (
@@ -224,9 +220,9 @@ export default function AcceptInvitePage() {
               chấp nhận được khi email này trùng với email được mời.
             </p>
             {error && (
-              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+              <AlertBox tone="error" className="mt-4">
                 {error}
-              </div>
+              </AlertBox>
             )}
             <button
               type="button"
@@ -242,14 +238,13 @@ export default function AcceptInvitePage() {
                 type="button"
                 onClick={() => void handleSignOut()}
                 disabled={signingOut || calling}
-                className="font-medium text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 rounded"
+                className={textLinkClassName}
               >
                 Đăng xuất để đổi tài khoản
               </button>
             </p>
           </div>
         )}
-      </div>
-    </div>
+    </AuthShell>
   )
 }

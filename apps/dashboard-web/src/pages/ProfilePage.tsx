@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import type { Child } from '../lib/types'
 import { toVietnameseError } from '../lib/format'
-import { ErrorState, LoadingState, NotConfiguredState, PageHeader } from '../components/ui'
+import { ErrorState, LoadingState, NotConfiguredState, PageHeader, primaryButtonClassName, secondaryButtonClassName } from '../components/ui'
 import DevicesPage from './DevicesPage'
 import RulesPage from './RulesPage'
 import ProfileReportTab from './ProfileReportTab'
@@ -29,8 +29,8 @@ function isTabKey(value: string | undefined): value is TabKey {
 
 function tabClassName({ isActive }: { isActive: boolean }): string {
   return isActive
-    ? 'inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white'
-    : 'inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50'
+    ? 'inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 motion-reduce:transition-none'
+    : 'inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 motion-reduce:transition-none'
 }
 
 /**
@@ -95,7 +95,7 @@ export default function ProfilePage() {
         <PageHeader title="Không tìm thấy hồ sơ" description="Hồ sơ này không tồn tại hoặc không thuộc gia đình của bạn." />
         <Link
           to="/ho-so"
-          className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+          className={primaryButtonClassName}
         >
           Quay lại danh sách hồ sơ
         </Link>
@@ -113,7 +113,7 @@ export default function ProfilePage() {
         actions={
           <Link
             to="/ho-so"
-            className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            className={secondaryButtonClassName}
           >
             ← Tất cả hồ sơ
           </Link>

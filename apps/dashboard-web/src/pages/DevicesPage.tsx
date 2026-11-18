@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
 import { hashPin, isValidPin } from '../lib/pinHash'
-import type { Child, Command, Device, EnforcementDecision, EnforcementSnapshot, Family } from '../lib/types'
+import type { Child, Command, Device, EnforcementSnapshot, Family } from '../lib/types'
 import {
   deviceStatusLabel,
   enforcementDecisionLabel,
@@ -15,32 +15,25 @@ import {
   toVietnameseError,
 } from '../lib/format'
 import {
+  AlertBox,
   Card,
+  DEVICE_STATUS_BADGE_TONE,
+  ENFORCEMENT_BADGE_TONE,
   EmptyState,
   ErrorState,
   Field,
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  badgeBaseClassName,
   chipClassName,
   dangerButtonClassName,
   dangerOutlineButtonClassName,
   inputClassName,
   primaryButtonClassName,
   secondaryButtonClassName,
+  warningButtonClassName,
 } from '../components/ui'
-
-const STATUS_BADGE: Record<Device['status'], string> = {
-  online: 'bg-emerald-100 text-emerald-800',
-  offline: 'bg-slate-200 text-slate-700',
-  locked: 'bg-red-100 text-red-800',
-}
-
-const ENFORCEMENT_BADGE: Record<EnforcementDecision, string> = {
-  allow: 'bg-emerald-100 text-emerald-800',
-  warn: 'bg-amber-100 text-amber-800',
-  lock: 'bg-red-100 text-red-800',
-}
 
 /** Các thời lượng mở khóa tạm thời (phút), cùng bộ với ghi đè tạm thời ở trang Quy tắc. */
 const UNLOCK_DURATIONS = [15, 30, 60, 120]
@@ -683,14 +676,14 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       />
 
       {actionMessage && (
-        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+        <AlertBox tone="success" className="mb-4">
           {actionMessage}
-        </div>
+        </AlertBox>
       )}
       {actionError && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+        <AlertBox tone="error" className="mb-4">
           {actionError}
-        </div>
+        </AlertBox>
       )}
 
       {state === 'loading' && <LoadingState label="Đang tải danh sách thiết bị…" />}
@@ -805,7 +798,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                         </span>
                       ) : (
                         <span
-                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[device.status]}`}
+                          className={`${badgeBaseClassName} ${DEVICE_STATUS_BADGE_TONE[device.status]}`}
                         >
                           {deviceStatusLabel(device.status)}
                         </span>
@@ -847,7 +840,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                         {enforcementSnapshot ? (
                           <span className="inline-flex flex-col items-end gap-1">
                             <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${enforcementSupersededByUnlock ? 'bg-amber-100 text-amber-800' : ENFORCEMENT_BADGE[enforcementSnapshot.decision]}`}
+                              className={`${badgeBaseClassName} ${enforcementSupersededByUnlock ? 'bg-amber-100 text-amber-800' : ENFORCEMENT_BADGE_TONE[enforcementSnapshot.decision]}`}
                             >
                               {enforcementSupersededByUnlock
                                 ? 'Đang mở khóa'
@@ -927,7 +920,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                   <div className="mt-4 border-t border-slate-100 pt-4">
                     <p className="mb-2 text-sm font-medium text-slate-700">Mở khóa ngay</p>
                     {activeUnlockExpiresAt ? (
-                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                      <AlertBox tone="warning">
                         <p>
                           Đang mở khóa, còn{' '}
                           {formatCountdown(
@@ -938,11 +931,11 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                           type="button"
                           onClick={() => void handleCancelDeviceOverride(device)}
                           disabled={cancellingUnlockId === device.id}
-                          className="mt-2 inline-flex min-h-[44px] items-center rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+                          className={`mt-2 ${warningButtonClassName}`}
                         >
                           {cancellingUnlockId === device.id ? 'Đang gửi…' : 'Hủy'}
                         </button>
-                      </div>
+                      </AlertBox>
                     ) : (
                       <>
                         <div className="flex flex-wrap gap-2" role="group" aria-label="Thời lượng mở khóa">
@@ -1107,9 +1100,9 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                 </div>
 
                 {pairError && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+                  <AlertBox tone="error">
                     Không tạo được mã ghép nối: {pairError}
-                  </div>
+                  </AlertBox>
                 )}
 
                 {pairing?.status === 'waiting' && (
@@ -1143,16 +1136,16 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                 )}
 
                 {pairing?.status === 'paired' && (
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+                  <AlertBox tone="success">
                     Đã ghép nối: {pairing.pairedDevice?.hostname ?? 'máy mới'}. Máy đã xuất hiện trong danh sách
                     thiết bị ở trên.
-                  </div>
+                  </AlertBox>
                 )}
 
                 {pairing?.status === 'expired' && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="status">
+                  <AlertBox tone="warning">
                     Mã đã hết hạn, hãy tạo mã mới.
-                  </div>
+                  </AlertBox>
                 )}
 
                 {pairing?.status !== 'waiting' && (

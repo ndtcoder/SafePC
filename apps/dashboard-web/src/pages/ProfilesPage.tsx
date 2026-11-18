@@ -11,6 +11,8 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  primaryButtonClassName,
+  secondaryButtonClassName,
 } from '../components/ui'
 import FamilyInviteSection from '../components/FamilyInviteSection'
 
@@ -95,16 +97,17 @@ export default function ProfilesPage() {
         />
         <EmptyState
           title="Chưa có hồ sơ con nào"
-          description="Hãy tạo hồ sơ cho con ở trang Thiết bị, sau đó quay lại đây để quản lý từng con riêng."
-        />
-        <div className="mt-4">
-          <Link
-            to="/thiet-bi"
-            className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-          >
+          description="Hãy làm 3 bước sau để bắt đầu quản lý máy tính của con. Các bước này chỉ cần làm một lần cho mỗi con."
+        >
+          <ol className="mx-auto max-w-xl list-decimal space-y-1 pl-5 text-left text-sm text-slate-600">
+            <li>Tạo gia đình và hồ sơ cho con ở trang Thiết bị (nút “Thêm hồ sơ con”).</li>
+            <li>Cài PC Agent lên máy của con rồi ghép nối máy bằng mã ghép nối.</li>
+            <li>Chọn mẫu quy tắc phù hợp ở trang Quy tắc, hoặc tạo quy tắc riêng cho con.</li>
+          </ol>
+          <Link to="/thiet-bi" className={`${primaryButtonClassName} mt-4`}>
             Tới trang Thiết bị để thêm hồ sơ con
           </Link>
-        </div>
+        </EmptyState>
         <div className="mt-6">
           <FamilyInviteSection />
         </div>
@@ -164,13 +167,13 @@ export default function ProfilesPage() {
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link
                   to={`/ho-so/${child.id}/thiet-bi`}
-                  className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                  className={primaryButtonClassName}
                 >
                   Vào hồ sơ
                 </Link>
                 <Link
                   to={`/ho-so/${child.id}/bao-cao`}
-                  className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  className={secondaryButtonClassName}
                 >
                   Xem báo cáo
                 </Link>
