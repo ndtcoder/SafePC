@@ -7,16 +7,16 @@ Bản v0.1.136 đã kiểm chứng trên máy thật: ghép nối, đồng bộ 
 | Hạng mục | Trạng thái |
 |---|---|
 | Tài khoản, ghép nối, đồng bộ quy tắc | ✅ Đã triển khai, đã kiểm chứng trên máy thật |
-| Theo dõi thời gian dùng app + web | ✅ Đã triển khai (app đã kiểm chứng; web chờ extension được cài) |
+| Theo dõi thời gian dùng app + web | ✅ Đã triển khai, đã kiểm chứng trên máy thật (app + web đều chảy qua NativeHost hai chiều, bản v0.1.167 ngày 18/11); lượt web bị chặn báo cáo từ extension 0.1.7 (xem §2.10) |
 | Quy tắc giờ giấc, theo app, focus, nghỉ bắt buộc | ✅ Đã triển khai; khóa theo quy tắc đã kiểm chứng (giờ ngủ), các mode app chờ kiểm chứng thêm |
 | Khóa/mở từ xa, ghi đè tạm thời | ✅ Đã triển khai, đã kiểm chứng trên máy thật |
 | Khóa có độ trễ + khóa theo phiên | ✅ Đã triển khai, đã kiểm chứng trên máy thật (tối 17/11: độ trễ + cảnh báo nhỏ đúng, phiên admin miễn khóa qua đường Limited-token; sáng 18/11: đăng nhập lại khi đang khóa thì khóa ngay không đếm ngược); lệnh sau thắng lệnh trước, hết độ trễ khóa ngay không đếm ngược; khóa do phụ huynh bấm (Khóa ngay độ trễ 0 + khóa tạm thời) giờ khóa ngay không đếm ngược (v0.1.183, CI xanh run #183) — chờ kiểm chứng lại |
 | PIN thoát, xin thêm giờ đầu-cuối, xem giờ còn lại | ✅ Đã triển khai, CI xanh (run #183, v0.1.183); PIN một lần đã kiểm chứng trên máy thật (lần dùng thứ 2 bị từ chối; migration 8 đã áp sáng 18/11 nên lệnh gỡ PIN chờ từ tối qua đã hoàn tất trên server); duyệt xin giờ = mở khóa đúng N phút, máy mở ngay đã kiểm chứng sáng 18/11 — thẻ thiết bị từng xung đột khóa/mở, đã sửa (ưu tiên trạng thái mở khóa + snapshot đẩy ngay khi đổi từ vòng tick) trong v0.1.183, chờ kiểm chứng lại; migration 8 + 9 đã áp lên Supabase |
 | Hồ sơ theo con (Dashboard) | ✅ Đã triển khai, CI xanh (run #159, 17/11): Tổng quan / Hồ sơ / Yêu cầu; mỗi hồ sơ có tab Thiết bị / Quy tắc / Báo cáo riêng; mã ghép nối hết hạn sau 5 phút. Thiết kế lại trang Quy tắc (quy tắc hiện hành lên đầu, form thu gọn, tên rule, mẫu của phụ huynh, mẫu Chỉ cho phép Edge) — CI xanh run #170, migration 9 đã áp sáng 18/11, chờ kiểm chứng trên điện thoại thật |
-| Chặn/cho phép domain qua extension | ✅ Chặn domain đã kiểm chứng trên máy thật sáng 18/11 (extension 0.1.2, khớp domain bằng requestDomains: youtube.com không xem được nữa, popup hiện đúng version + domain + rule đang áp; trang chặn SafePC chưa hiện thay vỏ trang đệm — chỉ khác hiển thị, chức năng chặn đạt). Extension 0.1.3 thêm chặn theo đường dẫn (bing.com/videos) — CI xanh run #183, chờ kiểm chứng trên máy thật. Chặn app / mẫu Chỉ cho phép Edge cũng đã kiểm chứng sáng 18/11 (Chrome cài bằng quyền user của con bị đóng 2 lần + hộp cảnh báo Tray) |
-| Tính năng nâng cao + giao diện chuyên nghiệp | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.8) |
+| Chặn/cho phép domain qua extension | ✅ Chặn domain đã kiểm chứng trên máy thật sáng 18/11 (khớp domain bằng requestDomains; trang chặn SafePC thật đã hiện từ extension 0.1.4 sau khi sửa gốc rễ thiếu host_permissions cho rule redirect — kiểm chứng 13:32). Chặn theo đường dẫn + tab watcher (0.1.5) đã kiểm chứng cả 3 trường hợp chiều 18/11. Extension hiện ở 0.1.8 (0.1.6 tự kiểm tra host permission, 0.1.7 báo cáo lượt bị chặn, 0.1.8 lý do theo danh mục) — các bản 0.1.6–0.1.8 chưa kiểm chứng trên máy thật. Chặn app / mẫu Chỉ cho phép Edge cũng đã kiểm chứng sáng 18/11 (Chrome cài bằng quyền user của con bị đóng 2 lần + hộp cảnh báo Tray) |
+| Tính năng nâng cao + giao diện chuyên nghiệp | ✅ Cả 9 mục đã triển khai xong phần code ngày 18/11/2026 (xem §2.8); kiểm chứng trên máy thật / điện thoại thật / tài khoản thật còn chờ anh Tiến |
 | Flow cài đặt cho phụ huynh khác | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.9) |
-| Báo cáo tuần | ⏳ Đã phê duyệt 17/11/2026, thực hiện dần (xem §2.10) |
+| Báo cáo tuần | ✅ Trang Báo cáo đã live trên Dashboard; email báo cáo tuần đã giao phần code (Edge Function + migration 11 đã áp) — chưa kiểm chứng đầu-cuối, còn các bước tay (xem §2.10) |
 | App Android | ⏳ Chưa làm (tính năng nâng cao đã chốt 17/11 — sẵn sàng thảo luận khi bắt đầu) |
 
 ## 1. Người dùng và vai trò
@@ -41,7 +41,7 @@ Một gia đình: 1-2 phụ huynh, 1-3 con, 1-3 máy PC (MVP: 1 phụ huynh, 1 c
 - [x] Ghi nhận app đang chạy ở foreground (tên process, thời lượng), tổng hợp theo mẫu 15 giây. — Đã triển khai; Service lưu SQLite local, đẩy batch lên server mỗi 5 phút.
 - [x] Ghi nhận thời gian online/offline (heartbeat 60s, trạng thái thiết bị trên Dashboard). — Đã triển khai. Thời gian khóa màn hình chưa tách riêng.
 - [x] Gửi dữ liệu lên server theo batch, có hàng đợi offline (SQLite local), đồng bộ khi có mạng. — Đã triển khai.
-- [ ] Dashboard hiển thị: tổng thời gian hôm nay/tuần, top app, biểu đồ theo giờ. — Trang Hôm nay hiện dữ liệu cơ bản; tổng quan thật + biểu đồ đã phê duyệt 17/11/2026 (xem §2.8).
+- [x] Dashboard hiển thị: tổng thời gian hôm nay/tuần, top app, biểu đồ theo giờ. — Đã triển khai: trang Hôm nay thành tổng quan thật (thẻ trạng thái máy, giờ còn lại từng con, biểu đồ 24 cột giờ dùng, top app/domain), CI xanh run #215; chưa xem với dữ liệu thật / trên điện thoại thật.
 
 ### 2.3. Giới hạn thời gian (Screen Time)
 - [x] Giới hạn tổng thời gian/ngày theo thứ trong tuần (VD: T2-T6: 2h, T7-CN: 3h). — Xong Sprint 2 đợt 1 (Dashboard + Agent, xem 2.3.1).
@@ -72,7 +72,7 @@ Quy tắc lưu trong bảng `rules` (cột `config` JSONB). Mọi giờ giấc t
 
 Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khung giờ → giới hạn ngày. Các loại quy tắc khác (theo app, website/domain, giờ học, nghỉ bắt buộc, cảnh báo chống phá, mẫu sẵn) thuộc các đợt tiếp theo theo thứ tự đã chốt với phụ huynh.
 
-#### 2.3.2. Khóa có độ trễ + khóa theo phiên (đợt 17/11/2026 — đã kiểm chứng trên máy thật tối 17/11; đồng bộ Immediate đợt 18/11, CI xanh run #167, chờ kiểm chứng lại)
+#### 2.3.2. Khóa có độ trễ + khóa theo phiên (đợt 17/11/2026 — đã kiểm chứng trên máy thật tối 17/11; đồng bộ Immediate đã kiểm chứng sáng 18/11: đăng nhập lại khi đang khóa thì khóa ngay không đếm ngược)
 
 - Phụ huynh chọn độ trễ 0–5 phút khi bấm "Khóa ngay" trên Dashboard (`delay_minutes` trong payload lệnh `lock_now`). Độ trễ > 0: Tray chỉ hiện cửa sổ cảnh báo nhỏ (không full màn, con vẫn làm việc/lưu bài), hết đếm ngược mới hiện màn hình khóa full màn kèm nút xin thêm giờ. Độ trễ 0: khóa ngay như trước.
 - Lệnh khóa/cảnh báo chỉ giao tới phiên Windows của con: Tray tự giới thiệu (phiên, tài khoản, quyền admin qua `TokenElevationType`); Service miễn trừ phiên admin. Ghép nối vẫn ở mức máy (cài một lần bằng quyền Admin, Service chạy quyền SYSTEM); chỉ phần giao lệnh là theo phiên. Phiên chưa giới thiệu vẫn nhận lệnh (fail-closed).
@@ -89,7 +89,7 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 - [x] Giờ học tập trung (focus) + nghỉ bắt buộc (forced_break) + mẫu quy tắc một chạm (Ngày học/Cuối tuần/Kỳ nghỉ). — Đã triển khai (Sprint 2 đợt 3). Mẫu nhanh "Chỉ cho phép Edge" (chặn 10 trình duyệt đã biết theo tên exe, Dashboard đợt 18/11; trình duyệt lạ/đổi tên không chặn được bằng lớp này — xem §2.5 về DNS dự phòng).
 
 ### 2.5. Lọc web — Phạm vi MVP (nói rõ giới hạn)
-- [x] Browser Extension cho Chrome/Edge (Manifest V3): chặn domain trong blocklist, chặn theo giờ, allowlist, giới hạn thời gian theo domain, SafeSearch, YouTube Restricted, báo cáo domain đã thăm (chỉ domain, không full URL). — Code đã xong (Sprint 2 đợt 2); extension đã cài trên Edge máy thật tối 17/11/2026, native messaging đã nối (popup báo đang bảo vệ + đồng bộ quy tắc), ID thật đã nướng vào installer từ v0.1.167 (không còn placeholder). Đã kiểm chứng chặn được trên máy thật sáng 18/11/2026 với extension 0.1.2 (khớp domain bằng requestDomains thay cho mẫu urlFilter cũ — mẫu cũ cài rule nhưng không khớp gì cả; YouTube hiện "You're offline", popup hiện đúng version + chẩn đoán rule). Trang chặn SafePC chưa hiện thay vỏ trang đệm (chỉ khác hiển thị, chức năng chặn đạt).
+- [x] Browser Extension cho Chrome/Edge (Manifest V3): chặn domain trong blocklist, chặn theo giờ, allowlist, giới hạn thời gian theo domain, SafeSearch, YouTube Restricted, báo cáo domain đã thăm (chỉ domain, không full URL). — Đã triển khai, hiện ở 0.1.8: extension đã cài trên Edge máy thật tối 17/11/2026, native messaging đã nối (popup báo đang bảo vệ + đồng bộ quy tắc), ID thật đã nướng vào installer từ v0.1.167 (không còn placeholder). Chặn domain đã kiểm chứng sáng 18/11/2026 (khớp domain bằng requestDomains); trang chặn SafePC thật đã hiện từ 0.1.4 sau khi sửa gốc rễ thiếu host_permissions cho rule redirect (kiểm chứng 13:32 ngày 18/11) — nhận định cũ rằng mẫu urlFilter "cài rule nhưng không khớp gì" chưa từng được cô lập và không còn dùng làm giải thích (xem `02-ARCHITECTURE.md` §4.5 và extension README). Tab watcher (0.1.5) xử lý điều hướng trong trang, đã kiểm chứng cả 3 trường hợp chiều 18/11. 0.1.6 (tự kiểm tra host permission), 0.1.7 (báo cáo lượt web bị chặn, xem §2.10), 0.1.8 (lý do chặn theo danh mục) đã giao, chưa kiểm chứng trên máy thật.
 - [x] Blocklist/Allowlist do phụ huynh tự thêm (VD: chặn tiktok.com, cho phép hocmai.vn) + cho phép/chặn tạm thời. — Đã triển khai trên Dashboard + đồng bộ xuống file `domain_rules.json` (đã thấy file xuất bản đúng trên máy thật); thi hành trong trình duyệt chờ kiểm chứng extension.
 - [x] Rule mẫu URL có đường dẫn (VD: `bing.com/videos` chỉ chặn link bắt đầu bằng phần đó, `bing.com/abc` không chặn) bên cạnh rule domain — chỉ mode block_domains đợt này, các mode khác từ chối mục đường dẫn lúc lưu (Agent chưa thi hành ở các mode đó). — Đã triển khai (đợt 4: Dashboard tách domain/đường dẫn, publisher xuất urlPatterns, extension 0.1.3 dựng rule regexFilter với ranh giới đường dẫn; CI xanh run #183, v0.1.183), chờ kiểm chứng trên máy thật.
 - [ ] DNS filtering dự phòng: hướng dẫn đặt DNS gia đình trên máy con (VD: Cloudflare for Families 1.1.1.3) — ghi rõ đây là lớp bổ sung, không thay extension.
@@ -97,7 +97,7 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 
 ### 2.6. Yêu cầu từ con & thông báo
 - [x] Con bấm "Xin thêm giờ" / "Xin mở app" từ màn hình khóa/tray, nhập lý do. — Đã triển khai đầu-cuối (Tray → IPC → outbox Service → RPC Supabase → Dashboard); yêu cầu xin giờ đã kiểm chứng lên server trên máy thật (log 17/11/2026). Yêu cầu xin mở app chưa có thông tin app trong yêu cầu nên duyệt mới chỉ đổi trạng thái.
-- [x] Phụ huynh nhận yêu cầu trên Dashboard (Realtime), Duyệt/Từ chối + ghi chú. — Đã triển khai: duyệt xin thêm giờ gửi MỘT lệnh ghi đè mở khóa đúng N phút (đổi từ mẫu unlock + cộng giờ sau test máy thật 17/11: cộng giờ chỉ nới mức trần ngày nên không có tác dụng khi con đã dùng vượt mức trần); CI xanh run #167, chưa kiểm chứng lại trên máy thật. Ghi chú khi duyệt chưa có.
+- [x] Phụ huynh nhận yêu cầu trên Dashboard (tải lúc mở trang), Duyệt/Từ chối + ghi chú. — Đã triển khai: duyệt xin thêm giờ gửi MỘT lệnh ghi đè mở khóa đúng N phút (đổi từ mẫu unlock + cộng giờ sau test máy thật 17/11: cộng giờ chỉ nới mức trần ngày nên không có tác dụng khi con đã dùng vượt mức trần); CI xanh run #167, chưa kiểm chứng lại trên máy thật. Ghi chú khi duyệt chưa có.
 - [x] Agent nhận lệnh trong vòng < 30 giây khi online (polling 15s). — Đã triển khai và kiểm chứng (lệnh khóa/mở tới trong ~15s).
 - [x] PIN thoát Tray (mã PIN riêng của phụ huynh, khác mật khẩu đăng nhập). — Đã triển khai: PIN đặt trên Dashboard (băm PBKDF2 tại trình duyệt), Service giữ hash và xác thực, sai 5 lần khóa 5 phút (đã thấy khóa nhập hoạt động trong log máy thật 17/11/2026); mã chỉ dùng một lần — nhập đúng và thoát xong thì mã tự gỡ khỏi server (RPC migration 8, đối sánh hash nên không xóa nhầm mã mới), đã kiểm chứng trên máy thật tối 17/11 (lần dùng thứ 2 bị từ chối); CI xanh run #167. Cần migration 8 áp lên Supabase thì việc gỡ trên server mới chạy; trước đó mã vẫn bị xóa khỏi bộ nhớ Service ngay khi dùng đúng và lệnh gỡ thử lại mỗi phút.
 - [x] Xem thời gian còn lại thật trên Tray. — Đã triển khai: Tray hỏi Service qua IPC, Service trả quyết định mới nhất kèm số phút còn lại thật (giới hạn ngày/khung giờ/giờ ngủ); khi đang mở khóa tạm thời thì hiện rõ lý do thay vì "không giới hạn". CI xanh run #167, chưa kiểm chứng trên máy thật.
@@ -105,19 +105,19 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 ### 2.7. Báo cáo
 - [x] Trạng thái thi hành realtime trên Dashboard: luật nào đang khóa máy/khóa app/khóa domain, chip "Đang thi hành", thời gian cập nhật. — Đã triển khai (snapshot enforcement, migration 6).
 - [x] Hồ sơ theo con: Dashboard điều hướng Tổng quan / Hồ sơ / Yêu cầu; vào hồ sơ của một con có 3 tab Thiết bị / Quy tắc / Báo cáo chỉ hiện dữ liệu của con đó; tab Báo cáo tổng hợp tổng phút hôm nay, top 5 app, trạng thái máy, yêu cầu chờ duyệt, số quy tắc đang bật (chỉ dùng cột migration 1). — Đã triển khai (đợt sửa 17/11/2026, CI xanh run #159); đường dẫn cũ `/thiet-bi`, `/quy-tac` vẫn hoạt động. Thiết kế lại trang Quy tắc đợt 18/11 (quy tắc hiện hành lên đầu, nhóm theo con/danh mục với màu riêng, form tạo thu gọn accordion, đặt tên quy tắc, mẫu của phụ huynh lưu trên server + áp nhanh, mẫu Chỉ cho phép Edge; CI xanh run #170; migration 9 đã áp sáng 18/11/2026).
-- [ ] Báo cáo ngày/tuần: tổng giờ, giờ theo app, số lần bị chặn, số lần xin thêm giờ. — Đã phê duyệt 17/11/2026 (xem §2.10).
+- [x] Báo cáo ngày/tuần: tổng giờ, giờ theo app, số lần bị chặn, số lần xin thêm giờ. — Đã triển khai: trang Báo cáo tuần đủ 7 mục + email tóm tắt hàng tuần (xem §2.10); chưa kiểm chứng với dữ liệu thật.
 - [ ] Xuất CSV (giai đoạn 1.5).
 
-### 2.8. Tính năng nâng cao + giao diện chuyên nghiệp (đã phê duyệt 17/11/2026, thực hiện dần theo thứ tự)
+### 2.8. Tính năng nâng cao + giao diện chuyên nghiệp (đã phê duyệt 17/11/2026; cả 9 mục đã triển khai xong phần code ngày 18/11/2026, kiểm chứng thật còn chờ)
 
-- [ ] Trang Hôm nay thành tổng quan thật: thẻ trạng thái máy, giờ còn lại, biểu đồ giờ dùng trong ngày, top app/domain. Dữ liệu đã có sẵn, chỉ thiếu giao diện.
-- [ ] Thông báo cho phụ huynh: email khi con xin thêm giờ, khi phát hiện can thiệp (đổi giờ, agent offline bất thường). Đẩy thông báo (push) để sau cùng app Android.
-- [ ] Nhật ký hoạt động: ai đổi rule nào, khóa/mở lúc nào, duyệt yêu cầu nào. Bảng dữ liệu đã có, chưa có giao diện xem.
-- [ ] Ngân hàng giờ: phụ huynh thưởng thêm giờ kèm lý do và lịch sử, con thấy được giờ thưởng của mình.
-- [ ] Chặn theo danh mục domain (người lớn, cờ bạc, mạng xã hội) từ danh sách công khai, thay vì gõ từng domain.
-- [ ] Mời phụ huynh thứ hai cùng quản lý gia đình. Cấu trúc dữ liệu đã hỗ trợ sẵn.
-- [ ] Xuất dữ liệu và xóa toàn bộ dữ liệu của con (theo cam kết riêng tư ở `03-SECURITY.md` mục 5).
-- [ ] Giao diện chuyên nghiệp: chuẩn hóa trạng thái rỗng/đang tải/lỗi/mất mạng; hướng dẫn lần đầu (tạo con, ghép nối, chọn mẫu quy tắc).
+- [x] Trang Hôm nay thành tổng quan thật: thẻ trạng thái máy, giờ còn lại, biểu đồ giờ dùng trong ngày, top app/domain. — Đã triển khai (head f29b937, CI #215 xanh); chưa xem với dữ liệu thật / trên điện thoại thật.
+- [x] Thông báo cho phụ huynh: email khi con xin thêm giờ, khi phát hiện can thiệp (đổi giờ, agent offline bất thường). — Đã triển khai phần code: Edge Function `send-parent-notifications` quét mỗi 5 phút + migration 12 (head a40a51a, CI #218 xanh); migration 12 chưa áp, chưa kiểm chứng thật. Đẩy thông báo (push) để sau cùng app Android.
+- [x] Nhật ký hoạt động: ai đổi rule nào, khóa/mở lúc nào, duyệt yêu cầu nào. — Đã triển khai giao diện (route `/nhat-ky`, tab thứ 5; head 2838181, CI #222 xanh); chưa xem với dữ liệu thật. PHÁT HIỆN: lịch sử đổi rule KHÔNG có nguồn dữ liệu (`rules` không có lịch sử, Dashboard không ghi audit khi sửa rule) — giao diện ghi chú trung thực, follow-up riêng cần Dashboard tự ghi audit với actor = id user.
+- [x] Ngân hàng giờ: phụ huynh thưởng thêm giờ kèm lý do và lịch sử, con thấy được giờ thưởng của mình. — Đã triển khai (migration 13 + tab Ngân hàng giờ + Tray hiện câu giờ thưởng; head eda2c5b, CI #228 xanh, installer v0.1.228 — cài thẳng v0.1.229); migration 13 chưa áp, chưa kiểm chứng thật. Ngữ nghĩa: thưởng cộng vào mức trần tới hết ngày, nhiều lần cộng dồn.
+- [x] Chặn theo danh mục domain (người lớn, cờ bạc, mạng xã hội) từ danh sách công khai, thay vì gõ từng domain. — Đã triển khai với danh sách hạt giống chọn tay 53 domain (head bb632b6, run #229 xanh, installer v0.1.229 + extension 0.1.8); chưa kiểm chứng thật. GIỚI HẠN TRUNG THỰC: chỉ chặn website phổ biến nhất, website mới/mirror sẽ lọt; nhập danh sách công khai đầy đủ là đợt riêng. Câu hỏi đang chờ anh Tiến: WhatsApp Web/Telegram Web + LinkedIn có ở lại danh mục Mạng xã hội không.
+- [x] Mời phụ huynh thứ hai cùng quản lý gia đình. — Đã triển khai (migration 14 + link mời token hiện một lần, anh Tiến tự gửi link qua nhắn tin/Zalo; head c7b5a4c, CI #238 xanh); migration 14 chưa áp, chưa kiểm chứng thật. CHƯA có giao diện gỡ phụ huynh đã tham gia.
+- [x] Xuất dữ liệu và xóa toàn bộ dữ liệu của con (theo cam kết riêng tư ở `03-SECURITY.md` mục 5). — Đã triển khai (migration 15 + tab Dữ liệu: xuất một file JSON 10 mục, xóa phải gõ đúng tên con; head 4d713f3, CI #241 xanh); migration 15 chưa áp, chưa kiểm chứng thật — chỉ thử xóa trên hồ sơ con thử, không bao giờ dùng hồ sơ thật. Xóa là xóa cả hồ sơ + cả máy của con; chưa có xóa gia đình/tài khoản.
+- [x] Giao diện chuyên nghiệp: chuẩn hóa trạng thái rỗng/đang tải/lỗi/mất mạng; hướng dẫn lần đầu (tạo con, ghép nối, chọn mẫu quy tắc). — Đã triển khai (18 file, bộ component dùng chung + biểu ngữ mất mạng + hướng dẫn 3 bước khi trang Hồ sơ rỗng; head 40fa948, CI #245 xanh; không đổi route/luồng nào); chưa kiểm chứng bằng mắt trên điện thoại thật.
 - [x] Xác thực 2 lớp (MFA) cho tài khoản phụ huynh (Supabase đã hỗ trợ sẵn). — Đã triển khai: TOTP tự nguyện qua Supabase Auth, bật/tắt ở mục Bảo mật tài khoản trên trang Hồ sơ (quét QR hoặc nhập secret, nhập mã 6 số để xác nhận; tắt phải nhập mã hiện tại). Đăng nhập khi đã bật thì sau mật khẩu phải nhập mã, sai mã không vào được; tài khoản chưa bật đăng nhập như cũ. Không migration, không đổi luồng đăng ký/xác minh email. Khôi phục khi mất thiết bị: xem `03-SECURITY.md` §2 (gỡ factor bởi quản trị dự án Supabase, không có mã khôi phục tự phục vụ). Chưa kiểm chứng đầu-cuối trên tài khoản thật.
 
 Ranh giới giữ nguyên (quyết định 17/11/2026): không chụp màn hình, không ghi phím, không đọc nội dung chat hay file của con. Mục chụp màn hình opt-in ở §4 đã loại khỏi kế hoạch.
@@ -143,9 +143,9 @@ Việc cần làm để đạt luồng này:
 
 Quyết định còn mở (chưa chốt): ai vận hành bản dùng chung, có mua domain không, tài khoản đăng ký cửa hàng extension đứng tên ai, có mua chứng chỉ ký số không.
 
-### 2.10. Báo cáo tuần (đã phê duyệt 17/11/2026)
+### 2.10. Báo cáo tuần (đã phê duyệt 17/11/2026; trang Báo cáo đã live, email đã giao phần code — kiểm chứng thật còn chờ)
 
-Nội dung 7 mục:
+Nội dung 7 mục (tuần = thứ Hai 00:00 giờ địa phương tới thứ Hai sau; chọn con + chọn tuần, tuần này + 7 tuần trước):
 
 1. Tổng quan: tổng giờ dùng tuần, tăng/giảm so với tuần trước, số ngày dùng máy.
 2. Giờ dùng theo từng ngày, kèm đường giới hạn để thấy ngày nào vượt.
@@ -155,7 +155,13 @@ Nội dung 7 mục:
 6. Cảnh báo: đổi giờ, agent khởi động lại, extension mất tín hiệu, offline bất thường.
 7. Gợi ý tự động, ví dụ "Thứ 7 con dùng gấp đôi ngày thường" hay "YouTube chiếm 60% thời gian".
 
-Hình thức đã chốt: trang Báo cáo ngay trên Dashboard với biểu đồ (thư viện Recharts, miễn phí, cùng công nghệ hiện tại) kèm email tóm tắt gửi mỗi tuần (Edge Function + Resend gói free). KHÔNG dùng Power BI làm hướng chính: cần gói trả phí, phải xuất dữ liệu trẻ em ra khỏi Supabase, phức tạp mà không hơn biểu đồ trong Dashboard. Xuất PDF để sau; in trực tiếp từ trang báo cáo là đủ. Toàn bộ dữ liệu đã có trong các bảng `app_usage`, `web_visits`, `audit_logs`, `requests`.
+Hình thức đã chốt: trang Báo cáo ngay trên Dashboard với biểu đồ (thư viện Recharts, miễn phí, cùng công nghệ hiện tại) kèm email tóm tắt gửi mỗi tuần (Edge Function + Resend gói free). KHÔNG dùng Power BI làm hướng chính: cần gói trả phí, phải xuất dữ liệu trẻ em ra khỏi Supabase, phức tạp mà không hơn biểu đồ trong Dashboard. Xuất PDF để sau; in trực tiếp từ trang báo cáo là đủ.
+
+**Trang Báo cáo đã triển khai** (route `/bao-cao`, tab Báo cáo; head 126f7765): đủ 7 mục, logic thuần ở `weekReport.ts`, phân trang thật + ghi chú khi dữ liệu bị cắt. Mục 4 đếm từ nguồn mới sau đợt ghi sự kiện thi hành (xem `02-ARCHITECTURE.md` §4.10): Agent ghi chuyển trạng thái qua RPC `safepc_push_enforcement_event` (migration 10, 4 action `lock_started`/`break_started`/`app_blocked`/`warning_shown`), khóa của phụ huynh đếm riêng từ bảng `commands` để không đếm trùng, lượt web bị chặn đếm từ `web_visits.blocked` (extension 0.1.7 báo cáo, chỉ domain). Ghi chú trung thực trong giao diện: lịch sử thi hành chỉ bắt đầu từ khi migration 10 được áp + bản Agent/extension mới được cài (migration 10 đã áp 18/11/2026, bản mới chưa cài lên máy thật), và số lượt web bị chặn là con số tối thiểu (lượt bị chặn bởi quy tắc chặn tất cả không quy chiếu được domain nên không đếm). Trang chưa kiểm chứng với dữ liệu thật.
+
+**Email báo cáo tuần đã giao phần code** (head 4485d5e, CI #212 xanh): Edge Function `send-weekly-report` một file, gửi mỗi thứ Hai 07:00 giờ +07 qua pg_cron + pg_net (migration 11, đã áp), một email cho một family tới mọi phụ huynh (người nhận qua Auth Admin API), đủ 7 mục ở dạng gọn, chống gửi trùng bằng bảng `weekly_report_sends` + RPC claim/finish, bảo vệ bằng header secret dùng chung với email thông báo. Chi tiết luồng + hợp đồng secret xem `02-ARCHITECTURE.md` §4.11; các bước tay (deploy function, tắt JWT, đặt secret, gửi thử) xem `docs/06-EMAIL-SETUP.md`. CHƯA kiểm chứng đầu-cuối: chưa chạy thật, chưa gửi thật, dòng lịch cron + múi giờ UTC chưa xác nhận. Chưa có domain đã xác minh thì email chỉ giao tới đúng email đăng ký tài khoản Resend; domain `ndt.ap.vn` đã mua nhưng chưa thêm vào Resend và chưa xác minh DNS.
+
+Dữ liệu cho cả hai hình thức nằm trong các bảng `app_usage`, `web_visits`, `audit_logs`, `requests`, `commands`.
 
 ## 3. Giai đoạn 2: App Android cho phụ huynh
 
@@ -184,8 +190,8 @@ Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng t
 ## 6. Tiêu chí chấp nhận MVP (Definition of Done)
 
 1. ✅ Cài Agent trên máy Windows Standard User, Agent tự chạy khi khởi động, không cần phụ huynh can thiệp. — Đã kiểm chứng (Service chạy từ lúc khởi động, Tray tự chạy mỗi lần đăng nhập).
-2. 🔨 Phụ huynh đặt giới hạn 30 phút, Agent khóa đúng giờ, con thấy lý do và xin thêm giờ được. — Khóa đúng giờ đã kiểm chứng (giờ ngủ + khóa ngay); xin thêm giờ đầu-cuối đang làm.
-3. 🔨 Chặn 1 app (VD: game) và 1 domain (qua extension) hoạt động đúng, có log. — Chặn app đã triển khai, chờ kiểm chứng đầy đủ; chặn domain chờ extension được cài và kiểm chứng đầu-cuối.
+2. 🔨 Phụ huynh đặt giới hạn 30 phút, Agent khóa đúng giờ, con thấy lý do và xin thêm giờ được. — Khóa đúng giờ đã kiểm chứng (giờ ngủ + khóa ngay); xin thêm giờ đầu-cuối đã kiểm chứng sáng 18/11 (duyệt = mở khóa đúng N phút, máy mở ngay). Khóa đúng giới hạn phút/ngày chưa kiểm chứng riêng.
+3. ✅ Chặn 1 app (VD: game) và 1 domain (qua extension) hoạt động đúng, có log. — Đã kiểm chứng: chặn app (Chrome/Notepad bị đóng trong lúc mở khóa, trưa 18/11) và chặn domain (trang chặn SafePC thật, 13:32 ngày 18/11); log thi hành ghi qua sự kiện thi hành + lượt web bị chặn (xem §2.10).
 4. ✅ Mất mạng, dữ liệu không mất, đồng bộ lại khi có mạng. — Thiết kế offline-first đã triển khai (SQLite + hàng đợi); kiểm chứng mất mạng có chủ đích chưa chạy đầy đủ.
-5. 🔨 Con (Standard User) không tắt/gỡ được Agent nếu không có mã PIN phụ huynh. — Standard User không dừng được Service SYSTEM / không gỡ được (cần quyền Admin) — đã đúng theo thiết kế; mã PIN gỡ là việc Sprint 4, mã PIN thoát Tray đang làm.
+5. 🔨 Con (Standard User) không tắt/gỡ được Agent nếu không có mã PIN phụ huynh. — Standard User không dừng được Service SYSTEM / không gỡ được (cần quyền Admin) — đã đúng theo thiết kế; mã PIN thoát Tray đã triển khai và kiểm chứng (dùng một lần, lần 2 bị từ chối). Mã PIN khi gỡ là việc Sprint 4, hiện quyền Admin là lớp bảo vệ chống gỡ.
 6. ✅ Dashboard load nhanh, hiển thị đúng dữ liệu trong ngày. — Bản live hoạt động; đo hiệu năng chính thức chưa chạy.

@@ -114,14 +114,14 @@ Từ đây trở đi không cần làm gì thêm: lịch cron tự gửi mỗi t
 giờ Việt Nam cho tuần vừa kết thúc. Email đầu tiên tự động sẽ tới vào
 thứ Hai sau khi setup xong.
 
-## 6. Khi mua domain (ndtcoder.io.vn) — làm sau
+## 6. Khi mua domain (ndt.ap.vn) — làm sau
 
 1. Trong Resend: **Domains** > **Add Domain**, nhập domain, làm theo
    hướng dẫn: thêm các bản ghi DNS mà Resend cấp (SPF + DKIM, nên thêm
    cả DMARC) tại nhà đăng ký tên miền (tino.vn). Đợi Resend báo domain
    đã xác minh (thường trong vài phút tới vài giờ sau khi DNS lan).
 2. Đặt secret `RESEND_FROM` thành địa chỉ thuộc domain đã xác minh, vd:
-   `SafePC <bao-cao@ndtcoder.io.vn>` (phần trước `@` do anh chọn).
+   `SafePC <bao-cao@ndt.ap.vn>` (phần trước `@` do anh chọn).
 3. Deploy lại function (xem bước 2). Từ lần gửi sau, email sẽ gửi từ
    địa chỉ đẹp này tới **mọi** phụ huynh trong gia đình, không còn giới
    hạn chỉ gửi tới email đăng ký Resend nữa.

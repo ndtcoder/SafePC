@@ -9,14 +9,15 @@
   ├─ Browser Extension (Chrome/Edge): lọc domain, báo cáo domain
   └─ SQLite local: hàng đợi offline, cache quy tắc
 
-            ↕ HTTPS / WSS (TLS 1.2+)
+            ↕ HTTPS (TLS 1.2+)
 
 [Backend: Supabase Free]
   ├─ Postgres + Row Level Security (RLS)
-  ├─ Auth (email/password, MFA giai đoạn 2)
-  ├─ Realtime (lệnh phụ huynh -> Agent, yêu cầu con -> phụ huynh)
+  ├─ Auth (email/password + MFA TOTP tự nguyện cho phụ huynh)
+  ├─ Realtime: CHƯA DÙNG — yêu cầu của con tải lúc mở trang Dashboard; lệnh xuống Agent đi bằng polling 15s
   ├─ Storage (avatar, log đính kèm - nếu có)
-  └─ Edge Functions (pairing, tổng hợp báo cáo, dọn dữ liệu cũ)
+  ├─ pg_cron + pg_net (lịch gửi email: báo cáo tuần + quét thông báo)
+  └─ Edge Functions (send-weekly-report, send-parent-notifications; pairing đã chuyển sang RPC, dọn dữ liệu cũ chưa làm)
 
             ↕ HTTPS
 
@@ -46,12 +47,18 @@ family_members (family_id, user_id, role: parent|child, ...)
 children (id, family_id, display_name, birth_year, avatar_url)
 devices (id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, last_extension_seen_at, enforcement_json, enforcement_updated_at, status)
 device_tokens (device_id, token_hash, created_at, revoked_at) -- không lưu token thô
-rules (id, child_id, type: daily_limit|bedtime|time_window|app|website, config JSONB, enabled)
+pairing_codes (id, family_id, child_id, code_hash, attempts, expires_at, used_at) -- chỉ lưu hash SHA-256 của mã
+rules (id, child_id, type: daily_limit|bedtime|time_window|app|website, config JSONB, name, enabled)
+rule_templates (id, family_id, name, description, rules JSONB, created_at, updated_at) -- mẫu quy tắc của phụ huynh
 app_usage (id, device_id, child_id, app_name, exe_path_hash, started_at, duration_sec)
 web_visits (id, device_id, child_id, domain, visited_at, duration_sec, blocked: bool) -- chỉ domain + thời lượng, không path/query
-requests (id, child_id, type: extra_time|unblock_app, status, reason, decided_by, decided_at)
+requests (id, child_id, type: extra_time|unblock_app, status, reason, decided_by, decided_at, minutes, device_id)
 commands (id, device_id, type: lock_now|unlock|refresh_rules|update|temporary_override, payload, status, created_at)
 audit_logs (id, family_id, child_id, device_id, actor, action, target, ip_hash, details, created_at)
+time_bank_grants (id, family_id, child_id, minutes, reason, granted_by, status: active|voided, expires_at) -- lịch sử thưởng giờ
+family_invites (id, family_id, invited_email, token_hash, invited_by, expires_at, accepted_at, accepted_by, revoked_at) -- chỉ lưu hash token
+weekly_report_sends (id, family_id, week_start, status: sending|sent, claimed_at, sent_at, resend_id, recipients) -- chống gửi trùng email tuần
+notification_sends (id, family_id, kind: request|tamper|device_offline, event_key, status, device_id, action, child_id, claimed_at, sent_at, resend_id, recipients) -- chống gửi trùng email thông báo
 ```
 
 - Tất cả bảng bật RLS: phụ huynh chỉ thấy dữ liệu của gia đình mình.
@@ -61,15 +68,15 @@ audit_logs (id, family_id, child_id, device_id, actor, action, target, ip_hash, 
 ## 4. Luồng chính
 
 ### 4.1. Pairing thiết bị
-1. Phụ huynh bấm "Ghép nối máy mới" trên Dashboard, chọn con -> Dashboard tạo pairing_code 6 số (chỉ lưu hash SHA-256), hết hạn 10 phút.
+1. Phụ huynh bấm "Ghép nối máy mới" trên Dashboard, chọn con -> Dashboard tạo pairing_code 6 số (chỉ lưu hash SHA-256), hết hạn 5 phút.
 2. Trên máy con, chạy lệnh `SafePC.Agent.Service.exe pair <mã>` bằng quyền Admin (PowerShell/Terminal).
-3. Agent gọi RPC `safepc_redeem_pairing_code` qua PostgREST đổi code -> device_token + device_id (một transaction: đánh dấu mã đã dùng + tạo device + tạo token). Token lưu bằng DPAPI (máy con) + hash lưu DB. Edge Function pair-device đã thay bằng RPC (migration 3). Lệnh `pair` ép console sang UTF-8 (Output/InputEncoding, best-effort trong try/catch) ngay khi chạy để tiếng Việt in ra PowerShell/Terminal không vỡ dấu; đây là nơi duy nhất của Service ghi ra console.
+3. Agent gọi RPC `safepc_redeem_pairing_code` qua PostgREST đổi code -> device_token + device_id (một transaction: đánh dấu mã đã dùng + tạo device + tạo token). Token lưu bằng DPAPI (máy con) + hash lưu DB. Edge Function pair-device đã thay bằng RPC (migration 3). Lệnh `pair` ép console sang UTF-8 (Output/InputEncoding, best-effort trong try/catch) ngay khi chạy để tiếng Việt in ra PowerShell/Terminal không vỡ dấu. Lệnh `pair` là đường console cho người dùng cuối; cờ `--self-test-ipc` cũng ghi console nhưng chỉ dùng cho CI.
 4. Agent tải rules lần đầu, bắt đầu heartbeat 60s.
 
 ### 4.2. Thi hành quy tắc (offline-first)
 - Agent cache rules + giới hạn còn lại trong SQLite. Mất mạng vẫn thi hành đúng theo cache.
 - Mỗi 15s: kiểm tra foreground app, cộng dồn thời gian, kiểm tra bedtime/limit.
-- Mỗi 15-30s (khi online): poll commands + gửi usage batch. Realtime là lớp tăng tốc, polling là dự phòng.
+- Mỗi 15s (khi online): poll commands. Mỗi 5 phút: đẩy usage batch (app + web). Polling là đường duy nhất — chưa dùng Realtime.
 - Khi hết giờ: Tray App hiện màn hình khóa, đếm ngược 60s để con kịp lưu bài rồi gọi LockWorkStation khóa phiên. Với lệnh khóa có độ trễ (xem 4.9), giai đoạn chờ chỉ hiện cửa sổ cảnh báo nhỏ, hết độ trễ mới hiện màn hình khóa.
 - Thứ tự đánh giá trong `RuleEngine` (Sprint 2 đợt 1 + đồng bộ): khóa cưỡng chế của phụ huynh (lệnh lock_now, tới khi có lệnh unlock) → ghi đè tạm thời (khóa/mở) → giờ ngủ → khung giờ được dùng → giới hạn ngày; cảnh báo lấy ngưỡng gần nhất. Mọi giờ giấc theo giờ địa phương của máy con; quy ước thứ 0–6 khớp `DayOfWeek` (0 = Chủ nhật). Ngày vắng mặt trong `minutesByWeekday`/`bedtimeByWeekday` = không áp rule ngày đó; riêng `time_window`, ngày vắng mặt = không được dùng máy. Bedtime qua đêm (`end <= start`) khóa từ `start` hôm nay tới `end` hôm sau — engine kiểm tra cả khung hôm nay và đuôi qua đêm của hôm qua.
 - Ghi đè tạm thời (lệnh `temporary_override`): Agent lưu ghi đè đang hiệu lực vào bảng SQLite `active_override` (tối đa 1 hàng, lệnh mới thay lệnh cũ) và kiểm tra `expires_at` ở mỗi lần đánh giá, nên ghi đè hết hạn đúng giờ kể cả sau khi Service khởi động lại. Không suy ra lại từ server mỗi lần kiểm tra vì lệnh là một lần (pending → done) — sau khi nhận, hàng lệnh rời khỏi poll pending. Dashboard hiển thị ghi đè đang hiệu lực bằng cách đọc lệnh `temporary_override` mới nhất của máy từ bảng `commands`.
@@ -88,7 +95,7 @@ Giờ giấc của rules thi hành theo đồng hồ địa phương của máy 
 
 Phụ huynh đặt rule `type = website` trên Dashboard → Agent đồng bộ về cache SQLite → `DomainRulesPublisher` (Service) xuất bản file `domain_rules.json` vào `%ProgramData%\SafePC\shared\` (chỉ ghi lại khi nội dung website thay đổi; khi đồng bộ rules, khi ghi đè áp dụng/hết hạn/hủy, và lúc khởi động nếu cache không rỗng) → NativeHost (`SafePC.Agent.NativeHost.exe`, giao thức native messaging stdio) đọc file và trả cho extension → extension dựng lại declarativeNetRequest dynamic rules mỗi phút: chặn domain, chặn theo giờ (đánh giá theo giờ địa phương, ranh giới có hiệu lực trong ~1 phút), chế độ allowlist, cho phép/chặn tạm thời, giới hạn thời gian theo domain (ngân sách tính theo ngày địa phương, hết thì chặn tới hôm sau), SafeSearch cho Google/Bing và Restricted Mode cho YouTube (redirect sang `restrict.youtube.com`). Ghi đè domain chỉ ảnh hưởng file này, không mở/khóa máy (`RuleEngine` bỏ qua chúng).
 
-Chiều ngược lại: extension đếm thời gian tab hiển thị theo domain (chỉ domain + giây, không URL/path/query) → gửi NativeHost mỗi phút → ghi thêm vào `shared\web_usage.jsonl` → Agent đọc trong chu kỳ flush 5 phút, đẩy qua RPC `safepc_push_web_visits` (migration 4) vào bảng `web_visits`; chỉ cắt file khi gửi thành công, gửi lỗi thì giữ lại chu kỳ sau. Extension không gọi Supabase, không có secret. Khi chưa nối được NativeHost, extension mở (fail-open) và popup báo chưa kết nối; bản unpacked có thể bị Standard User tắt — cứng hóa bằng store publishing + chính sách `ExtensionInstallForcelist` là việc sau (chưa triển khai). Manifest của NativeHost hiện dùng ID extension placeholder `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (xem `apps/browser-extension/README.md` mục 4).
+Chiều ngược lại: extension đếm thời gian tab hiển thị theo domain (chỉ domain + giây, không URL/path/query) → gửi NativeHost mỗi phút → ghi thêm vào `shared\web_usage.jsonl` → Agent đọc trong chu kỳ flush 5 phút, đẩy qua RPC `safepc_push_web_visits` (migration 4, sửa ở migration 10 để nhận thêm cờ `blocked`) vào bảng `web_visits`; chỉ cắt file khi gửi thành công, gửi lỗi thì giữ lại chu kỳ sau. Từ extension 0.1.7, lượt web bị chặn cũng đi qua kênh này với `blocked = true`, `duration_sec = 0`, chỉ domain của rule đã khớp (xem §4.10). Extension không gọi Supabase, không có secret. Khi chưa nối được NativeHost, extension mở (fail-open) và popup báo chưa kết nối; bản unpacked có thể bị Standard User tắt — cứng hóa bằng store publishing + chính sách `ExtensionInstallForcelist` là việc sau (tài khoản Edge Add-ons đã đăng ký + xác minh, chưa xuất bản extension nào, chưa bật chính sách). Manifest của NativeHost được bộ cài sinh ra lúc cài đặt (`WriteNativeHostManifest` trong `SafePCAgent.iss`) với ID extension Edge thật, không còn placeholder; sửa tay file manifest sẽ bị ghi đè khi cài lại.
 
 ### 4.6. Thi hành theo app, giờ học tập trung và nghỉ bắt buộc (Sprint 2 đợt 3)
 
@@ -98,7 +105,7 @@ Luồng thi hành theo app: Tray phát hiện đổi foreground tức thì bằn
 
 Thứ tự thi hành theo app trong một lần kiểm tra (bản sửa lỗi sau đợt 3): ghi đè app tạm thời → focus → allowlist (luôn áp dụng + theo giờ) → luôn chặn → chặn theo giờ → giới hạn thời gian. Ghi đè app tạm thời là lệnh `temporary_override` với `action` `block_app`/`allow_app` và payload `{"apps":["exe",...],"minutes":N,"expires_at":ISO}`: `block_app` đóng app foreground khớp danh sách, `allow_app` miễn app khớp khỏi MỌI thi hành theo app (kể cả focus/allowlist) trong lúc còn hạn. Ghi đè app lưu bền vững trong bảng SQLite `active_override` (cột `apps_json`, cùng hàng duy nhất với ghi đè giờ giấc/domain — lệnh mới nhất thắng) và được `RuleEngine` bỏ qua hoàn toàn như ghi đè domain. Mọi đường đóng app đều đi qua đúng một hàm `KillAppAsync` (một điểm gọi `Process.Kill` duy nhất, kiểm tra denylist ở đầu hàm và ở từng process); không đường nào khác được đóng process.
 
-Thứ tự ưu tiên phía domain (extension thi hành, cùng hợp đồng này): ghi đè chặn domain tạm thời (tempBlock) thắng allowlist của focus; ghi đè cho phép domain tạm thời (tempAllow) KHÔNG xuyên qua focus — trong giờ tập trung, domain ngoài danh sách focus vẫn bị chặn dù có tempAllow. Thang ưu tiên DNR đầy đủ (số càng cao càng thắng, extension thi hành, `domain_rules.json` chỉ mang dữ liệu): tempBlock 100 > focus 60 > allowlistByTime 55 > allowlist 50 > blockByTime 40 > block 30 > domainLimits 20. Mục `allowlistByTime` trong file (hợp từ mọi rule website mode `allowlist_by_time`, mỗi rule một entry domains + khung giờ theo thứ; khóa vắng mặt khi không có rule hợp lệ nào) do `DomainRulesPublisher` xuất bản, Version file vẫn là 1.
+Thứ tự ưu tiên phía domain (extension thi hành, cùng hợp đồng này): ghi đè chặn domain tạm thời (tempBlock) thắng allowlist của focus; ghi đè cho phép domain tạm thời (tempAllow) KHÔNG xuyên qua focus — trong giờ tập trung, domain ngoài danh sách focus vẫn bị chặn dù có tempAllow. Thang ưu tiên DNR đầy đủ (số càng cao càng thắng, extension thi hành, `domain_rules.json` chỉ mang dữ liệu; `PRIORITY` trong `background.js`): tempBlock 100 > redirect 65 > focusAllow 60 > focusBlockAllRedirect 59 > focusBlockAll 58 > tempAllow 57 > allowlistByTimeAllow 55 > allowlistAllow 50 > time 40 > blocked 30 > limit 20 > blockAllRedirect 15 > blockAll 14. Chặn theo danh mục (extension 0.1.8) không đổi thang này: domain thuộc danh mục vẫn là rule `blocked` ở mức 30, chỉ khác lý do hiện trên trang chặn (xem `blockedCategories` trong file rules). Mục `allowlistByTime` trong file (hợp từ mọi rule website mode `allowlist_by_time`, mỗi rule một entry domains + khung giờ theo thứ; khóa vắng mặt khi không có rule hợp lệ nào) do `DomainRulesPublisher` xuất bản, Version file vẫn là 1.
 
 Nghỉ bắt buộc (`forced_break`, VD: dùng liên tục 45 phút thì nghỉ 10 phút): chuỗi dùng liên tục tính từ `usage_samples` — khoảng trống > 3 phút thì chuỗi đứt, mẫu mới nhất cũ hơn 3 phút thì chuỗi = 0. Khi chuỗi đạt `workMinutes`, Service lưu thời điểm kết thúc giờ nghỉ vào `device_state` (`BreakEndsAt`, sống sót qua khởi động lại) và gửi IPC khóa — tái dùng đúng đường khóa hiện có (màn hình khóa đếm ngược 60s rồi `LockWorkStation`), không có UI khóa thứ hai. Trong giờ nghỉ, lệnh khóa được gửi lại mỗi 15s để đăng nhập lại sớm thì khóa lại ngay (Tray `ReassertLock`). Hết giờ nghỉ thì xóa `BreakEndsAt` và đặt `BreakStreakFloor` bằng thời điểm kết thúc, để mẫu trong giờ nghỉ không gây nghỉ lại ngay. Nói thành thật: giờ nghỉ chỉ khóa phiên trên máy này — không thể ép con nghỉ ngơi, chỉ ngăn con tiếp tục dùng máy này.
 
@@ -122,17 +129,48 @@ Giao lệnh theo phiên: mỗi Tray khi nối gửi message `hello` (phiên Wind
 
 Khóa có độ trễ: lệnh `lock_now` mang `delay_minutes` (0–5). Độ trễ > 0 thì Service đặt hẹn giờ, gửi cảnh báo ngay (Tray hiện cửa sổ nhỏ có đếm ngược trực tiếp, tái dùng một cửa sổ, đóng khi nhận lock/unlock), tới hẹn mới gửi lệnh khóa; vòng kiểm tra gửi lại cảnh báo khi số phút còn lại đổi. Trong lúc chờ, snapshot thi hành báo `warn` thay vì `lock`. Hẹn giờ chỉ tồn tại trong bộ nhớ — Service khởi động lại giữa chừng thì trạng thái khóa bền vững khiến tick sau khóa ngay (fail-closed).
 
-Cổng kiểm tra trên CI (job `build-agent`, runner Windows): Tray `--self-test` 14 check (giao diện + IPC qua pipe server giả, gồm cảnh báo nhỏ và đóng cảnh báo khi khóa) và Service `--self-test-ipc` 7 check (xử lý usage-sample, giao lock/unlock, miễn trừ admin sau hello). Cả hai cổng phải xanh thì CI mới đóng gói installer. Giới hạn: cùng user/cùng phiên, không bao phủ ranh giới ACL SYSTEM↔user hay đa phiên — kiểm chứng trên máy thật vẫn là bước quyết định. Phiên bản installer là `0.1.<số run CI>`.
+Cổng kiểm tra trên CI (job `build-agent`, runner Windows): Tray `--self-test` 19 check (giao diện + IPC qua pipe server giả, gồm cảnh báo nhỏ và đóng cảnh báo khi khóa, hit-test nút, đếm dispatcher exception) và Service `--self-test-ipc` 13 check (xử lý usage-sample, giao lock/unlock, miễn trừ admin sau hello, outbox yêu cầu, xác thực PIN, hỏi thời gian còn lại). Cả hai cổng phải xanh thì CI mới đóng gói installer. Giới hạn: cùng user/cùng phiên, không bao phủ ranh giới ACL SYSTEM↔user hay đa phiên — kiểm chứng trên máy thật vẫn là bước quyết định. Phiên bản installer là `0.1.<số run CI>`.
 
 Cứng hóa Tray (nguyên nhân Tray chết sớm vẫn chưa rõ, đang chờ Event Viewer — đây là chẩn đoán + cứng hóa, không phải một bản sửa đoán mò): global handler gắn ngay sau khi log được tạo (`UnhandledException` ghi stack, `DispatcherUnhandledException` ghi stack + `Handled = true` để UI exception không giết Tray, `UnobservedTaskException` ghi + `SetObserved`); log từng bước khởi động (6 bước) và breadcrumb ở mọi menu action / message IPC / mở-đóng cửa sổ để log đuôi cho thấy Tray đang làm gì khi chết; try/catch quanh mọi đường chuột, action menu, xử lý IPC và gọi `MessageReceived`; nếu `LockWindow` tạo/mở lỗi thì khóa phiên trực tiếp bằng `LockWorkStation` (khóa dự phòng — khóa phiên quan trọng hơn giao diện đếm ngược), `WarningWindow` lỗi thì chỉ ghi log. Cơ chế menu (cửa sổ WPF thật), ShutdownMode, cửa sổ neo và mutex single-instance không đổi.
 
+### 4.10. Lịch sử thi hành theo quy tắc — sự kiện thi hành (đợt 18/11/2026, migration 10)
+
+Bối cảnh: trang Báo cáo tuần (PRD §2.10, mục 4) cần số lần thi hành theo loại, nhưng database chưa có lịch sử thi hành — Agent chỉ gửi ảnh chụp trạng thái hiện tại (`devices.enforcement_json`, migration 6), `audit_logs` chỉ có 4 loại sự kiện can thiệp (migration 5), và `web_visits.blocked` luôn false vì RPC đẩy lượt thăm không insert cột đó (migration 4).
+
+RPC `safepc_push_enforcement_event` (migration 10, `SECURITY DEFINER`, xác thực bằng `safepc_auth_device`, `family_id`/`child_id`/`device_id` suy ra từ hàng device đã xác thực, không tin client) ghi một sự kiện vào bảng `audit_logs` sẵn có — không tạo bảng mới vì sự kiện thi hành và sự kiện can thiệp có cùng hình dạng và cùng ranh giới đọc. RPC chỉ nhận đúng 4 giá trị, `details` cắt tối đa 2KB (JSON hỏng sau khi cắt thì dùng `{}`):
+
+| Action | Ý nghĩa | `details` |
+|---|---|---|
+| `lock_started` | Màn hình khóa vừa hiện do quy tắc giờ giấc | `kind` = bedtime, time_window, daily_limit hoặc rule; `rule_ids` |
+| `break_started` | Giờ nghỉ bắt buộc vừa bắt đầu | `work_minutes`, `break_minutes`, `rule_ids` |
+| `app_blocked` | Một ứng dụng vừa bị đóng do vi phạm quy tắc | `exe`, `kind` = block, block_by_time, time_limit, focus, allowlist hoặc temp_block |
+| `warning_shown` | Một cửa sổ cảnh báo vừa hiện cho con | `kind` = deadline, pending_lock, app_window hoặc app_limit; `minutes_left`, `exe` với kind app_* |
+
+Phía Agent (`AgentWorker`, qua `SupabaseApiClient.PushEnforcementEventAsync`): chỉ ghi CHUYỂN TRẠNG THÁI, không ghi mỗi vòng kiểm tra 15 giây. `lock_started` chỉ khi khóa lần đầu (`firstLock`) VÀ gửi IPC tới được ≥1 Tray VÀ `DeriveLockedBy(...) == "rule"` — khóa cưỡng chế/ghi đè khóa của phụ huynh KHÔNG ghi ở đây vì đã đếm được từ bảng `commands`, ghi thêm sẽ đếm trùng; lần nhắc lại lệnh khóa trong giờ nghỉ cũng không ghi. `break_started` chỉ khi chuyển false → true. `app_blocked` chỉ khi đóng được thật (≥1 process) và chống spam cùng (exe, kind) trong 60 giây, mốc dedupe chỉ ghi khi gửi thành công. `warning_shown` chỉ khi cảnh báo tới được ≥1 Tray (đã hiện thật cho con). Gửi lỗi thì ghi log và bỏ qua — lỗi đẩy không bao giờ ảnh hưởng thi hành; Agent/extension mới chạy trước khi migration 10 được áp thì RPC chưa tồn tại, PostgREST trả lỗi, Agent ghi log throttle và bỏ qua (không crash, không retry bão).
+
+Phía extension (0.1.7): mỗi lần tab tới trang chặn, extension ghi một lượt chặn CHỈ DOMAIN (không path/query/URL/referrer) vào hàng đợi riêng `pendingBlocked` (tối đa 200, lưu bền), gửi kèm lượt xem thường qua `reportUsage` với `blocked = true`, `duration_sec = 0`. Cả hai đường tới trang chặn đều ghi theo domain của RULE đã khớp: đường tab watcher dùng `matchedBlockRuleDomain` (dự phòng hostname), đường redirect DNR tra rule vừa khớp bằng `getMatchedRules` (chỉ xét rule REDIRECT, tra domain từ `blockingRuleDomains` dựng từ read-back `getDynamicRules()` sau mỗi lần rebuild). Không quy chiếu được — rule chặn-tất-cả của focus/allowlist (không có domain cụ thể), `getMatchedRules` trống/lỗi — thì BỎ QUA, không đoán domain từ URL cũ của tab. Dedupe chung 60 giây theo domain cho cả hai đường. NativeHost chấp nhận cờ `blocked` tùy chọn (không phải boolean thì cả lượt thăm không hợp lệ) và chỉ ghi vào dòng JSONL khi true; Service gửi `blocked` lên qua RPC `safepc_push_web_visits` đã sửa ở migration 10 (sample thiếu `blocked` thì coi là false, client cũ vẫn chạy). **Số lượt web bị chặn vì vậy là cận dưới, không phải toàn bộ** — trang Báo cáo ghi rõ điều này.
+
+Phía Dashboard (`weekReport.ts`): `countRuleEnforcement` đếm 4 action thi hành từ `audit_logs` (khóa phân loại theo `details.kind`, kind lạ/thiếu vào `otherRuleLocks` để tổng không mất), `countParentEnforcement` đếm khóa/chặn tạm thời của phụ huynh từ `commands` (không đếm trùng), `countBlockedVisits` đếm `web_visits.blocked`, `filterTamperForChild` chỉ giữ đúng 4 loại can thiệp nên sự kiện thi hành không rò sang thẻ Cảnh báo. **Lịch sử chỉ bắt đầu từ khi migration 10 được áp + bản Agent/extension mới được cài**; tuần trước thời điểm đó hiện 0 kèm ghi chú trung thực trong giao diện, không hiện 0 như thể không có thi hành. Migration 10 đã áp ngày 18/11/2026; luồng này chưa kiểm chứng trên máy thật.
+
+### 4.11. Luồng email — báo cáo tuần và thông báo phụ huynh (đợt 18/11/2026, migration 11 + 12)
+
+Hai Edge Function một file, paste-deployable, dùng supabase-js qua esm.sh; logic thuần nằm giữa marker `__PURE_START__`/`__PURE_END__` và được kiểm chứng bằng harness Node tách đoạn đó ra (không cần chạy Deno). Cả hai gửi qua Resend bằng `fetch` tới API gửi email của Resend, nội dung HTML + text thuần, mọi chuỗi từ dữ liệu đều escape HTML, không log địa chỉ email hay secret. Client dùng khóa quản trị do nền tảng cấp nên bypass RLS — mọi truy vấn đều lọc tường minh theo `family_id` để không rò dữ liệu giữa các gia đình.
+
+Hợp đồng secret (Edge Function Secrets, do phụ huynh đặt tay, không bao giờ vào repo; hai function DÙNG CHUNG, không thêm secret mới cho function thứ hai): `RESEND_API_KEY` (bắt buộc), `WEEKLY_REPORT_SECRET` (bắt buộc — endpoint kiểm tra header `x-safepc-report-secret`, thiếu/sai hoặc secret chưa cấu hình thì 401 fail-closed), `RESEND_FROM` (tùy chọn, mặc định `SafePC <onboarding@resend.dev>`), `DASHBOARD_URL` (tùy chọn, mặc định `https://safe-pc.vercel.app`). Tên biến môi trường của khóa quản trị được ghép từ các phần rời trong code để quét secret của CI không báo nhầm. **JWT verification PHẢI TẮT cho cả hai function** — pg_cron xác thực bằng header secret chung, không gửi JWT. Lịch gửi dùng pg_cron + pg_net; secret xuất hiện trong định nghĩa job (đánh đổi đã biết của mẫu này, xem mục nâng cao trong `docs/06-EMAIL-SETUP.md`).
+
+**Email báo cáo tuần** (`send-weekly-report`, migration 11): lịch `safepc-weekly-report`, `'0 0 * * 1'` = thứ Hai 00:00 UTC = 07:00 giờ +07 (pg_cron chạy theo múi giờ database, kỳ vọng là UTC trên project này — chưa xác nhận). Một email cho một family, gửi tới mọi phụ huynh, đủ 7 mục PRD §2.10 ở dạng gọn, cùng ngữ nghĩa số liệu với trang Báo cáo tuần (tuần bắt đầu thứ Hai 00:00 giờ Asia/Ho_Chi_Minh). Người nhận lấy qua Auth Admin API (`family_members` role `parent` → email từng user; lỗi từng phụ huynh thì bỏ qua phụ huynh đó; không có email thì bỏ qua family). Chống gửi trùng: bảng `weekly_report_sends` khóa duy nhất (`family_id`, `week_start`) + RPC `safepc_claim_weekly_report`/`safepc_finish_weekly_report` (chỉ vai trò quản trị được gọi); claim kẹt ở `sending` quá 1 giờ được thu hồi để lần chạy sau gửi lại; gửi lỗi thì xóa claim để thử lại, gửi xong mới đánh dấu `sent` kèm id trả về. Gọi tay với body `{week_offset (0–8, mặc định 1), family_id, dry_run}` — `dry_run` chạy được khi chưa áp migration 11. Nếu email đã gửi nhưng đánh dấu `sent` thất bại thì UPDATE hàng đó thành `sent` kèm id trả về, KHÔNG xóa hàng (xóa sẽ gây gửi trùng). Migration 11 đã áp ngày 18/11/2026; dòng lịch cron + múi giờ UTC chưa kiểm chứng được qua REST, đang chờ xác nhận.
+
+**Email thông báo phụ huynh** (`send-parent-notifications`, migration 12): lịch `safepc-parent-notifications` quét mỗi 5 phút (`'*/5 * * * *'`). Quét định kỳ thay vì trigger trên INSERT: offline là sự VẮNG tín hiệu nên không có hàng mới để trigger bám vào; trigger lỗi có thể làm hỏng đường ghi của Agent; quét cho chống trùng rõ ràng và tự bù ở lần quét sau. Ba loại sự kiện: yêu cầu mới còn chờ duyệt (`extra_time`, `unblock_app`), 4 loại can thiệp từ `audit_logs`, máy quá 48 giờ không tín hiệu (khóa đợt offline `"<device_id>@<last_seen_at ms>"` — ổn định trong lúc offline, đợt mới sau khi máy quay lại rồi lại offline; máy chưa từng nối không báo). Chống spam: chỉ xét sự kiện 24 giờ gần nhất; mỗi con tối đa 1 email yêu cầu/giờ; can thiệp tối đa 1 email/6 giờ cho mỗi máy + loại; tối đa 25 email mỗi lần quét cho một family (chốt chặn trước trần 100 email/ngày của gói Resend miễn phí); yêu cầu đã được quyết định thì đọc lại ngay trước lúc gửi và bỏ qua. Chống trùng: bảng `notification_sends` khóa duy nhất (`kind`, `event_key`) + 3 RPC claim/finish/mark-terminal (chỉ vai trò quản trị); claim là kiểm tra duy nhất, không đọc trước bảng để loại sự kiện (đọc trước sẽ loại cả hàng `sending` kẹt và làm đường thu hồi thành mã chết). Migration 12 đã viết, CHƯA áp dụng.
+
+Giới hạn khi chưa có domain đã xác minh: gửi từ `onboarding@resend.dev` thì Resend chỉ giao tới đúng email đăng ký tài khoản Resend (email khác bị lỗi 403) — đủ cho một gia đình. Domain `ndt.ap.vn` đã mua chiều 18/11/2026 nhưng chưa thêm vào Resend và chưa xác minh DNS; sau khi xác minh, đổi người gửi chỉ cần đổi secret `RESEND_FROM` rồi deploy lại, không sửa code. **Trạng thái: code của cả hai function đã giao và qua CI, nhưng CHƯA kiểm chứng đầu-cuối** (chưa chạy thật trên Deno, chưa gửi thật, Auth Admin API chưa từng thử ở project này, lịch cron chưa thấy chạy). Các bước tay nằm ở `docs/06-EMAIL-SETUP.md` (5 bước) và `docs/07-NOTIFICATIONS-SETUP.md` (4 bước).
+
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 
-- Agent Service chạy quyền SYSTEM, Recovery: restart sau 1 phút nếu bị dừng.
-- Tray App có Watchdog: nếu Service chết, thử khởi động lại (khi có quyền).
-- Gỡ cài đặt / dừng Service / đổi rules local đều yêu cầu mã PIN phụ huynh (khác mật khẩu đăng nhập).
+- Agent Service chạy quyền SYSTEM, Recovery: restart sau 1 phút nếu bị dừng (bộ cài đặt `sc.exe failure` restart 3 lần, mỗi lần sau 60 giây).
+- Tray App KHÔNG có watchdog khởi động lại Service — không có code nào làm việc đó; Service tự khởi động lại nhờ Recovery của Windows ở trên.
+- Gỡ cài đặt hiện chỉ cần quyền Admin (Standard User không gỡ được phần mềm cài All Users); yêu cầu mã PIN khi gỡ là việc Sprint 4 (TODO trong bộ cài), chưa triển khai. Dừng Service cũng cần quyền Admin. Rules local nằm trong `%ProgramData%\SafePC` với ACL hạn chế, Standard User không sửa được. Mã PIN thoát Tray (khác mã PIN gỡ) thì đã có: thoát Tray cần PIN phụ huynh, sai 5 lần khóa 5 phút.
 - Con dùng Standard User: không có quyền dừng Service SYSTEM, không gỡ app cài All Users nếu không có Admin.
-- Cảnh báo "Máy offline bất thường" nếu heartbeat mất > 15 phút trong giờ được phép dùng.
+- Cảnh báo offline bất thường: email khi máy quá 48 giờ không tín hiệu (xem §4.11); Dashboard báo máy offline khi heartbeat quá 10 phút. Không có cảnh báo *offline* nào ở ngưỡng 15 phút — ngưỡng 15 phút chỉ dùng cho trạng thái extension "Không thấy gần đây" trên trang Hôm nay.
 - **Giới hạn thành thật:** Nếu con có Admin / boot Safe Mode / cài lại Windows thì mọi biện pháp phần mềm đều có thể bị vượt qua. Tài liệu hướng dẫn phụ huynh sẽ ghi rõ: giữ quyền Admin, bật BitLocker + Secure Boot, đặt BIOS password nếu cần.
 
 ## 6. Hiệu năng & độ tin cậy
