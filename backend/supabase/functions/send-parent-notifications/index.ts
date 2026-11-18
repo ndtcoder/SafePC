@@ -185,6 +185,8 @@ export function requestTypeLabel(type: string): string {
       return "Xin thêm giờ";
     case "unblock_app":
       return "Xin mở ứng dụng";
+    case "unblock_domain":
+      return "Xin mở trang web";
     default:
       return type;
   }
@@ -198,6 +200,9 @@ export interface RequestRow {
   status: string;
   reason: string | null;
   minutes: number | null;
+  // Tên miền con xin mở (migration 18, chỉ với loại unblock_domain). Gộp
+  // best-effort ở vòng quét để hàm vẫn chạy khi migration 18 chưa áp.
+  domain?: string | null;
   created_at: string;
 }
 
@@ -349,6 +354,7 @@ export interface RequestEmailInput {
   deviceName: string | null;
   type: string;
   minutes: number | null;
+  domain: string | null;
   reason: string | null;
   createdAt: string;
   requestsUrl: string;
@@ -359,12 +365,17 @@ export function buildRequestEmail(input: RequestEmailInput): NotificationEmail {
   const timeText = formatDateTimeHcm(input.createdAt);
   const child = input.childName ? oneLine(input.childName) : null;
   const device = input.deviceName ? oneLine(input.deviceName) : null;
+  const domain = input.domain ? oneLine(input.domain) : null;
   const what =
     input.type === "extra_time" && typeof input.minutes === "number"
       ? `thêm ${input.minutes} phút`
       : input.type === "extra_time"
         ? "thêm giờ"
-        : "mở ứng dụng bị chặn";
+        : input.type === "unblock_domain" && domain
+          ? `mở trang ${domain}`
+          : input.type === "unblock_domain"
+            ? "mở trang web bị chặn"
+            : "mở ứng dụng bị chặn";
   const subject = child
     ? oneLine(`[SafePC] ${child} xin ${what}`)
     : oneLine(`[SafePC] Yêu cầu mới${device ? ` từ máy ${device}` : ""}`);
@@ -763,6 +774,25 @@ async function scanFamily(
   if (requestsResult.error) throw requestsResult.error;
   if (tamperResult.error) throw tamperResult.error;
   const requestRows = ((requestsResult.data ?? []) as RequestRow[]).filter((r) => shouldNotifyRequest(r, nowMs));
+  // Gộp tên miền best-effort cho yêu cầu xin mở trang web: cột domain chỉ
+  // có sau migration 18. Truy vấn riêng để vòng quét vẫn chạy khi migration
+  // 18 chưa áp (email khi đó dùng câu chung "mở trang web bị chặn").
+  if (requestRows.length > 0) {
+    try {
+      const { data: domainRows, error: domainError } = await client
+        .from("requests")
+        .select("id, domain")
+        .in("id", requestRows.map((r) => r.id));
+      if (!domainError) {
+        const domainById = new Map(
+          ((domainRows ?? []) as Array<{ id: string; domain: string | null }>).map((d) => [d.id, d.domain]),
+        );
+        for (const row of requestRows) row.domain = domainById.get(row.id) ?? null;
+      }
+    } catch {
+      // Chưa có cột: giữ nguyên, email dùng câu chung.
+    }
+  }
   const tamperRows = ((tamperResult.data ?? []) as AuditRow[]).filter((r) => shouldNotifyTamper(r, nowMs));
 
   // Đợt offline: tính khóa từ last_seen_at; máy chưa từng kết nối thì không báo.
@@ -859,6 +889,7 @@ async function scanFamily(
         deviceName: device?.hostname ?? null,
         type: row.type,
         minutes: row.minutes,
+        domain: row.domain ?? null,
         reason: row.reason,
         createdAt: row.created_at,
         requestsUrl: `${DASHBOARD_URL}/yeu-cau`,
