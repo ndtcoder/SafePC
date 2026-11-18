@@ -97,8 +97,9 @@ export interface AppUsage {
 }
 
 // Dòng web_visits theo migration 1 + cột duration_sec của migration 4.
-// Chỉ lưu domain (không path/query). Cột `blocked` hiện luôn là false:
-// migration 4 ghi rõ "đợt này chưa báo cáo lượt bị chặn".
+// Chỉ lưu domain (không path/query). Cột `blocked` là true với lượt web
+// bị chặn (extension 0.1.7 báo cáo qua RPC, migration 10), kèm
+// duration_sec = 0; lượt xem thường có blocked = false.
 export interface WebVisit {
   id: string
   family_id: string

@@ -175,6 +175,9 @@ export function topApps(usage: readonly AppUsage[], limit = 5): TopEntry[] {
 export function topDomains(visits: readonly WebVisit[], limit = 5): TopEntry[] {
   const totals = new Map<string, number>()
   for (const row of visits) {
+    // Lượt web bị chặn (blocked, duration_sec = 0) không phải thời gian
+    // xem thật — loại khỏi top domain để không hiện mục 0 phút.
+    if (row.blocked) continue
     totals.set(row.domain, (totals.get(row.domain) ?? 0) + Math.max(0, row.duration_sec))
   }
   return topEntries(totals, sumDurationSec(visits), limit)
@@ -263,12 +266,12 @@ export function summarizeRequests(requests: readonly AppRequest[]): RequestSumma
  * lock_now + temporary_override có action 'lock'; lệnh chặn tạm thời =
  * temporary_override có action 'block_domain'/'block_app'.
  *
- * Lịch sử thi hành DO QUY TẮC (khóa theo giờ giấc, chặn app/domain,
- * cảnh báo, nghỉ bắt buộc) hiện KHÔNG có trong database: Agent chỉ gửi
- * ảnh chụp trạng thái hiện tại (devices.enforcement_json), extension
- * chưa báo cáo lượt bị chặn (web_visits.blocked luôn false — xem
- * migration 4), audit_logs chỉ có 4 loại sự kiện can thiệp. Trang báo
- * cáo hiển thị rõ phần này là "chưa có dữ liệu" thay vì bịa số 0.
+ * Lịch sử thi hành DO QUY TẮC (khóa theo giờ giấc, chặn app, cảnh báo,
+ * nghỉ bắt buộc) nằm ở audit_logs với 4 action thi hành (xem
+ * ENFORCEMENT_ACTIONS, ghi bởi RPC safepc_push_enforcement_event từ
+ * migration 10) — đếm bằng countRuleEnforcement, không đếm ở đây, để
+ * lệnh phụ huynh và thi hành theo quy tắc không đếm trùng nhau: khóa do
+ * phụ huynh chỉ tính ở hàm này, khóa do quy tắc chỉ tính ở hàm kia.
  */
 export interface ParentEnforcementCounts {
   parentLocks: number
@@ -293,7 +296,7 @@ export function countParentEnforcement(commands: readonly Command[]): ParentEnfo
   return { parentLocks, parentTempBlocks }
 }
 
-/** Số lượt thăm web bị chặn (cột blocked — hiện luôn 0 vì extension chưa báo cáo). */
+/** Số lượt thăm web bị chặn (cột blocked — extension 0.1.7 báo cáo qua RPC, migration 10). */
 export function countBlockedVisits(visits: readonly WebVisit[]): number {
   return visits.filter((v) => v.blocked).length
 }
@@ -302,20 +305,107 @@ export function countBlockedVisits(visits: readonly WebVisit[]): number {
 export const TAMPER_ACTIONS = ['clock_drift', 'agent_restart', 'extension_missing', 'service_stopped'] as const
 
 /**
- * Lọc sự kiện can thiệp thuộc về một con: khớp cột child_id (mọi sự kiện
- * do RPC migration 5 ghi đều có), hoặc — với hàng cũ không có child_id —
- * khớp qua thiết bị ở cột target (id thiết bị dạng text).
+ * Bốn loại sự kiện thi hành mà RPC safepc_push_enforcement_event chấp
+ * nhận (migration 10). Agent chỉ ghi chuyển trạng thái: khóa bắt đầu
+ * (chỉ khóa do quy tắc giờ giấc — khóa do phụ huynh đếm từ bảng
+ * commands), nghỉ bắt đầu, lần đóng app, lần hiện cảnh báo.
+ */
+export const ENFORCEMENT_ACTIONS = ['lock_started', 'break_started', 'app_blocked', 'warning_shown'] as const
+
+/**
+ * Một hàng audit_logs có thuộc về một con không: khớp cột child_id (mọi
+ * sự kiện do RPC migration 5/10 ghi đều có), hoặc — với hàng cũ không có
+ * child_id — khớp qua thiết bị ở cột target (id thiết bị dạng text).
+ * Dùng chung cho sự kiện can thiệp và sự kiện thi hành.
+ */
+export function isLogForChild(
+  log: AuditLog,
+  childId: string,
+  deviceChildById: ReadonlyMap<string, string>,
+): boolean {
+  if (log.child_id) return log.child_id === childId
+  if (log.target) return deviceChildById.get(log.target) === childId
+  return false
+}
+
+/**
+ * Lọc sự kiện can thiệp thuộc về một con (xem isLogForChild). Chỉ giữ
+ * đúng 4 loại can thiệp (TAMPER_ACTIONS): truy vấn audit_logs còn lấy
+ * cả sự kiện thi hành (migration 10) cho mục "Quy tắc đã thi hành", và
+ * không lọc action ở đây thì sự kiện thi hành sẽ rò sang thẻ Cảnh báo.
  */
 export function filterTamperForChild(
   logs: readonly AuditLog[],
   childId: string,
   deviceChildById: ReadonlyMap<string, string>,
 ): AuditLog[] {
-  return logs.filter((log) => {
-    if (log.child_id) return log.child_id === childId
-    if (log.target) return deviceChildById.get(log.target) === childId
-    return false
-  })
+  return logs.filter(
+    (log) =>
+      (TAMPER_ACTIONS as readonly string[]).includes(log.action) &&
+      isLogForChild(log, childId, deviceChildById),
+  )
+}
+
+export interface RuleEnforcementCounts {
+  /** Khóa do giờ ngủ (lock_started, details.kind = bedtime). */
+  bedtimeLocks: number
+  /** Khóa do ngoài khung giờ (lock_started, details.kind = time_window). */
+  timeWindowLocks: number
+  /** Khóa do hết giới hạn ngày (lock_started, details.kind = daily_limit). */
+  dailyLimitLocks: number
+  /** Khóa do quy tắc nhưng không phân loại được (kind khác/lạ). */
+  otherRuleLocks: number
+  /** Nghỉ bắt buộc bắt đầu (break_started). */
+  breaks: number
+  /** Ứng dụng bị đóng (app_blocked). */
+  appBlocks: number
+  /** Cảnh báo đã hiện (warning_shown). */
+  warnings: number
+}
+
+/**
+ * Đếm thi hành theo quy tắc trong tuần từ audit_logs: chỉ hàng thuộc về
+ * con (xem isLogForChild) và action thuộc ENFORCEMENT_ACTIONS. Khóa
+ * phân loại theo details.kind; kind lạ/thiếu thì tính vào
+ * otherRuleLocks để tổng số khóa không bị mất. Lượt web bị chặn KHÔNG
+ * đếm ở đây — đếm từ web_visits.blocked bằng countBlockedVisits.
+ *
+ * Lịch sử chỉ bắt đầu từ khi migration 10 được áp + bản Agent/extension
+ * mới được cài trên máy con: tuần trước thời điểm đó trả về 0 cho mọi
+ * mục, và giao diện ghi rõ đó là thiếu dữ liệu chứ không phải không có
+ * thi hành.
+ */
+export function countRuleEnforcement(
+  logs: readonly AuditLog[],
+  childId: string,
+  deviceChildById: ReadonlyMap<string, string>,
+): RuleEnforcementCounts {
+  const counts: RuleEnforcementCounts = {
+    bedtimeLocks: 0,
+    timeWindowLocks: 0,
+    dailyLimitLocks: 0,
+    otherRuleLocks: 0,
+    breaks: 0,
+    appBlocks: 0,
+    warnings: 0,
+  }
+  for (const log of logs) {
+    if (!isLogForChild(log, childId, deviceChildById)) continue
+    if (log.action === 'lock_started') {
+      const kind = log.details?.['kind']
+      if (kind === 'bedtime') counts.bedtimeLocks += 1
+      else if (kind === 'time_window') counts.timeWindowLocks += 1
+      else if (kind === 'daily_limit') counts.dailyLimitLocks += 1
+      else counts.otherRuleLocks += 1
+    } else if (log.action === 'break_started') {
+      counts.breaks += 1
+    } else if (log.action === 'app_blocked') {
+      counts.appBlocks += 1
+    } else if (log.action === 'warning_shown') {
+      counts.warnings += 1
+    }
+  }
+  return counts
 }
 
 /** Số phút đồng hồ lệch từ details của sự kiện clock_drift ({ drift_minutes }), null nếu không có. */
