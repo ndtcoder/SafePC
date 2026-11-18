@@ -8,7 +8,10 @@
     "service_worker": "background.js"
   },
   "description": "SafePC — lọc web theo domain cho máy tính của con: chặn domain, giới hạn thời gian theo domain, SafeSearch. Quy tắc do phụ huynh đặt trên Dashboard.",
-  "host_permissions": [],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "icons": {
     "128": "icons/icon.svg",
     "16": "icons/icon.svg",
@@ -23,7 +26,7 @@
     "storage",
     "nativeMessaging"
   ],
-  "version": "0.1.3",
+  "version": "0.1.4",
   "web_accessible_resources": [
     {
       "matches": [

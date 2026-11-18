@@ -112,12 +112,20 @@ duyệt. Đây là bước test thủ công, không phải cấu hình phân ph�
 **Không xin thêm:** không `webRequest`, không `cookies`, không quyền đọc
 nội dung trang, không quyền đọc lịch sử.
 
-`host_permissions` để mảng rỗng (`[]`) **một cách có chủ đích**: chặn bằng
-declarativeNetRequest không cần host permissions (rules khớp URL ngay trong
-trình duyệt mà không cần quyền đọc host). Trang chặn `blocked.html` được
-khai báo trong `web_accessible_resources` (khớp `http://*/*`,
-`https://*/*`) để trình duyệt được phép chuyển hướng tới — đây không phải
-host permission và không cho extension đọc nội dung các trang đó.
+`host_permissions` xin `http://*/*` + `https://*/*` **vì rule chuyển hướng
+(redirect) BẮT BUỘC phải có** (tìm ra 18/11/2026 khi rule
+tse.edu.vn/p không chặn được dù đã nằm trong bộ máy DNR): theo tài liệu
+của Chromium, quyền `declarativeNetRequest` chỉ cho chặn (block) và nâng cấp scheme mà không
+cần host permissions; muốn chuyển hướng request (hoặc sửa header) thì
+extension phải có host permission khớp URL của request — thiếu thì trình
+duyệt BỎ QUA rule chuyển hướng một cách lặng lẽ (rule vẫn cài thành công,
+`getDynamicRules()` vẫn liệt kê, không lỗi nào được báo). Triệu chứng trên
+máy thật: rule chặn đường dẫn (regexFilter) "nằm trong bộ máy" nhưng trang
+vẫn mở, và trang chặn SafePC không bao giờ hiện. Host permissions ở đây chỉ
+cho phép bộ máy DNR áp rule chuyển hướng; extension vẫn không đọc nội dung
+trang hay lịch sử. Trang chặn `blocked.html` được khai báo trong
+`web_accessible_resources` (khớp `http://*/*`, `https://*/*`) để trình
+duyệt được phép chuyển hướng tới.
 
 ## 6. Nguyên tắc chỉ domain
 
@@ -244,7 +252,7 @@ hàng đợi (tối đa 1000 domain, bỏ cũ nhất), không hiện lỗi cho u
 ```
 apps/browser-extension/
 ├── README.md          — Tài liệu này.
-├── manifest.json      — Manifest V3 (Chrome + Edge), 5 quyền, không host_permissions.
+├── manifest.json      — Manifest V3 (Chrome + Edge), 5 quyền + host_permissions http/https (redirect bắt buộc phải có, xem §5).
 ├── domainUtils.js     — Helper domain dùng chung (chuẩn hóa, khớp hậu tố,
 │                        lấy hostname, khóa ngày địa phương). Không build.
 ├── background.js      — Service worker: lấy rules, dựng DNR rules, đếm giờ,
