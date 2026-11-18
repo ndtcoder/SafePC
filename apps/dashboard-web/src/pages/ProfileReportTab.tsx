@@ -108,6 +108,14 @@ export default function ProfileReportTab({ childId, childName }: { childId: stri
 
   return (
     <div className="grid gap-3 sm:gap-4">
+      <div>
+        <Link
+          to={`/bao-cao?child=${childId}`}
+          className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Xem báo cáo tuần của {childName}
+        </Link>
+      </div>
       <Card title={`Hôm nay của ${childName}`}>
         <dl className="grid gap-3 sm:grid-cols-3">
           <div>
