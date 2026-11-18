@@ -8,6 +8,7 @@ import { ErrorState, LoadingState, NotConfiguredState, PageHeader } from '../com
 import DevicesPage from './DevicesPage'
 import RulesPage from './RulesPage'
 import ProfileReportTab from './ProfileReportTab'
+import TimeBankTab from './TimeBankTab'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -15,6 +16,7 @@ const TABS = [
   { key: 'thiet-bi', label: 'Thiết bị' },
   { key: 'quy-tac', label: 'Quy tắc' },
   { key: 'bao-cao', label: 'Báo cáo' },
+  { key: 'ngan-hang-gio', label: 'Ngân hàng giờ' },
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
@@ -30,10 +32,11 @@ function tabClassName({ isActive }: { isActive: boolean }): string {
 }
 
 /**
- * Hồ sơ của một con: ba tab Thiết bị / Quy tắc / Báo cáo, tất cả lọc theo
- * đúng con đó. Tab Thiết bị và Quy tắc tái dùng trang cũ với childIdFilter
- * nên mọi thao tác (khóa/mở, PIN, ghép nối, thêm quy tắc, ghi đè) đều như
- * trang độc lập, chỉ khác là không lẫn sang con khác.
+ * Hồ sơ của một con: bốn tab Thiết bị / Quy tắc / Báo cáo / Ngân hàng
+ * giờ, tất cả lọc theo đúng con đó. Tab Thiết bị và Quy tắc tái dùng
+ * trang cũ với childIdFilter nên mọi thao tác (khóa/mở, PIN, ghép nối,
+ * thêm quy tắc, ghi đè) đều như trang độc lập, chỉ khác là không lẫn
+ * sang con khác.
  */
 export default function ProfilePage() {
   const { configured, user } = useAuth()
@@ -124,6 +127,9 @@ export default function ProfilePage() {
       {tab === 'thiet-bi' && <DevicesPage childIdFilter={child.id} />}
       {tab === 'quy-tac' && <RulesPage childIdFilter={child.id} />}
       {tab === 'bao-cao' && <ProfileReportTab childId={child.id} childName={child.display_name} />}
+      {tab === 'ngan-hang-gio' && (
+        <TimeBankTab key={child.id} childId={child.id} childName={child.display_name} />
+      )}
     </div>
   )
 }
