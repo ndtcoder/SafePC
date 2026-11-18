@@ -621,6 +621,12 @@ export function toVietnameseError(error: unknown): string {
     return 'Không kết nối được tới máy chủ. Vui lòng kiểm tra mạng và cấu hình Supabase, rồi thử lại.'
   }
   const translations: Array<[RegExp, string]> = [
+    // Lỗi MFA đặt trước mẫu chung "expired/invalid token" bên dưới để
+    // thông báo mã xác thực được nói rõ, không bị hiểu nhầm là link email.
+    [/invalid totp|invalid.*mfa.*code|mfa.*code.*invalid/i, 'Mã xác thực không đúng. Vui lòng nhập mã 6 số mới nhất đang hiện trong app authenticator.'],
+    [/challenge expired|mfa.*expired|expired.*challenge/i, 'Mã xác thực đã hết hạn. Vui lòng nhập mã 6 số mới nhất đang hiện trong app authenticator.'],
+    [/factor not found|no.*verified.*factor/i, 'Không tìm thấy phương thức xác thực hai lớp của tài khoản này. Vui lòng đăng xuất rồi đăng nhập lại.'],
+    [/insufficient_aal|aal2 required|require aal2/i, 'Phiên đăng nhập chưa hoàn tất bước xác thực hai lớp. Vui lòng nhập mã xác thực rồi thử lại.'],
     [/invalid login credentials/i, 'Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.'],
     [/email not confirmed/i, 'Email chưa được xác minh. Vui lòng kiểm tra hộp thư và bấm link xác minh.'],
     [/user already registered/i, 'Email này đã được đăng ký. Vui lòng đăng nhập hoặc dùng chức năng quên mật khẩu.'],
