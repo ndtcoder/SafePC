@@ -35,6 +35,14 @@
 // chặn-tất-cả của focus/allowlist, getMatchedRules trống) thì bỏ qua —
 // không đoán domain từ URL cũ của tab vì sẽ ghi nhầm domain trang trước.
 //
+// Chặn theo danh mục (0.1.8): rule "Chặn website" có thể chọn danh mục
+// (người lớn, cờ bạc, mạng xã hội) thay vì gõ từng domain. Agent mở rộng
+// danh mục thành domain trong `blocked` (cùng mức ưu tiên chặn 30, không
+// đổi thang DNR) và ghi rõ domain nào thuộc danh mục nào trong
+// `blockedCategories`; extension chỉ dùng trường này để hiện đúng lý do
+// theo danh mục trên trang chặn (cả đường DNR lẫn tab watcher). Extension
+// cũ không đọc trường này vẫn chặn đúng nhờ `blocked`.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -440,6 +448,40 @@ function normalizeDomainSet(rawList) {
   return domains;
 }
 
+// Thứ tự chuẩn của danh mục chặn (0.1.8) — khớp đúng
+// DomainCategoryLists.OrderedIds phía Agent: một domain thuộc hai danh
+// mục thì hiện lý do của danh mục đứng trước. Id lạ (Agent mới hơn
+// extension) thì bỏ qua, domain đó vẫn bị chặn với lý do "blocked"
+// chung — fail-open, không bao giờ hiện lý do mà blocked.js không có.
+const CATEGORY_REASON_ORDER = ["adult", "gambling", "social"];
+
+// Map domain -> lý do theo danh mục ("category-<id>") từ
+// rules.blockedCategories = { "<id>": [domain, ...], ... }. Hàm thuần,
+// không bao giờ throw: dữ liệu thiếu/sai hình dạng thì trả map rỗng
+// (mọi domain chặn đều dùng lý do "blocked" như trước).
+function buildCategoryReasonMap(rules) {
+  const map = new Map();
+  try {
+    const byCategory =
+      rules && rules.blockedCategories && typeof rules.blockedCategories === "object" &&
+      !Array.isArray(rules.blockedCategories)
+        ? rules.blockedCategories
+        : null;
+    if (!byCategory) return map;
+    for (const category of CATEGORY_REASON_ORDER) {
+      const raw = byCategory[category];
+      if (!Array.isArray(raw)) continue;
+      for (const item of raw) {
+        const domain = normalizeDomain(item);
+        if (domain && !map.has(domain)) map.set(domain, "category-" + category);
+      }
+    }
+  } catch {
+    // Dữ liệu lạ: trả map đã dựng dở (an toàn vì chỉ ảnh hưởng lý do hiển thị).
+  }
+  return map;
+}
+
 function buildDnrRules(rules, usageSeconds, now) {
   // Chưa có rules (chưa nối được NativeHost lần nào): không chặn gì
   // (fail-open, popup báo chưa kết nối). Rules cũ vẫn giữ khi fetch lỗi.
@@ -535,7 +577,18 @@ function buildDnrRules(rules, usageSeconds, now) {
   addPair(tempBlock, PRIORITY.tempBlock, "tempblock");
   if (!focusActive) {
     for (const domain of tempAllow) rulesOut.push(allowRule(nextId++, PRIORITY.tempAllow, domain));
-    addPair(blocked, PRIORITY.blocked, "blocked");
+    // Chặn domain (kể cả domain thuộc danh mục đã chọn — Agent đã hợp
+    // vào `blocked`): mỗi domain một cặp rule ở mức ưu tiên chặn (30),
+    // lý do theo danh mục khi domain thuộc danh mục (xem
+    // buildCategoryReasonMap), ngược lại lý do "blocked" chung. Một
+    // domain chỉ có đúng một cặp rule nên không phụ thuộc luật hòa của
+    // trình duyệt khi domain vừa gõ tay vừa thuộc danh mục.
+    const categoryReasons = buildCategoryReasonMap(rules);
+    for (const domain of blocked) {
+      const reason = categoryReasons.get(domain) || "blocked";
+      rulesOut.push(redirectRule(nextId++, PRIORITY.blocked, domain, reason));
+      rulesOut.push(blockRule(nextId++, PRIORITY.blocked, domain));
+    }
     // Mẫu URL (batch 4): rules.urlPatterns = ["host/path", ...] từ
     // DomainRulesPublisher (chỉ mode block_domains). Cùng nhánh
     // !focusActive và cùng mức ưu tiên chặn domain (30) với cặp chặn
@@ -904,7 +957,10 @@ function urlPatternHost(pattern) {
 //      watcher không đánh giá focus nên trường hợp đó DNR vẫn chặn ở
 //      request mới — watcher chỉ bỏ qua, không mở thêm gì.)
 //   3. Hostname thuộc `blocked` (ngữ nghĩa requestDomains: domain + mọi
-//      tên miền con) -> lý do "blocked".
+//      tên miền con) -> lý do "blocked", hoặc lý do theo danh mục
+//      ("category-<id>") khi domain của rule thuộc một danh mục đã chọn
+//      (cùng map buildCategoryReasonMap với đường DNR, để hai đường hiện
+//      cùng lý do cho cùng một domain).
 //   4. URL khớp một mẫu trong `urlPatterns`, dùng ĐÚNG regex mà DNR dùng
 //      (buildUrlPatternRegex) -> lý do "blocked".
 // KHÔNG thi hành: chặn theo giờ, giới hạn thời gian, focus, allowlist.
@@ -936,8 +992,11 @@ function evaluateTabUrl(url, rules, now) {
   }
 
   const blocked = normalizeDomainSet(rules.blocked);
+  const categoryReasons = buildCategoryReasonMap(rules);
   for (const domain of blocked) {
-    if (domainMatches(hostname, domain)) return { reason: "blocked", ruleDomain: domain };
+    if (domainMatches(hostname, domain)) {
+      return { reason: categoryReasons.get(domain) || "blocked", ruleDomain: domain };
+    }
   }
 
   const rawPatterns = Array.isArray(rules.urlPatterns) ? rules.urlPatterns : [];

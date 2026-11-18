@@ -15,6 +15,11 @@ Extension làm:
 - Chặn domain trong danh sách chặn, chặn theo khung giờ, chỉ cho phép danh
   sách domain (chế độ allowlist), chỉ cho phép danh sách domain theo khung
   giờ (chế độ allowlist theo giờ), chặn tạm thời / cho phép tạm thời.
+- Chặn theo danh mục (từ 0.1.8): phụ huynh chọn danh mục (nội dung người
+  lớn, cờ bạc, mạng xã hội) trong rule "Chặn website" thay vì gõ từng
+  domain; Agent mở rộng danh mục thành domain và extension hiện đúng lý do
+  theo danh mục trên trang chặn. Danh sách domain của từng danh mục là
+  danh sách hạt giống trong Agent (xem mục 7), không phải danh sách đầy đủ.
 - Giờ học tập trung: trong khung giờ học, chỉ các website học tập được phép
   mới mở được (xem mục 7).
 - Giới hạn thời gian xem theo domain (ví dụ: YouTube 30 phút/ngày), tính
@@ -212,6 +217,21 @@ hết khung giờ, allowlist thường (nếu có) áp dụng lại. Giờ học
 không còn domain nào sau khi chuẩn hóa, extension coi như không có
 allowlist theo giờ (fail-open, không chặn thêm gì).
 
+**Chặn theo danh mục (từ 0.1.8):** rule website chế độ `block_domains` có
+thể mang mảng `categories` (id danh mục: `adult`, `gambling`, `social`).
+Agent mở rộng mỗi danh mục thành danh sách domain hạt giống
+(`DomainCategoryLists` trong `SafePC.Agent.Service`), hợp vào `blocked`
+(cùng mức ưu tiên chặn 30 — không đổi thang DNR) và ghi riêng vào
+`rules.blockedCategories` (domain theo từng danh mục) để extension hiện
+đúng lý do trên trang chặn (`category-adult`, `category-gambling`,
+`category-social`), cả đường DNR lẫn tab watcher. Danh mục chỉ có ở chế
+độ "Chặn website"; danh mục trong mode khác bị Agent bỏ qua kèm Warning.
+Giới hạn thành thật: danh sách hạt giống chỉ gồm các website nổi tiếng
+nhất, không phải danh sách đầy đủ — website cờ bạc đổi domain mirror liên
+tục và website mới sẽ lọt; nhập danh sách công khai đầy đủ là việc riêng
+sau này. Danh mục không thay thế được việc phụ huynh gõ thêm domain cụ
+thể trong cùng quy tắc.
+
 **Thang ưu tiên DNR (đã khóa — số lớn thắng):** số ưu tiên trong
 `background.js` (`PRIORITY`) khớp đúng thang này; Dashboard/PC Agent dùng
 cùng thang khi nói về thứ tự thi hành.
@@ -226,7 +246,7 @@ cùng thang khi nói về thứ tự thi hành.
 | 55 | Allowlist theo giờ: domain được phép | Đang hiệu lực thì thay cho allowlist thường. |
 | 50 | Allowlist: domain được phép | |
 | 40 | Chặn theo giờ | |
-| 30 | Chặn | |
+| 30 | Chặn | Gồm cả domain thuộc danh mục đã chọn; lý do trên trang chặn hiện theo danh mục. |
 | 20 | Hết ngân sách theo domain | |
 | 15 / 14 | Allowlist / allowlist theo giờ: chặn tất cả còn lại | Thấp hơn mọi mức chặn cụ thể để domain bị chặn/hết ngân sách hiện đúng lý do của nó. |
 
