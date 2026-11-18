@@ -1,8 +1,8 @@
 # Email thông báo cho phụ huynh — các bước anh Tiến làm tay
 
 Edge Function `send-parent-notifications` gửi email cho phụ huynh khi có
-sự kiện cần chú ý (PRD §2.8): con xin thêm giờ / xin mở ứng dụng, phát
-hiện can thiệp (đổi giờ, Agent khởi động lại, mất extension, Service
+sự kiện cần chú ý (PRD §2.8): con xin thêm giờ / xin mở ứng dụng / xin mở
+trang web, phát hiện can thiệp (đổi giờ, Agent khởi động lại, mất extension, Service
 dừng), và máy offline bất thường (quá 48 giờ). Function quét mỗi 5 phút
 qua lịch cron nên email tới chậm tối đa 5 phút sau khi sự kiện xảy ra.
 Code đã viết sẵn trong repo
@@ -162,7 +162,7 @@ làm theo mục nâng cao trong docs/06 (cùng một cách, áp cho cả hai l�
 
 | Sự kiện | Khi nào gửi | Chống trùng / chống spam |
 |---|---|---|
-| Con xin thêm giờ / xin mở ứng dụng | Có yêu cầu mới còn chờ duyệt | Mỗi yêu cầu tối đa 1 email. Mỗi con tối đa 1 email yêu cầu mỗi giờ (yêu cầu thêm trong giờ đó vẫn hiện trên Dashboard). Yêu cầu đã duyệt/từ chối trước lúc quét thì không gửi. Chỉ xét yêu cầu tạo trong 24 giờ gần nhất. |
+| Con xin thêm giờ / xin mở ứng dụng / xin mở trang web | Có yêu cầu mới còn chờ duyệt | Mỗi yêu cầu tối đa 1 email. Mỗi con tối đa 1 email yêu cầu mỗi giờ (yêu cầu thêm trong giờ đó vẫn hiện trên Dashboard). Yêu cầu đã duyệt/từ chối trước lúc quét thì không gửi. Chỉ xét yêu cầu tạo trong 24 giờ gần nhất. Email cho yêu cầu xin mở trang web ghi tên miền con xin (cột `domain`, migration 18); khi migration 18 chưa áp thì email dùng câu chung "mở trang web bị chặn". |
 | Phát hiện can thiệp (đổi giờ, Agent khởi động lại, mất extension, Service dừng) | Có sự kiện can thiệp mới | Mỗi sự kiện tối đa 1 email. Cùng một máy + cùng một loại thì tối đa 1 email mỗi 6 giờ (các sự kiện sau trong cửa sổ đó bị bỏ qua). Chỉ xét sự kiện trong 24 giờ gần nhất. |
 | Máy offline bất thường | Máy quá 48 giờ không gửi tín hiệu | Mỗi đợt offline tối đa 1 email. Máy quay lại rồi lại offline quá 48 giờ thì báo tiếp. Máy chưa từng kết nối thì không báo. |
 
