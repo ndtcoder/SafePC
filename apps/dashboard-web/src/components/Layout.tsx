@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { OfflineBanner, primaryButtonClassName, secondaryButtonClassName } from './ui'
+import NotificationBell from './NotificationBell'
 
 const NAV_ITEMS = [
   { to: '/hom-nay', label: 'Hôm nay' },
@@ -111,6 +112,7 @@ export default function Layout() {
             </span>
           </Link>
           <div className="flex items-center gap-3">
+            {user && <NotificationBell />}
             {user ? (
               <>
                 <span className="hidden max-w-56 truncate text-sm text-slate-600 sm:inline" title={user.email ?? ''}>
