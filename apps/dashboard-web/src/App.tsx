@@ -20,11 +20,13 @@ const WeeklyReportPage = lazy(() => import('./pages/WeeklyReportPage'))
 /**
  * Bảo vệ các trang bên trong:
  * - Khi đã cấu hình Supabase mà chưa đăng nhập -> chuyển tới trang đăng nhập.
+ * - Khi phiên mới qua mật khẩu mà tài khoản đã bật MFA (còn thiếu bước
+ *   nhập mã) -> cũng chuyển tới trang đăng nhập, nơi hiển thị bước MFA.
  * - Khi CHƯA cấu hình Supabase -> vẫn cho xem các trang để thấy hướng dẫn
  *   cấu hình (không có dữ liệu thật, không gọi API giả).
  */
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { configured, user, loading } = useAuth()
+  const { configured, user, loading, mfaRequired } = useAuth()
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -32,7 +34,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       </div>
     )
   }
-  if (configured && !user) {
+  if (configured && (!user || mfaRequired)) {
     return <Navigate to="/dang-nhap" replace />
   }
   return <>{children}</>
