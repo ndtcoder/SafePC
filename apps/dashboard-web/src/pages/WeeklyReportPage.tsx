@@ -38,9 +38,11 @@ import {
   buildSuggestions,
   countBlockedVisits,
   countParentEnforcement,
+  countRuleEnforcement,
   currentStateWarnings,
   dailyTotals,
   driftMinutes,
+  ENFORCEMENT_ACTIONS,
   filterTamperForChild,
   lateNightDays,
   overLimitDays,
@@ -148,6 +150,43 @@ async function fetchVisitsInRange(
       .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
     if (error) throw error
     const pageRows = (data ?? []) as WebVisit[]
+    rows.push(...pageRows)
+    pagesRead = page + 1
+    lastPageCount = pageRows.length
+    if (pageRows.length < PAGE_SIZE) break
+  }
+  return { rows, truncated: isTruncated(pagesRead, lastPageCount) }
+}
+
+/**
+ * Sự kiện can thiệp + thi hành trong tuần, đọc theo trang như usage/
+ * visits (cùng trần MAX_PAGES + cờ truncated): sự kiện thi hành (mỗi
+ * lần khóa/chặn/cảnh báo một hàng) có thể vượt 1000 hàng/tuần. Không
+ * lọc theo child_id ở truy vấn — hàng cũ không có child_id được khớp
+ * qua thiết bị ở phía client (isLogForChild). Mới nhất trước để thẻ
+ * Cảnh báo liệt kê đúng thứ tự; thêm `.order('id')` để phân trang ổn
+ * định khi nhiều hàng cùng created_at.
+ */
+async function fetchAuditLogsInRange(
+  client: SupabaseClient,
+  startIso: string,
+  endIso: string,
+): Promise<PagedResult<AuditLog>> {
+  const rows: AuditLog[] = []
+  let pagesRead = 0
+  let lastPageCount = 0
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await client
+      .from('audit_logs')
+      .select('id, family_id, actor, action, target, ip_hash, created_at, child_id, device_id, details')
+      .in('action', [...TAMPER_ACTIONS, ...ENFORCEMENT_ACTIONS])
+      .gte('created_at', startIso)
+      .lt('created_at', endIso)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+    if (error) throw error
+    const pageRows = (data ?? []) as AuditLog[]
     rows.push(...pageRows)
     pagesRead = page + 1
     lastPageCount = pageRows.length
@@ -355,14 +394,7 @@ export default function WeeklyReportPage() {
             .lt('created_at', endIso)
             .order('created_at', { ascending: false })
             .limit(200),
-          supabase
-            .from('audit_logs')
-            .select('id, family_id, actor, action, target, ip_hash, created_at, child_id, device_id, details')
-            .in('action', [...TAMPER_ACTIONS])
-            .gte('created_at', startIso)
-            .lt('created_at', endIso)
-            .order('created_at', { ascending: false })
-            .limit(200),
+          fetchAuditLogsInRange(supabase, startIso, endIso),
           supabase
             .from('rules')
             .select('id, family_id, child_id, type, config, enabled, created_at')
@@ -383,16 +415,15 @@ export default function WeeklyReportPage() {
         ])
       if (!isLatestRequest(seq, weekLoadSeqRef.current)) return
       if (requestsResult.error) throw requestsResult.error
-      if (auditResult.error) throw auditResult.error
       if (rulesResult.error) throw rulesResult.error
       if (devicesResult.error) throw devicesResult.error
       if (commandsResult.error) throw commandsResult.error
       setUsage(usageResult.rows)
       setPrevWeekSec(prevResult.total)
       setVisits(visitResult.rows)
-      setDataTruncated(usageResult.truncated || prevResult.truncated || visitResult.truncated)
+      setDataTruncated(usageResult.truncated || prevResult.truncated || visitResult.truncated || auditResult.truncated)
       setRequests((requestsResult.data ?? []) as AppRequest[])
-      setAuditLogs((auditResult.data ?? []) as AuditLog[])
+      setAuditLogs(auditResult.rows)
       setRules((rulesResult.data ?? []) as Rule[])
       const deviceRows = (devicesResult.data ?? []) as Device[]
       setDevices(deviceRows)
@@ -456,6 +487,12 @@ export default function WeeklyReportPage() {
   const topDomainEntries = useMemo(() => topDomains(visits), [visits])
   const requestStats = useMemo(() => summarizeRequests(requests), [requests])
   const enforcement = useMemo(() => countParentEnforcement(commands), [commands])
+  // Thi hành theo quy tắc (khóa/chặn/cảnh báo/nghỉ) — nguồn: audit_logs
+  // do RPC safepc_push_enforcement_event ghi (migration 10).
+  const ruleEnforcement = useMemo(
+    () => countRuleEnforcement(auditLogs, selectedChildId, deviceChildById),
+    [auditLogs, selectedChildId, deviceChildById],
+  )
   const blockedVisits = useMemo(() => countBlockedVisits(visits), [visits])
   const tamperEvents = useMemo(
     () => filterTamperForChild(auditLogs, selectedChildId, deviceChildById),
@@ -485,7 +522,15 @@ export default function WeeklyReportPage() {
     visits.length > 0 ||
     requests.length > 0 ||
     tamperEvents.length > 0 ||
-    enforcement.parentLocks + enforcement.parentTempBlocks > 0
+    enforcement.parentLocks + enforcement.parentTempBlocks > 0 ||
+    ruleEnforcement.bedtimeLocks +
+      ruleEnforcement.timeWindowLocks +
+      ruleEnforcement.dailyLimitLocks +
+      ruleEnforcement.otherRuleLocks +
+      ruleEnforcement.breaks +
+      ruleEnforcement.appBlocks +
+      ruleEnforcement.warnings >
+      0
 
   const chartData: ChartRow[] = useMemo(
     () =>
@@ -756,11 +801,49 @@ export default function WeeklyReportPage() {
                 <dd className="mt-0.5 text-lg font-semibold text-slate-900">{blockedVisits} lượt</dd>
                 <p className="text-xs text-slate-500">Lượt thăm web extension báo là bị chặn.</p>
               </div>
+              <div>
+                <dt className="text-sm text-slate-600">Khóa do giờ ngủ</dt>
+                <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.bedtimeLocks} lần</dd>
+                <p className="text-xs text-slate-500">Máy bị khóa khi đến giờ ngủ.</p>
+              </div>
+              <div>
+                <dt className="text-sm text-slate-600">Khóa do ngoài khung giờ</dt>
+                <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.timeWindowLocks} lần</dd>
+                <p className="text-xs text-slate-500">Máy bị khóa ngoài khung giờ được dùng.</p>
+              </div>
+              <div>
+                <dt className="text-sm text-slate-600">Khóa do hết giới hạn ngày</dt>
+                <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.dailyLimitLocks} lần</dd>
+                <p className="text-xs text-slate-500">Máy bị khóa khi hết thời gian trong ngày.</p>
+              </div>
+              {ruleEnforcement.otherRuleLocks > 0 && (
+                <div>
+                  <dt className="text-sm text-slate-600">Khóa theo quy tắc (loại khác)</dt>
+                  <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.otherRuleLocks} lần</dd>
+                  <p className="text-xs text-slate-500">Khóa do quy tắc nhưng không phân loại được.</p>
+                </div>
+              )}
+              <div>
+                <dt className="text-sm text-slate-600">Nghỉ bắt buộc</dt>
+                <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.breaks} lần</dd>
+                <p className="text-xs text-slate-500">Lần bắt đầu nghỉ sau thời gian dùng liên tục.</p>
+              </div>
+              <div>
+                <dt className="text-sm text-slate-600">Ứng dụng bị chặn</dt>
+                <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.appBlocks} lần</dd>
+                <p className="text-xs text-slate-500">Lần Agent đóng ứng dụng bị chặn.</p>
+              </div>
+              <div>
+                <dt className="text-sm text-slate-600">Cảnh báo đã hiện</dt>
+                <dd className="mt-0.5 text-lg font-semibold text-slate-900">{ruleEnforcement.warnings} lần</dd>
+                <p className="text-xs text-slate-500">Cảnh báo sắp khóa/sắp hết giờ đã hiện trên máy con.</p>
+              </div>
             </dl>
             <p className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              Chưa có dữ liệu lịch sử thi hành theo quy tắc (số lần khóa theo từng loại, số lần chặn ứng dụng/domain,
-              số cảnh báo, số lần nghỉ bắt buộc): Agent hiện chỉ gửi trạng thái thi hành hiện tại, chưa gửi từng lần
-              thi hành lên. Khi Agent ghi lịch sử thi hành, các số này sẽ hiện ở đây.
+              Lịch sử thi hành theo quy tắc chỉ bắt đầu từ khi bản Agent và extension mới được cài trên máy con và
+              migration ghi sự kiện đã được áp dụng — tuần trước thời điểm đó có thể hiện 0 dù quy tắc vẫn đang thi
+              hành. Lượt web bị chặn là con số tối thiểu: extension chỉ đếm lượt quy chiếu được tên miền; lượt bị chặn
+              bởi quy tắc chặn tất cả (giờ học tập trung, danh sách chỉ cho phép) không đếm được nên không tính vào.
             </p>
           </Card>
 
