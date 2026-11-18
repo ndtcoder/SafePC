@@ -118,7 +118,7 @@ Thứ tự thi hành trong Agent: ghi đè (khóa/mở) → giờ ngủ → khun
 - [ ] Mời phụ huynh thứ hai cùng quản lý gia đình. Cấu trúc dữ liệu đã hỗ trợ sẵn.
 - [ ] Xuất dữ liệu và xóa toàn bộ dữ liệu của con (theo cam kết riêng tư ở `03-SECURITY.md` mục 5).
 - [ ] Giao diện chuyên nghiệp: chuẩn hóa trạng thái rỗng/đang tải/lỗi/mất mạng; hướng dẫn lần đầu (tạo con, ghép nối, chọn mẫu quy tắc).
-- [ ] Xác thực 2 lớp (MFA) cho tài khoản phụ huynh (Supabase đã hỗ trợ sẵn).
+- [x] Xác thực 2 lớp (MFA) cho tài khoản phụ huynh (Supabase đã hỗ trợ sẵn). — Đã triển khai: TOTP tự nguyện qua Supabase Auth, bật/tắt ở mục Bảo mật tài khoản trên trang Hồ sơ (quét QR hoặc nhập secret, nhập mã 6 số để xác nhận; tắt phải nhập mã hiện tại). Đăng nhập khi đã bật thì sau mật khẩu phải nhập mã, sai mã không vào được; tài khoản chưa bật đăng nhập như cũ. Không migration, không đổi luồng đăng ký/xác minh email. Khôi phục khi mất thiết bị: xem `03-SECURITY.md` §2 (gỡ factor bởi quản trị dự án Supabase, không có mã khôi phục tự phục vụ). Chưa kiểm chứng đầu-cuối trên tài khoản thật.
 
 Ranh giới giữ nguyên (quyết định 17/11/2026): không chụp màn hình, không ghi phím, không đọc nội dung chat hay file của con. Mục chụp màn hình opt-in ở §4 đã loại khỏi kế hoạch.
 

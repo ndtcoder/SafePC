@@ -13,7 +13,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 ## 2. Xác thực & phân quyền
 
 - [x] Supabase Auth: email + mật khẩu (Supabase quản lý hash, xác minh email qua link). — Đã triển khai. Khóa tài khoản sau 5 lần sai / kiểm tra HaveIBeenPwned là cấu hình Supabase, chưa rà soát.
-- [ ] MFA TOTP cho phụ huynh (giai đoạn 1.5, khuyến nghị bật).
+- [x] MFA TOTP cho phụ huynh (giai đoạn 1.5, khuyến nghị bật). — Đã triển khai 18/11/2026: tự nguyện (opt-in), bật/tắt ở mục Bảo mật tài khoản trên trang Hồ sơ; factor TOTP nằm trong schema auth của Supabase, Dashboard không lưu secret hay mã khôi phục; mã QR do Supabase Auth sinh, không thêm thư viện. Gỡ factor đã xác minh đòi phiên aal2 nên luồng tắt yêu cầu nhập mã hiện tại trước. Khôi phục khi mất thiết bị xác thực: KHÔNG có mã khôi phục tự phục vụ (recovery codes của Supabase là tính năng thử nghiệm, cần bật cờ trên server, chưa dùng); đặt lại mật khẩu qua email không bỏ qua bước MFA; người giữ quyền quản trị dự án Supabase gỡ factor trong Supabase Dashboard (Authentication → Users → chọn tài khoản → gỡ factor ở mục MFA) hoặc qua Auth Admin API; phụ huynh còn lại không gỡ được từ Dashboard SafePC. Chưa kiểm chứng đầu-cuối trên tài khoản thật.
 - [x] Session: JWT ngắn hạn, refresh token rotation (Supabase Auth mặc định). — Đã triển khai theo mặc định Supabase.
 - [x] RLS trên mọi bảng: `family_id` là ranh giới. — Đã bật trên 12 bảng (migration 1). Kiểm thử truy cập chéo gia đình (2 tài khoản) chưa chạy — xem `RLS_TESTING.md`.
 - [x] Device token: chuỗi ngẫu nhiên 256-bit, chỉ gửi 1 lần lúc pairing, lưu hash (SHA-256) ở DB, lưu bản gốc bằng DPAPI trên máy con. Thu hồi được từ Dashboard ("Xóa máy"). — Đã triển khai và kiểm chứng.
