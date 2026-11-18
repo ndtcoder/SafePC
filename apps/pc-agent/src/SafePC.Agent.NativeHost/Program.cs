@@ -23,6 +23,11 @@ namespace SafePC.Agent.NativeHost;
 ///   trả {"type":"ack","ok":true|false}. blocked (tùy chọn, extension 0.1.7)
 ///   chỉ ghi vào dòng JSONL khi true; dòng cũ không có blocked thì Service
 ///   coi là false — cả hai chiều đều tương thích ngược.
+/// - {"type":"requestUnblock","domain"} (extension 0.1.9) -&gt; ghi thêm một
+///   dòng {"domain","requestedAt"} vào domain_requests.jsonl để Service đọc
+///   trong chu kỳ poll lệnh, trả {"type":"ack","ok":true|false}. Chỉ tên
+///   miền, cùng luật kiểm tra domain như visit (không '/', '?', '#',
+///   khoảng trắng, ký tự điều khiển).
 /// Mỗi message getRules/reportUsage (kể cả message lỗi) còn ghi đè timestamp
 /// UTC hiện tại vào extension_heartbeat.txt — dấu hiệu extension còn sống để
 /// Service đọc và báo lên server (Sprint 2 đợt 3). Ghi heartbeat không bao
@@ -66,6 +71,9 @@ internal static class NativeHostApp
 
     private static readonly string RulesFilePath = Path.Combine(SharedDirectory, "domain_rules.json");
     private static readonly string UsageFilePath = Path.Combine(SharedDirectory, "web_usage.jsonl");
+
+    /// <summary>File JSONL extension gửi yêu cầu xin mở domain vào (qua message requestUnblock), Service đọc trong chu kỳ poll lệnh.</summary>
+    private static readonly string DomainRequestsFilePath = Path.Combine(SharedDirectory, "domain_requests.jsonl");
 
     /// <summary>File heartbeat của extension: chỉ chứa timestamp UTC ISO lúc extension liên hệ gần nhất. Service đọc để báo lên server.</summary>
     private static readonly string HeartbeatFilePath = Path.Combine(SharedDirectory, "extension_heartbeat.txt");
@@ -174,7 +182,7 @@ internal static class NativeHostApp
             }
 
             string? type = typeElement.GetString();
-            if (type is "getRules" or "reportUsage")
+            if (type is "getRules" or "reportUsage" or "requestUnblock")
             {
                 // Mọi lần extension liên hệ đều để lại dấu heartbeat — kể cả
                 // khi message sau đó xử lý lỗi. Ghi lỗi không ảnh hưởng message.
@@ -185,6 +193,7 @@ internal static class NativeHostApp
             {
                 "getRules" => GetRulesJson(),
                 "reportUsage" => ReportUsage(root),
+                "requestUnblock" => RequestUnblock(root),
                 _ => UnknownType(),
             };
         }
@@ -394,6 +403,70 @@ internal static class NativeHostApp
             domain,
             startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
             durationSec,
+        });
+    }
+
+    /// <summary>
+    /// Ghi thêm một yêu cầu xin mở domain vào domain_requests.jsonl (một
+    /// dòng JSON {"domain","requestedAt"}). Domain không hợp lệ thì trả ack
+    /// false để extension hiện lỗi thay vì tưởng đã gửi; lỗi I/O cũng trả
+    /// ack false để extension giữ nút ở trạng thái chưa gửi. Không bao giờ
+    /// ném exception. Không log domain — chỉ đếm/không ghi gì thêm.
+    /// </summary>
+    private static string RequestUnblock(JsonElement root)
+    {
+        string? line = TryFormatDomainRequestLine(root);
+        if (line is null)
+        {
+            Console.Error.WriteLine("[SafePC NativeHost] requestUnblock thiếu domain hợp lệ, bỏ qua.");
+            return AckJson(ok: false);
+        }
+
+        try
+        {
+            Directory.CreateDirectory(SharedDirectory);
+            // FileShare.ReadWrite: Service có thể đọc file cùng lúc để đẩy
+            // yêu cầu lên server mà không chặn lần ghi này.
+            using FileStream stream = new(DomainRequestsFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            writer.WriteLine(line);
+            writer.Flush();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine("[SafePC NativeHost] Không ghi được domain_requests.jsonl: " + ex.Message);
+            return AckJson(ok: false);
+        }
+
+        return AckJson(ok: true);
+    }
+
+    /// <summary>
+    /// Kiểm tra và định dạng một message requestUnblock thành dòng JSONL
+    /// {"domain","requestedAt"}. Trả về null khi domain thiếu/không hợp lệ:
+    /// 1-253 ký tự sau khi trim + chữ thường, không chứa '/', '?', '#',
+    /// khoảng trắng hay ký tự điều khiển (cùng luật với visit — không bao
+    /// giờ là URL đầy đủ). requestedAt là giờ UTC lúc host nhận message.
+    /// </summary>
+    private static string? TryFormatDomainRequestLine(JsonElement root)
+    {
+        if (!root.TryGetProperty("domain", out JsonElement domainElement)
+            || domainElement.ValueKind != JsonValueKind.String
+            || domainElement.GetString() is not string rawDomain)
+        {
+            return null;
+        }
+
+        string domain = rawDomain.Trim().ToLowerInvariant();
+        if (domain.Length == 0 || domain.Length > 253 || ContainsForbiddenDomainChar(domain))
+        {
+            return null;
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            domain,
+            requestedAt = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture),
         });
     }
 
