@@ -74,6 +74,21 @@ public sealed class AgentWorker : BackgroundService
     private int _lastWarnBucket;
     private bool _lockSent;
 
+    // Lịch sử thi hành (migration 10): nghỉ bắt buộc có đang hiệu lực ở
+    // lần kiểm tra trước không — chuyển false -> true là một lần nghỉ bắt
+    // đầu, ghi sự kiện break_started. Chỉ trong bộ nhớ: Service khởi động
+    // lại giữa giờ nghỉ thì lần kiểm tra đầu tiên thấy breakActive = true
+    // và ghi thêm một sự kiện cho cùng giờ nghỉ (nhiễu hiếm, chấp nhận).
+    private bool _lastBreakActive;
+
+    // Chống spam sự kiện app_blocked: cùng một exe + loại thi hành chỉ ghi
+    // 1 sự kiện trong 60 giây — lượt thi hành ngay và vòng tick có thể
+    // cùng thấy một tiến trình còn sống trong vài giây đầu sau khi đóng
+    // (kill chưa thu hồi kịp), và con mở lại liên tục trong 1 phút vẫn
+    // chỉ tính là một đợt chặn. Khóa "loại|exe", giờ UTC. Không dọn:
+    // số cặp exe×loại bị chặn bởi số rule, nhỏ và hữu hạn.
+    private readonly Dictionary<string, DateTimeOffset> _lastAppBlockEventAt = new(StringComparer.OrdinalIgnoreCase);
+
     // Khóa có độ trễ (lệnh lock_now kèm delay_minutes 1–5): thời điểm lệnh
     // khóa thật sự có hiệu lực. Trong lúc chờ, vòng kiểm tra chỉ gửi cảnh
     // báo (cửa sổ nhỏ) thay vì màn hình khóa full màn — con có thời gian
@@ -194,6 +209,33 @@ public sealed class AgentWorker : BackgroundService
         catch (Exception ex)
         {
             _log.Error("Không khởi tạo được SQLite outbox.", ex);
+        }
+
+        // Lịch sử thi hành (migration 10): khởi tạo _lastBreakActive từ
+        // trạng thái bền để Service khởi động lại giữa giờ nghỉ không ghi
+        // trùng sự kiện break_started. BreakEndsAt còn hiệu lực nghĩa là
+        // giờ nghỉ này đã bắt đầu trước khi process này chạy (sự kiện đã
+        // ghi rồi). Lỗi đọc thì fail-open (giữ false): cùng lắm ghi trùng
+        // một sự kiện, không chặn khởi động.
+        // Lưu ý: _lockSent KHÔNG khởi tạo tương tự — khóa do quy tắc
+        // không có trạng thái bền "đã gửi khóa" (ForcedLock bền chỉ dùng
+        // cho khóa do phụ huynh, mà lock_started không ghi cho khóa đó),
+        // và đặt _lockSent = true bừa sẽ chặn lần gửi khóa hợp lệ đầu
+        // tiên sau khởi động. Khởi động lại giữa lúc đang khóa do quy
+        // tắc có thể ghi trùng một lock_started (hiếm, +1 hàng đếm tuần).
+        try
+        {
+            string? breakEndsAtText = await _outbox.GetStateAsync(StateKeys.BreakEndsAt, stoppingToken);
+            if (breakEndsAtText is not null
+                && DateTimeOffset.TryParse(breakEndsAtText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset breakEndsAt)
+                && DateTimeOffset.Now < breakEndsAt)
+            {
+                _lastBreakActive = true;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đọc trạng thái nghỉ bắt buộc lúc khởi động lỗi.", ex);
         }
 
         // Báo Service vừa khởi động lại (tamper event agent_restart, chống
@@ -540,10 +582,12 @@ public sealed class AgentWorker : BackgroundService
     /// <summary>
     /// Đẩy lượt thăm web lên server từ file JSONL do NativeHost ghi
     /// (<c>%ProgramData%\SafePC\shared\web_usage.jsonl</c>). Mỗi dòng là một
-    /// JSON {domain, startedAt, durationSec} — chỉ domain, không URL/path/
-    /// query. File chỉ bị cắt khi gửi thành công toàn bộ; gửi lỗi thì giữ
-    /// nguyên để chu kỳ sau gửi lại. Dòng dở cuối file (NativeHost đang ghi
-    /// dở, chưa có newline) không được tiêu thụ.
+    /// JSON {domain, startedAt, durationSec, blocked?} — chỉ domain, không
+    /// URL/path/query. Lượt bị chặn (extension 0.1.7) mang blocked = true
+    /// và durationSec = 0; dòng cũ không có blocked thì coi là false. File
+    /// chỉ bị cắt khi gửi thành công toàn bộ; gửi lỗi thì giữ nguyên để
+    /// chu kỳ sau gửi lại. Dòng dở cuối file (NativeHost đang ghi dở, chưa
+    /// có newline) không được tiêu thụ.
     /// </summary>
     private async Task FlushWebUsageAsync(CancellationToken ct)
     {
@@ -811,7 +855,22 @@ public sealed class AgentWorker : BackgroundService
             }
 
             int durationSec = (int)Math.Clamp(Math.Truncate(seconds), 0, 86400);
-            return new WebVisitRecord { Domain = domain, VisitedAt = visitedAt, DurationSec = durationSec };
+
+            // Cờ bị chặn (migration 10, extension 0.1.7): dòng cũ không có
+            // trường này thì coi là false; có mà không phải boolean thì
+            // dòng không hợp lệ (cùng độ nghiêm với các trường khác).
+            bool blocked = false;
+            if (root.TryGetProperty("blocked", out JsonElement blockedElement))
+            {
+                if (blockedElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    return null;
+                }
+
+                blocked = blockedElement.GetBoolean();
+            }
+
+            return new WebVisitRecord { Domain = domain, VisitedAt = visitedAt, DurationSec = durationSec, Blocked = blocked };
         }
     }
 
@@ -884,6 +943,34 @@ public sealed class AgentWorker : BackgroundService
                 (RuleDecision decision, bool breakActive) = await EvaluateLockDecisionAsync(
                     rules, usedToday, activeOverride, forcedLock, parsedAppRules, now, ct);
 
+                // Lịch sử thi hành (migration 10): nghỉ bắt buộc vừa bắt
+                // đầu (chuyển false -> true) thì ghi sự kiện break_started.
+                // Đánh giá ở đây — không ghi trong EvaluateForcedBreakAsync
+                // — để hai đường gọi (tick + handler ghi đè) cùng đặt trạng
+                // thái BreakEndsAt cũng chỉ sinh một sự kiện cho một giờ
+                // nghỉ. BreakConfig có thể null khi rule bị gỡ giữa giờ
+                // nghỉ (trạng thái BreakEndsAt vẫn còn): khi đó details
+                // chỉ mang rule_ids, không mang số phút.
+                if (breakActive && !_lastBreakActive)
+                {
+                    var breakDetails = new Dictionary<string, object>
+                    {
+                        ["rule_ids"] = ForcedBreakRuleIds(rules),
+                    };
+                    if (parsedAppRules.BreakConfig is not null)
+                    {
+                        breakDetails["work_minutes"] = parsedAppRules.BreakConfig.WorkMinutes;
+                        breakDetails["break_minutes"] = parsedAppRules.BreakConfig.BreakMinutes;
+                    }
+
+                    await PushEnforcementEventAsync(
+                        "break_started",
+                        JsonSerializer.SerializeToElement(breakDetails),
+                        ct);
+                }
+
+                _lastBreakActive = breakActive;
+
                 switch (decision.Kind)
                 {
                     case RuleDecisionKind.Allowed:
@@ -918,8 +1005,19 @@ public sealed class AgentWorker : BackgroundService
                         {
                             _lastWarnBucket = bucket;
                             _log.Info("Sắp hết giờ, còn " + decision.MinutesLeft + " phút. Báo Tray hiện cảnh báo.");
-                            await _ipc.SendToTrayAsync(
+                            int deadlineWarned = await _ipc.SendToTrayAsync(
                                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(decision.MinutesLeft, decision.Reason)), ct);
+                            // Lịch sử thi hành: chỉ ghi khi cảnh báo tới
+                            // được ≥1 Tray (đã hiện thật cho con). Hành vi
+                            // bucket không đổi: đã chuyển bucket thì lần
+                            // kiểm tra sau không gửi lại dù lần này rớt.
+                            if (deadlineWarned > 0)
+                            {
+                                await PushEnforcementEventAsync(
+                                    "warning_shown",
+                                    JsonSerializer.SerializeToElement(new { kind = "deadline", minutes_left = decision.MinutesLeft }),
+                                    ct);
+                            }
                         }
                         break;
 
@@ -944,6 +1042,12 @@ public sealed class AgentWorker : BackgroundService
                                     if (warned > 0)
                                     {
                                         _lastPendingWarnMinutes = minutesLeft;
+                                        // Lịch sử thi hành: cảnh báo chờ
+                                        // khóa đã hiện thật cho con.
+                                        await PushEnforcementEventAsync(
+                                            "warning_shown",
+                                            JsonSerializer.SerializeToElement(new { kind = "pending_lock", minutes_left = minutesLeft }),
+                                            ct);
                                     }
                                 }
 
@@ -980,6 +1084,34 @@ public sealed class AgentWorker : BackgroundService
                             if (firstLock)
                             {
                                 _lockSent = sent > 0;
+                            }
+
+                            // Lịch sử thi hành (migration 10): màn hình khóa
+                            // vừa hiện lần đầu do quyết định này. Chỉ ghi
+                            // khóa do QUY TẮC GIỜ GIẤC: khóa cưỡng chế/ghi
+                            // đè khóa của phụ huynh đã đếm được từ bảng
+                            // commands, nghỉ bắt buộc đã có sự kiện
+                            // break_started riêng — ghi thêm sẽ đếm trùng.
+                            // Lần nhắc lại trong giờ nghỉ (breakActive,
+                            // không phải firstLock) không ghi: cùng một lần
+                            // khóa đang tiếp diễn. Phân loại bằng đúng
+                            // helper của snapshot (DeriveLockedBy /
+                            // DeriveEnforcementReasons) với quyết định GỐC:
+                            // snapshot bên dưới dùng quyết định đã điều
+                            // chỉnh độ trễ nên không dùng chung được.
+                            if (firstLock && sent > 0
+                                && DeriveLockedBy(decision, breakActive, forcedLock, activeOverride, now) == "rule")
+                            {
+                                (List<string> eventReasons, List<string> eventRuleIds) = DeriveEnforcementReasons(
+                                    decision, rules, breakActive, forcedLock, activeOverride, now);
+                                await PushEnforcementEventAsync(
+                                    "lock_started",
+                                    JsonSerializer.SerializeToElement(new
+                                    {
+                                        kind = eventReasons.Count > 0 ? eventReasons[0] : "rule",
+                                        rule_ids = eventRuleIds,
+                                    }),
+                                    ct);
                             }
                         }
                         break;
@@ -1095,6 +1227,30 @@ public sealed class AgentWorker : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.Error("Gửi tamper event " + eventType + " lỗi.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Gửi một sự kiện thi hành lên server (migration 10, bảng audit_logs).
+    /// Chỉ gọi ở điểm CHUYỂN TRẠNG THÁI (khóa bắt đầu, nghỉ bắt đầu, đóng
+    /// app, hiện cảnh báo) — không throttle như tamper event vì bản thân
+    /// các điểm gọi đã thưa. Lỗi mạng/server/RPC chưa tồn tại thì API trả
+    /// false và đã ghi log throttle — nơi gọi bỏ qua mềm, không retry.
+    /// Tự bắt mọi lỗi (trừ hủy) để không chặn vòng lặp gọi; thi hành (IPC
+    /// /kill) luôn chạy TRƯỚC khi gọi hàm này nên lỗi đẩy không bao giờ
+    /// ảnh hưởng thi hành. Trả về true chỉ khi server đã ghi (nơi gọi
+    /// chống spam dùng để quyết định có ghi mốc dedupe không).
+    /// </summary>
+    private async Task<bool> PushEnforcementEventAsync(string eventType, JsonElement details, CancellationToken ct)
+    {
+        try
+        {
+            return await _api.PushEnforcementEventAsync(eventType, details, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Gửi enforcement event " + eventType + " lỗi.", ex);
+            return false;
         }
     }
 
@@ -1572,7 +1728,7 @@ public sealed class AgentWorker : BackgroundService
                     appBlocks.Add(fgExe);
                 }
 
-                await KillAppAsync(fgExe, foreground.SessionId, display, "đang bị chặn tạm thời", ct);
+                await KillAppAsync(fgExe, foreground.SessionId, display, "đang bị chặn tạm thời", "temp_block", ct);
             }
 
             return;
@@ -1590,7 +1746,7 @@ public sealed class AgentWorker : BackgroundService
                 appBlocks.Add(fgExe);
             }
 
-            await KillAppAsync(fgExe, foreground.SessionId, display, "đang giờ học tập trung", ct);
+            await KillAppAsync(fgExe, foreground.SessionId, display, "đang giờ học tập trung", "focus", ct);
             return;
         }
 
@@ -1607,13 +1763,14 @@ public sealed class AgentWorker : BackgroundService
                 appBlocks.Add(fgExe);
             }
 
-            await KillAppAsync(fgExe, foreground.SessionId, display, "không thuộc danh sách app được phép", ct);
+            await KillAppAsync(fgExe, foreground.SessionId, display, "không thuộc danh sách app được phép", "allowlist", ct);
             return;
         }
 
         string? killExe = null;
         string? killDisplay = null;
         string? killClause = null;
+        string? killKind = null;
         int? warnWindowMinutes = null;
         string? warnWindowExe = null;
         string? warnWindowDisplay = null;
@@ -1626,6 +1783,7 @@ public sealed class AgentWorker : BackgroundService
                 killExe = blocked.NormalizedExe;
                 killDisplay = blocked.DisplayName;
                 killClause = "đang bị chặn";
+                killKind = "block";
                 break;
             }
         }
@@ -1647,6 +1805,7 @@ public sealed class AgentWorker : BackgroundService
                     killExe = block.App.NormalizedExe;
                     killDisplay = block.App.DisplayName;
                     killClause = "đang ngoài khung giờ được dùng";
+                    killKind = "block_by_time";
                     break;
                 }
 
@@ -1679,6 +1838,7 @@ public sealed class AgentWorker : BackgroundService
                     killExe = limit.App.NormalizedExe;
                     killDisplay = limit.App.DisplayName;
                     killClause = "đã hết thời gian cho phép hôm nay";
+                    killKind = "time_limit";
                     break;
                 }
 
@@ -1694,28 +1854,44 @@ public sealed class AgentWorker : BackgroundService
         if (killExe is not null)
         {
             appBlocks.Add(killExe);
-            await KillAppAsync(killExe, foreground.SessionId, killDisplay!, killClause!, ct);
+            await KillAppAsync(killExe, foreground.SessionId, killDisplay!, killClause!, killKind!, ct);
             return;
         }
 
         if (warnWindowMinutes is not null && warnWindowExe is not null && warnWindowDisplay is not null
             && MarkAppWarned(warnWindowExe, todayKey, "window"))
         {
-            await _ipc.SendToTrayAsync(
+            int appWindowWarned = await _ipc.SendToTrayAsync(
                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(
                     warnWindowMinutes.Value,
                     warnWindowDisplay + " sắp hết khung giờ được dùng, còn " + warnWindowMinutes.Value + " phút.")),
                 ct);
+            // Lịch sử thi hành: chỉ ghi khi cảnh báo tới được ≥1 Tray.
+            if (appWindowWarned > 0)
+            {
+                await PushEnforcementEventAsync(
+                    "warning_shown",
+                    JsonSerializer.SerializeToElement(new { kind = "app_window", minutes_left = warnWindowMinutes.Value, exe = warnWindowExe }),
+                    ct);
+            }
         }
 
         if (warnLimitMinutes is not null && warnLimitExe is not null && warnLimitDisplay is not null
             && MarkAppWarned(warnLimitExe, todayKey, "limit"))
         {
-            await _ipc.SendToTrayAsync(
+            int appLimitWarned = await _ipc.SendToTrayAsync(
                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(
                     warnLimitMinutes.Value,
                     warnLimitDisplay + " sắp hết thời gian cho phép, còn " + warnLimitMinutes.Value + " phút.")),
                 ct);
+            // Lịch sử thi hành: chỉ ghi khi cảnh báo tới được ≥1 Tray.
+            if (appLimitWarned > 0)
+            {
+                await PushEnforcementEventAsync(
+                    "warning_shown",
+                    JsonSerializer.SerializeToElement(new { kind = "app_limit", minutes_left = warnLimitMinutes.Value, exe = warnLimitExe }),
+                    ct);
+            }
         }
     }
 
@@ -1844,9 +2020,13 @@ public sealed class AgentWorker : BackgroundService
     /// <summary>
     /// Đóng app theo quy tắc: chỉ khi tên exe không nằm trong denylist. Đóng
     /// xong (ít nhất một tiến trình) thì báo Tray hiện thông báo với
-    /// MinutesLeft = 0 (WarningWindow ẩn dòng đếm ngược, chỉ hiện lý do).
+    /// MinutesLeft = 0 (WarningWindow ẩn dòng đếm ngược, chỉ hiện lý do) và
+    /// ghi sự kiện app_blocked lên server (migration 10). <paramref
+    /// name="kind"/> là loại thi hành ổn định cho lịch sử (block,
+    /// block_by_time, time_limit, focus, allowlist, temp_block) — khác
+    /// <paramref name="clause"/> là câu tiếng Việt hiển thị cho con.
     /// </summary>
-    private async Task KillAppAsync(string? normalizedExe, int sessionId, string displayName, string clause, CancellationToken ct)
+    private async Task KillAppAsync(string? normalizedExe, int sessionId, string displayName, string clause, string kind, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(normalizedExe))
         {
@@ -1874,6 +2054,25 @@ public sealed class AgentWorker : BackgroundService
             await _ipc.SendToTrayAsync(
                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(0, "Đã đóng " + displayName + " vì " + clause + ".")),
                 ct);
+
+            // Lịch sử thi hành (migration 10): chỉ ghi khi đóng được thật
+            // (killed > 0), và chống spam cùng exe + loại trong 60 giây —
+            // lượt thi hành ngay và vòng tick có thể cùng thấy một tiến
+            // trình còn sống trong vài giây đầu sau khi đóng. Chỉ ghi mốc
+            // khi gửi thành công (cùng mẫu tamper event): gửi lỗi thì lần
+            // đóng sau thử lại.
+            string dedupeKey = kind + "|" + normalizedExe;
+            if (!_lastAppBlockEventAt.TryGetValue(dedupeKey, out DateTimeOffset lastEvent)
+                || DateTimeOffset.UtcNow - lastEvent >= TimeSpan.FromSeconds(60))
+            {
+                if (await PushEnforcementEventAsync(
+                    "app_blocked",
+                    JsonSerializer.SerializeToElement(new { exe = normalizedExe, kind }),
+                    ct))
+                {
+                    _lastAppBlockEventAt[dedupeKey] = DateTimeOffset.UtcNow;
+                }
+            }
         }
     }
 
@@ -2299,14 +2498,7 @@ public sealed class AgentWorker : BackgroundService
         if (breakActive)
         {
             reasons.Add(RuleTypes.App);
-            foreach (Rule rule in rules)
-            {
-                if (rule.Enabled && rule.Type == RuleTypes.App && GetRuleMode(rule) == "forced_break")
-                {
-                    ruleIds.Add(rule.Id.ToString());
-                }
-            }
-
+            ruleIds.AddRange(ForcedBreakRuleIds(rules));
             return (reasons, ruleIds);
         }
 
@@ -2349,6 +2541,21 @@ public sealed class AgentWorker : BackgroundService
         }
 
         return (reasons, ruleIds);
+    }
+
+    /// <summary>Id các rule nghỉ bắt buộc đang bật (type app, mode forced_break).</summary>
+    private static List<string> ForcedBreakRuleIds(IReadOnlyList<Rule> rules)
+    {
+        var ruleIds = new List<string>();
+        foreach (Rule rule in rules)
+        {
+            if (rule.Enabled && rule.Type == RuleTypes.App && GetRuleMode(rule) == "forced_break")
+            {
+                ruleIds.Add(rule.Id.ToString());
+            }
+        }
+
+        return ruleIds;
     }
 
     /// <summary>

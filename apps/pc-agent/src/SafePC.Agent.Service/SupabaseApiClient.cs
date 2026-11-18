@@ -295,6 +295,7 @@ public sealed class SupabaseApiClient
                 domain = record.Domain,
                 visited_at = record.VisitedAt,
                 duration_sec = record.DurationSec,
+                blocked = record.Blocked,
             });
         }
 
@@ -329,6 +330,39 @@ public sealed class SupabaseApiClient
 
         string? id = await PostRpcAsync<string>(
             "safepc_push_tamper_event",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_event_type = eventType,
+                p_details = details,
+            },
+            ct);
+        return id is not null;
+    }
+
+    /// <summary>
+    /// Báo một sự kiện thi hành lên server (migration 10, ghi vào bảng
+    /// <c>audit_logs</c>). <paramref name="eventType"/> phải là một trong 4
+    /// giá trị RPC chấp nhận (lock_started, break_started, app_blocked,
+    /// warning_shown) — khóa do phụ huynh không ghi ở đây (đã đếm được từ
+    /// bảng commands). Trả về true chỉ khi server trả về id hàng đã ghi.
+    /// RPC chưa tồn tại (migration 10 chưa áp) thì PostgREST trả lỗi và
+    /// <see cref="PostRpcAsync{T}"/> trả default + log throttle — nơi gọi
+    /// bỏ qua mềm, không crash, không retry bão.
+    /// </summary>
+    public async Task<bool> PushEnforcementEventAsync(string eventType, JsonElement details, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(eventType);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Gửi enforcement event bỏ qua: " + reason + ".");
+            return false;
+        }
+
+        string? id = await PostRpcAsync<string>(
+            "safepc_push_enforcement_event",
             new
             {
                 p_device_id = creds.DeviceId,
