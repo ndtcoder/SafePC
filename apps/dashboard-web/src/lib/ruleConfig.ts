@@ -358,12 +358,80 @@ export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
   { value: 'focus', label: 'Giờ học tập trung' },
 ]
 
+// ---------------------------------------------------------------------------
+// Chặn theo danh mục domain (đợt danh mục, PRD §2.8): phụ huynh chọn danh
+// mục trong rule "Chặn website" thay vì gõ từng domain. Dashboard CHỈ
+// mang id + nhãn hiển thị — danh sách domain của từng danh mục nằm DUY
+// NHẤT trong Agent (SafePC.Agent.Service/DomainCategoryLists.cs), Agent
+// mở rộng danh mục thành domain lúc xuất domain_rules.json. Dashboard
+// không mang danh sách hay số lượng domain, để không lệch với Agent.
+// HỢP ĐỒNG LIÊN DỰ ÁN: id phải khớp đúng DomainCategoryLists phía Agent
+// và lý do "category-<id>" phía extension (blocked.js). Thêm danh mục
+// mới thì thêm ở cả ba nơi, theo thứ tự chuẩn adult -> gambling -> social.
+// ---------------------------------------------------------------------------
+
+/** Id danh mục chặn. Phải khớp đúng DomainCategoryLists.OrderedIds phía Agent. */
+export type DomainCategoryId = 'adult' | 'gambling' | 'social'
+
+export interface DomainCategoryOption {
+  value: DomainCategoryId
+  label: string
+  /** Mô tả ngắn hiển thị dưới nhãn, gồm ví dụ website trong danh mục (phải là domain có thật trong danh sách hạt giống của Agent). */
+  description: string
+}
+
+/** Metadata danh mục hiển thị trên form. Thứ tự mảng = thứ tự chuẩn của Agent (dùng để sắp xếp khi lưu). */
+export const DOMAIN_CATEGORIES: DomainCategoryOption[] = [
+  {
+    value: 'adult',
+    label: 'Nội dung người lớn',
+    description: 'Các website nội dung người lớn phổ biến (ví dụ: Pornhub, XVideos).',
+  },
+  {
+    value: 'gambling',
+    label: 'Cờ bạc, cá cược',
+    description: 'Các website cá cược, casino trực tuyến phổ biến (ví dụ: Bet365, 188Bet).',
+  },
+  {
+    value: 'social',
+    label: 'Mạng xã hội',
+    description: 'Mạng xã hội và nhắn tin qua web (ví dụ: Facebook, Instagram, TikTok, WhatsApp Web).',
+  },
+]
+
+const DOMAIN_CATEGORY_ID_SET: ReadonlySet<string> = new Set(DOMAIN_CATEGORIES.map((c) => c.value))
+
+export function isDomainCategoryId(value: unknown): value is DomainCategoryId {
+  return typeof value === 'string' && DOMAIN_CATEGORY_ID_SET.has(value)
+}
+
+/** Nhãn hiển thị của một id danh mục. Id lạ (Agent/Dashboard mới hơn) thì hiện đúng id để không mất thông tin. */
+export function domainCategoryLabel(id: string): string {
+  return DOMAIN_CATEGORIES.find((c) => c.value === id)?.label ?? id
+}
+
+/**
+ * Đọc mảng categories đã lưu: chỉ giữ id đã biết, bỏ trùng, sắp theo
+ * thứ tự chuẩn. Tolerant reader — dữ liệu lạ thì trả mảng rỗng (rule
+ * vẫn hiển thị đúng phần domain gõ tay), không throw.
+ */
+export function readStoredCategories(value: unknown): DomainCategoryId[] {
+  if (!Array.isArray(value)) return []
+  const kept = new Set<DomainCategoryId>()
+  for (const item of value) {
+    if (isDomainCategoryId(item)) kept.add(item)
+  }
+  return DOMAIN_CATEGORIES.map((c) => c.value).filter((id) => kept.has(id))
+}
+
 /** Chặn các domain trong danh sách (kể cả tên miền con). */
 export type BlockDomainsConfig = {
   mode: 'block_domains'
   domains: string[]
   /** Đường dẫn chặn theo tiền tố (đợt 4): "host/path", vd "bing.com/videos". Vắng mặt = không có quy tắc đường dẫn. */
   urlPatterns?: string[]
+  /** Danh mục chặn đã chọn (đợt danh mục). Chỉ mode này hỗ trợ danh mục; Agent bỏ qua categories ở mode khác kèm Warning. Khóa được bỏ hoàn toàn khi rỗng. */
+  categories?: DomainCategoryId[]
 }
 
 /** Chặn các domain trong danh sách, chỉ trong các khung giờ theo thứ. */
@@ -761,6 +829,23 @@ export function validateWebsiteEntriesText(text: string): string | null {
 }
 
 /**
+ * Kiểm tra draft của chế độ "Chặn website" (đợt danh mục): rule hợp lệ
+ * khi có ít nhất một domain/đường dẫn HOẶC ít nhất một danh mục đã chọn
+ * — chọn danh mục mà không gõ domain vẫn là rule có nội dung (Agent mở
+ * rộng danh mục thành domain). Mục gõ tay sai định dạng vẫn bị từ chối
+ * dù đã chọn danh mục (không lặng lẽ bỏ mục sai). Trả về lỗi, ngược lại
+ * null. Chế độ allowlist dùng chung draft nhưng KHÔNG dùng hàm này (nó
+ * dùng rejectUrlPatternsError và bỏ qua categories khi lưu).
+ */
+export function validateBlockDomainsDraft(draft: WebsiteDomainsDraft): string | null {
+  if (draft.domainsText.trim() === '') {
+    if (draft.categories.length > 0) return null
+    return 'Hãy nhập ít nhất một domain hoặc một đường dẫn, hoặc chọn ít nhất một danh mục để chặn.'
+  }
+  return parseWebsiteEntriesInput(draft.domainsText).error
+}
+
+/**
  * Kiểm tra ô nhập của các mode website CHƯA thi hành đường dẫn (allowlist,
  * chặn theo giờ, allowlist theo giờ, giới hạn thời gian): chấp nhận domain
  * như `validateWebsiteEntriesText`, nhưng từ chối mọi mục đường dẫn vì
@@ -898,8 +983,10 @@ export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConf
     if (!WEBSITE_MODES.includes(modeRaw as WebsiteMode)) return null
     const mode = modeRaw as WebsiteMode
     switch (mode) {
-      case 'block_domains':
-        return { mode, domains, urlPatterns }
+      case 'block_domains': {
+        const categories = readStoredCategories(config['categories'])
+        return categories.length > 0 ? { mode, domains, urlPatterns, categories } : { mode, domains, urlPatterns }
+      }
       case 'block_domains_by_time':
         return { mode, domains, urlPatterns, windowsByWeekday: parseTimeWindowConfig(config) }
       case 'allowlist':
@@ -986,6 +1073,8 @@ export function parseAppConfig(config: Record<string, unknown>): AppConfig | nul
 
 export interface WebsiteDomainsDraft {
   domainsText: string
+  /** Danh mục chặn đã chọn (chỉ dùng ở chế độ block_domains; form allowlist dùng chung draft nhưng bỏ qua trường này khi lưu). */
+  categories: DomainCategoryId[]
 }
 
 export interface BlockDomainsByTimeDraft {
@@ -1021,7 +1110,7 @@ export interface FocusDraft {
 }
 
 export function emptyWebsiteDomainsDraft(): WebsiteDomainsDraft {
-  return { domainsText: '' }
+  return { domainsText: '', categories: [] }
 }
 
 export function emptyBlockDomainsByTimeDraft(): BlockDomainsByTimeDraft {
@@ -1054,7 +1143,12 @@ export function websiteConfigToDomainsDraft(config: WebsiteConfig | null): Websi
   if (!config || config.mode === 'safe_search' || config.mode === 'focus') {
     return emptyWebsiteDomainsDraft()
   }
-  return { domainsText: entriesToDomainsText(config.domains, config.urlPatterns) }
+  return {
+    domainsText: entriesToDomainsText(config.domains, config.urlPatterns),
+    // Chỉ block_domains mới có categories; mode khác trong draft này đều
+    // bỏ danh mục (đúng ngữ nghĩa: Agent cũng chỉ thi hành ở block_domains).
+    categories: config.mode === 'block_domains' ? (config.categories ?? []) : [],
+  }
 }
 
 export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): BlockDomainsByTimeDraft {
@@ -1112,12 +1206,16 @@ export function websiteConfigToFocusDraft(config: WebsiteConfig | null): FocusDr
 // Các hàm build* giả định draft đã qua kiểm tra (quy ước như đợt 1).
 // ---------------------------------------------------------------------------
 
-export function buildBlockDomainsConfig(domainsText: string): BlockDomainsConfig {
+export function buildBlockDomainsConfig(domainsText: string, categories: DomainCategoryId[] = []): BlockDomainsConfig {
   const parsed = parseWebsiteEntriesInput(domainsText)
+  // Chỉ giữ id đã biết, bỏ trùng, sắp theo thứ tự chuẩn — cùng cách đọc
+  // của readStoredCategories, để config đã lưu luôn ở dạng chuẩn.
+  const clean = readStoredCategories(categories)
   return {
     mode: 'block_domains',
     domains: parsed.domains,
     ...(parsed.urlPatterns.length > 0 ? { urlPatterns: parsed.urlPatterns } : {}),
+    ...(clean.length > 0 ? { categories: clean } : {}),
   }
 }
 

@@ -3,6 +3,7 @@ import {
   formatWeekdayGroup,
   groupWeekdays,
   hhmmToMinutes,
+  domainCategoryLabel,
   parseAppConfig,
   parseBedtimeConfig,
   parseDailyLimitConfig,
@@ -304,7 +305,8 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
   switch (parsed.mode) {
     case 'block_domains': {
       const patterns = parsed.urlPatterns ?? []
-      if (parsed.domains.length === 0 && patterns.length === 0) {
+      const categories = parsed.categories ?? []
+      if (parsed.domains.length === 0 && patterns.length === 0 && categories.length === 0) {
         return ['Chặn website (chưa có domain nào).']
       }
       const lines: string[] = []
@@ -313,6 +315,11 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
       }
       if (patterns.length > 0) {
         lines.push(`Chặn: ${formatPatternList(patterns)} (chỉ link bắt đầu bằng phần này)`)
+      }
+      if (categories.length > 0) {
+        lines.push(
+          `Chặn danh mục: ${categories.map(domainCategoryLabel).join(', ')} (danh sách domain của SafePC)`,
+        )
       }
       return lines
     }
@@ -511,7 +518,7 @@ export function describeRuleConfig(rule: Rule): string[] {
     'end_time', 'end', 'bedtime_end', 'to',
     'app_name', 'app', 'name', 'process_name', 'action',
     'domain', 'website', 'url', 'host',
-    'mode', 'domains', 'urlPatterns', 'searchProviders', 'youtubeRestricted',
+    'mode', 'domains', 'urlPatterns', 'categories', 'searchProviders', 'youtubeRestricted',
     'apps', 'minutesPerDay', 'workMinutes', 'breakMinutes', 'allowedApps', 'allowedDomains',
   ])
   for (const [key, value] of Object.entries(config)) {
