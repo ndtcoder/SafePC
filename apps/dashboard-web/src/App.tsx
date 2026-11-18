@@ -8,6 +8,7 @@ import TodayPage from './pages/TodayPage'
 import DevicesPage from './pages/DevicesPage'
 import RulesPage from './pages/RulesPage'
 import RequestsPage from './pages/RequestsPage'
+import ActivityLogPage from './pages/ActivityLogPage'
 import ProfilesPage from './pages/ProfilesPage'
 import ProfilePage from './pages/ProfilePage'
 
@@ -54,6 +55,7 @@ export default function App() {
         <Route path="/thiet-bi" element={<DevicesPage />} />
         <Route path="/quy-tac" element={<RulesPage />} />
         <Route path="/yeu-cau" element={<RequestsPage />} />
+        <Route path="/nhat-ky" element={<ActivityLogPage />} />
         <Route
           path="/bao-cao"
           element={
