@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  DOMAIN_CATEGORIES,
   WEEKDAY_OPTIONS,
   parseWebsiteEntriesInput,
   type AllowlistByTimeDraft,
@@ -10,6 +11,7 @@ import {
   type BedtimeDraft,
   type BlockDomainsByTimeDraft,
   type DailyLimitDraft,
+  type DomainCategoryId,
   type DomainTimeLimitDraft,
   type FocusDraft,
   type ForcedBreakDraft,
@@ -481,6 +483,13 @@ export function BlockDomainsForm({
   draft: WebsiteDomainsDraft
   onChange: (draft: WebsiteDomainsDraft) => void
 }) {
+  const toggleCategory = (category: DomainCategoryId, checked: boolean) => {
+    const categories = checked
+      ? [...draft.categories, category]
+      : draft.categories.filter((c) => c !== category)
+    onChange({ ...draft, categories })
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-600">
@@ -494,6 +503,35 @@ export function BlockDomainsForm({
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
+      <fieldset>
+        <legend className="mb-1 block text-sm font-medium text-slate-800">
+          Hoặc chặn theo danh mục
+        </legend>
+        <p className="mb-2 text-sm text-slate-600">
+          Chọn danh mục để chặn các website phổ biến trong danh mục đó mà không cần gõ từng domain. Có thể kết
+          hợp cả danh mục và domain gõ tay trong cùng một quy tắc. Danh mục chỉ chặn các website phổ biến nhất —
+          website mới hoặc ít tên tuổi có thể chưa có trong danh sách.
+        </p>
+        <div className="space-y-1">
+          {DOMAIN_CATEGORIES.map((category) => (
+            <label
+              key={category.value}
+              className="flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
+            >
+              <input
+                type="checkbox"
+                checked={draft.categories.includes(category.value)}
+                onChange={(e) => toggleCategory(category.value, e.target.checked)}
+                className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
+              />
+              <span>
+                <span className="block font-medium">{category.label}</span>
+                <span className="block text-slate-600">{category.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       <UntilToggledOffHint />
     </div>
   )
