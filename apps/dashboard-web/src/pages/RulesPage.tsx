@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
+import { buildRuleSummary, logRuleChange } from '../lib/ruleAudit'
 import type { Child, Command, Device, Family, Rule, TemporaryOverrideAction } from '../lib/types'
 import {
   PRESET_OPTIONS,
@@ -682,6 +683,14 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         .update({ enabled: nextEnabled })
         .eq('id', rule.id)
       if (updateError) throw updateError
+      // Ghi nhật ký best-effort: không bao giờ làm hỏng thao tác bật/tắt.
+      await logRuleChange({
+        familyId: rule.family_id,
+        childId: rule.child_id,
+        action: nextEnabled ? 'rule_enabled' : 'rule_disabled',
+        target: rule.id,
+        details: { rule_name: ruleDisplayName(rule), rule_type: rule.type },
+      })
       setActionMessage(
         `Đã ${nextEnabled ? 'bật' : 'tắt'} quy tắc “${ruleDisplayName(rule)}” cho ${childNameById.get(rule.child_id) ?? 'con'}.`,
       )
@@ -991,20 +1000,62 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
           .update({ child_id: formChildId, config, ...nameField })
           .eq('id', editingRule.id)
         if (updateError) throw updateError
+        // Ghi nhật ký best-effort: tên mới (chưa lưu thì tên cũ), tóm
+        // tắt cấu hình mới + cũ, tên cũ khi đổi tên, con cũ khi chuyển con.
+        const newName = namesAvailable ? (trimmedName === '' ? null : trimmedName) : (editingRule.name ?? null)
+        const oldCustomName = editingRule.name?.trim() ?? ''
+        const newCustomName = namesAvailable ? trimmedName : oldCustomName
+        await logRuleChange({
+          familyId: editingRule.family_id,
+          childId: formChildId,
+          action: 'rule_updated',
+          target: editingRule.id,
+          details: {
+            rule_name: ruleDisplayName({ name: newName, type: editingRule.type }),
+            rule_type: editingRule.type,
+            summary: buildRuleSummary(editingRule.type, config),
+            previous_summary: buildRuleSummary(editingRule.type, editingRule.config),
+            ...(oldCustomName !== '' && newCustomName !== '' && oldCustomName !== newCustomName
+              ? { previous_name: oldCustomName }
+              : {}),
+            ...(editingRule.child_id !== formChildId ? { previous_child_id: editingRule.child_id } : {}),
+          },
+        })
         setActionMessage('Đã cập nhật quy tắc.')
         setEditingRule(null)
         // Sửa xong thì đóng accordion để phụ huynh nhìn lại danh sách.
         setCreateOpen(null)
       } else {
-        const { error: insertError } = await supabase.from('rules').insert({
-          family_id: family.id,
-          child_id: formChildId,
-          type: formType,
-          config,
-          enabled: true,
-          ...nameField,
-        })
+        // Đọc lại id hàng vừa tạo để nhật ký gắn đúng quy tắc; đọc lại
+        // thất bại thì target để null, nhật ký vẫn ghi được.
+        const { data: insertedRule, error: insertError } = await supabase
+          .from('rules')
+          .insert({
+            family_id: family.id,
+            child_id: formChildId,
+            type: formType,
+            config,
+            enabled: true,
+            ...nameField,
+          })
+          .select('id')
+          .maybeSingle()
         if (insertError) throw insertError
+        // Ghi nhật ký best-effort: không bao giờ làm hỏng thao tác thêm.
+        await logRuleChange({
+          familyId: family.id,
+          childId: formChildId,
+          action: 'rule_created',
+          target: (insertedRule as { id: string } | null)?.id ?? null,
+          details: {
+            rule_name: ruleDisplayName({
+              name: namesAvailable ? (trimmedName === '' ? null : trimmedName) : null,
+              type: formType,
+            }),
+            rule_type: formType,
+            summary: buildRuleSummary(formType, config),
+          },
+        })
         setActionMessage('Đã thêm quy tắc mới.')
       }
       resetDrafts()
@@ -1023,6 +1074,19 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     try {
       const { error: deleteError } = await supabase.from('rules').delete().eq('id', rule.id)
       if (deleteError) throw deleteError
+      // Ghi nhật ký best-effort kèm ảnh chụp tên/loại/tóm tắt của quy
+      // tắc vừa xóa (hàng đã mất nên không đọc lại được).
+      await logRuleChange({
+        familyId: rule.family_id,
+        childId: rule.child_id,
+        action: 'rule_deleted',
+        target: rule.id,
+        details: {
+          rule_name: ruleDisplayName(rule),
+          rule_type: rule.type,
+          summary: buildRuleSummary(rule.type, rule.config),
+        },
+      })
       if (editingRule?.id === rule.id) {
         setEditingRule(null)
         resetDrafts()
@@ -1058,6 +1122,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         })),
       )
       if (insertError) throw insertError
+      // Ghi nhật ký best-effort: MỘT hàng cho cả lần áp mẫu (không ghi
+      // từng quy tắc) để nhật ký không bị ngập.
+      await logRuleChange({
+        familyId: family.id,
+        childId: presetChildId,
+        action: 'preset_applied',
+        target: presetId,
+        details: { template_name: preset.label, rule_count: bundle.length },
+      })
       setConfirmPresetId(null)
       setActionMessage(
         `Đã áp dụng mẫu “${preset.label}” cho ${childNameById.get(presetChildId) ?? 'con'}: thêm ${bundle.length} quy tắc mới.`,
@@ -1073,7 +1146,14 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   // Mẫu của phụ huynh chỉ THÊM quy tắc mới như mẫu một chạm. Chèn cả
   // gói trong một lần gọi insert để không áp dụng dở dang. Tên của từng
   // rule trong mẫu chỉ gửi lên khi cột rules.name đã có (migration 9).
-  const handleApplyTemplateItems = async (items: RuleTemplateItem[], templateLabel: string) => {
+  // Tham số audit cho biết lần áp này là mẫu của phụ huynh (ghi id mẫu)
+  // hay mẫu sẵn "Chỉ cho phép Edge" (ghi id ổn định 'edge_only') để
+  // nhật ký phân biệt được hai nguồn.
+  const handleApplyTemplateItems = async (
+    items: RuleTemplateItem[],
+    templateLabel: string,
+    audit: { action: 'template_applied' | 'preset_applied'; target: string },
+  ) => {
     if (!supabase || !family || !presetChildId) return
     if (items.length === 0) {
       setActionError('Mẫu này không có quy tắc nào để áp dụng.')
@@ -1094,6 +1174,14 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         })),
       )
       if (insertError) throw insertError
+      // Ghi nhật ký best-effort: MỘT hàng cho cả lần áp mẫu.
+      await logRuleChange({
+        familyId: family.id,
+        childId: presetChildId,
+        action: audit.action,
+        target: audit.target,
+        details: { template_name: templateLabel, rule_count: items.length },
+      })
       setConfirmTemplateId(null)
       setConfirmEdgeTemplate(false)
       setActionMessage(
@@ -1123,13 +1211,27 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     setActionError(null)
     setActionMessage(null)
     try {
-      const { error: insertError } = await supabase.from('rule_templates').insert({
-        family_id: family.id,
-        name,
-        description: templateDescription.trim() === '' ? null : templateDescription.trim(),
-        rules: selected.map(ruleToTemplateItem),
-      })
+      // Đọc lại id hàng vừa tạo để nhật ký gắn đúng mẫu; đọc lại thất
+      // bại thì target để null, nhật ký vẫn ghi được.
+      const { data: insertedTemplate, error: insertError } = await supabase
+        .from('rule_templates')
+        .insert({
+          family_id: family.id,
+          name,
+          description: templateDescription.trim() === '' ? null : templateDescription.trim(),
+          rules: selected.map(ruleToTemplateItem),
+        })
+        .select('id')
+        .maybeSingle()
       if (insertError) throw insertError
+      // Ghi nhật ký best-effort: sự kiện ở cấp mẫu nên không gắn con.
+      await logRuleChange({
+        familyId: family.id,
+        childId: null,
+        action: 'template_created',
+        target: (insertedTemplate as { id: string } | null)?.id ?? null,
+        details: { template_name: name, rule_count: selected.length },
+      })
       setShowTemplateForm(false)
       setTemplateName('')
       setTemplateDescription('')
@@ -1183,6 +1285,18 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         })
         .eq('id', editingTemplate.id)
       if (updateError) throw updateError
+      // Ghi nhật ký best-effort: tên cũ khi đổi tên, số quy tắc mới.
+      await logRuleChange({
+        familyId: editingTemplate.family_id,
+        childId: null,
+        action: 'template_updated',
+        target: editingTemplate.id,
+        details: {
+          template_name: name,
+          rule_count: editingTemplateItems.length,
+          ...(name !== editingTemplate.name ? { previous_name: editingTemplate.name } : {}),
+        },
+      })
       setEditingTemplate(null)
       setEditingTemplateItems([])
       setActionMessage(`Đã cập nhật mẫu “${name}”.`)
@@ -1201,6 +1315,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     try {
       const { error: deleteError } = await supabase.from('rule_templates').delete().eq('id', template.id)
       if (deleteError) throw deleteError
+      // Ghi nhật ký best-effort kèm ảnh chụp tên/số quy tắc của mẫu vừa
+      // xóa (hàng đã mất nên không đọc lại được).
+      await logRuleChange({
+        familyId: template.family_id,
+        childId: null,
+        action: 'template_deleted',
+        target: template.id,
+        details: { template_name: template.name, rule_count: template.rules.length },
+      })
       if (editingTemplate?.id === template.id) cancelEditTemplate()
       setConfirmDeleteTemplateId(null)
       setActionMessage(`Đã xoá mẫu “${template.name}”.`)
@@ -1968,6 +2091,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                                 void handleApplyTemplateItems(
                                   buildEdgeOnlyTemplateItems(),
                                   EDGE_ONLY_TEMPLATE_NAME,
+                                  { action: 'preset_applied', target: 'edge_only' },
                                 )
                               }
                               disabled={applyingTemplate}
@@ -2204,6 +2328,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                                               void handleApplyTemplateItems(
                                                 template.rules,
                                                 template.name,
+                                                { action: 'template_applied', target: template.id },
                                               )
                                             }
                                             disabled={applyingTemplate}

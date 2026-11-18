@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import type { AppRequest, AuditLog, Child, Command, Device } from '../lib/types'
 import { formatTimeVi, toVietnameseError } from '../lib/format'
+import { RULE_CHANGE_ACTIONS } from '../lib/ruleAudit'
 import { ENFORCEMENT_ACTIONS, TAMPER_ACTIONS } from '../lib/weekReport'
 import {
   ACTIVITY_CATEGORIES,
@@ -127,10 +128,11 @@ async function fetchRequestsInRange(
 }
 
 /**
- * Sự kiện can thiệp + thi hành trong khoảng (cùng mẫu trang Báo cáo):
- * không lọc child_id ở truy vấn — hàng cũ không có child_id được khớp
- * qua thiết bị ở phía client. Mới nhất trước, thêm `.order('id')` để
- * phân trang ổn định khi nhiều hàng cùng created_at.
+ * Sự kiện can thiệp + thi hành + đổi quy tắc trong khoảng (cùng mẫu
+ * trang Báo cáo): không lọc child_id ở truy vấn — hàng cũ không có
+ * child_id được khớp qua thiết bị ở phía client, hàng đổi mẫu không
+ * gắn con nào. Mới nhất trước, thêm `.order('id')` để phân trang ổn
+ * định khi nhiều hàng cùng created_at.
  */
 async function fetchAuditLogsInRange(
   client: SupabaseClient,
@@ -143,7 +145,7 @@ async function fetchAuditLogsInRange(
     let query = client
       .from('audit_logs')
       .select('id, family_id, actor, action, target, ip_hash, created_at, child_id, device_id, details')
-      .in('action', [...TAMPER_ACTIONS, ...ENFORCEMENT_ACTIONS])
+      .in('action', [...TAMPER_ACTIONS, ...ENFORCEMENT_ACTIONS, ...RULE_CHANGE_ACTIONS])
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
       .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
@@ -163,16 +165,17 @@ const CATEGORY_CHIP_CLASS: Record<ActivityCategory, string> = {
   command: 'bg-indigo-100 text-indigo-700',
   request: 'bg-sky-100 text-sky-700',
   decision: 'bg-emerald-100 text-emerald-700',
+  rule_change: 'bg-violet-100 text-violet-700',
   enforcement: 'bg-amber-100 text-amber-800',
   tamper: 'bg-red-100 text-red-700',
 }
 
 /**
  * Trang Nhật ký hoạt động (PRD §2.8): lệnh phụ huynh, yêu cầu của con,
- * quyết định duyệt, thi hành theo quy tắc và cảnh báo can thiệp — gộp
- * từ 3 bảng commands/requests/audit_logs, mới nhất trước, nhóm theo
- * ngày. Lọc theo con + loại sự kiện + khoảng thời gian. RLS lo tách dữ
- * liệu theo gia đình.
+ * quyết định duyệt, đổi quy tắc, thi hành theo quy tắc và cảnh báo can
+ * thiệp — gộp từ 3 bảng commands/requests/audit_logs, mới nhất trước,
+ * nhóm theo ngày. Lọc theo con + loại sự kiện + khoảng thời gian. RLS
+ * lo tách dữ liệu theo gia đình.
  */
 export default function ActivityLogPage() {
   const { configured, user } = useAuth()
@@ -292,7 +295,7 @@ export default function ActivityLogPage() {
     <div>
       <PageHeader
         title="Nhật ký hoạt động"
-        description="Lệnh khóa/mở, yêu cầu của con, quyết định duyệt, thi hành theo quy tắc và cảnh báo can thiệp — mới nhất trước."
+        description="Lệnh khóa/mở, yêu cầu của con, quyết định duyệt, đổi quy tắc, thi hành theo quy tắc và cảnh báo can thiệp — mới nhất trước."
       />
 
       {!configured && <NotConfiguredState />}
@@ -316,7 +319,7 @@ export default function ActivityLogPage() {
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-800">
             <p className="font-semibold">Nhật ký này chưa ghi được mọi việc:</p>
             <ul className="mt-1 list-disc space-y-0.5 pl-5">
-              <li>Lịch sử đổi quy tắc (ai đổi quy tắc nào) chưa được ghi lại nên chưa hiện ở đây.</li>
+              <li>Lịch sử đổi quy tắc chỉ có từ khi migration 16 được áp dụng và Dashboard mới được triển khai — thay đổi trước đó không hiện ở đây.</li>
               <li>Lệnh khóa/mở chưa ghi lại ai đã gửi.</li>
               <li>Thi hành theo quy tắc chỉ có từ khi máy con cài bản Agent ghi sự kiện thi hành.</li>
             </ul>
