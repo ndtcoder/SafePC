@@ -7,13 +7,12 @@
 
 Đổi pairing code 6 số thành device token cho PC Agent, theo luồng pairing ở
 `docs/02-ARCHITECTURE.md` mục 4.1 và quy tắc bảo mật ở `docs/03-SECURITY.md`
-mục 2 (chỉ lưu hash token/mã, pairing code hết hạn 10 phút, tối đa 5 lần thử,
+mục 2 (chỉ lưu hash token/mã, pairing code hết hạn 5 phút, tối đa 5 lần thử,
 dùng 1 lần).
 
-**Trạng thái: STUB — chưa deploy, chưa kiểm chứng.** Project Supabase SafePC
-đã tạo (16/11/2026) nhưng migration chưa áp dụng và function chưa deploy, nên
-code này chưa chạy thử lần nào. Đừng dùng trong môi trường thật cho tới khi
-đã deploy và kiểm thử trên project thật.
+**Trạng thái: ĐÃ THAY THẾ — không deploy, không dùng.** Luồng pairing thật
+dùng RPC `safepc_redeem_pairing_code` (xem ghi chú đầu file). Phần dưới đây
+chỉ còn là tài liệu tham khảo cho hợp đồng hash và luồng xử lý của stub cũ.
 
 ## Luồng xử lý
 
@@ -62,7 +61,7 @@ lệ/hết hạn), 405 (không phải POST), 429 (mã bị khóa do quá 5 lần
   khoảng trắng, không salt (schema hiện tại không có cột salt).
 - `token_hash` = SHA-256 hex chữ thường của token hex 64 ký tự.
 - Dashboard khi tạo pairing code phải hash theo đúng quy ước này rồi mới
-  insert vào `pairing_codes` (kèm `expires_at` = thời điểm tạo + 10 phút).
+  insert vào `pairing_codes` (kèm `expires_at` = thời điểm tạo + 5 phút).
 
 ## Biến môi trường
 
