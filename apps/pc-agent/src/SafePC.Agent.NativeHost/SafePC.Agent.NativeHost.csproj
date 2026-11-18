@@ -8,4 +8,12 @@
     <!-- Không WPF/WinForms, không package ngoài: chỉ BCL (stdin/stdout + file). -->
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- WebVisitPath.cs dùng chung với Shared qua linked file (không dùng
+         ProjectReference: NativeHost là net8.0 thuần, Shared là
+         net8.0-windows): cùng một file nguồn biên dịch vào hai assembly,
+         ngữ nghĩa cắt đường dẫn không thể lệch. File đó chỉ dùng BCL. -->
+    <Compile Include="..\SafePC.Agent.Shared\WebVisitPath.cs" Link="WebVisitPath.cs" />
+  </ItemGroup>
+
 </Project>

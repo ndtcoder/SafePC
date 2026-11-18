@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using SafePC.Agent.Shared;
 
 namespace SafePC.Agent.NativeHost;
 
@@ -19,10 +20,11 @@ namespace SafePC.Agent.NativeHost;
 /// - {"type":"getRules"} -&gt; {"type":"rules","rules":&lt;nội dung
 ///   domain_rules.json&gt; | null khi chưa có file}.
 /// - {"type":"reportUsage","visits":[{"domain","startedAt","durationSec",
-///   "blocked"?}]} -&gt; ghi thêm (append) các dòng JSONL vào web_usage.jsonl,
+///   "blocked"?,"path"?}]} -&gt; ghi thêm (append) các dòng JSONL vào web_usage.jsonl,
 ///   trả {"type":"ack","ok":true|false}. blocked (tùy chọn, extension 0.1.7)
 ///   chỉ ghi vào dòng JSONL khi true; dòng cũ không có blocked thì Service
-///   coi là false — cả hai chiều đều tương thích ngược.
+///   coi là false — cả hai chiều đều tương thích ngược. path (tùy chọn,
+///   extension 0.1.10) chỉ ghi khi đã cắt sạch; visit bị chặn thì bỏ path.
 /// - {"type":"requestUnblock","domain"} (extension 0.1.9) -&gt; ghi thêm một
 ///   dòng {"domain","requestedAt"} vào domain_requests.jsonl để Service đọc
 ///   trong chu kỳ poll lệnh, trả {"type":"ack","ok":true|false}. Chỉ tên
@@ -318,13 +320,20 @@ internal static class NativeHostApp
 
     /// <summary>
     /// Kiểm tra và định dạng một visit thành dòng JSONL {domain, startedAt,
-    /// durationSec, blocked?}. Trả về null khi visit không hợp lệ. Domain chỉ chấp
+    /// durationSec, path?, blocked?}. Trả về null khi visit không hợp lệ. Domain chỉ chấp
     /// nhận 1-253 ký tự, không chứa '/', '?', '#', khoảng trắng hay ký tự
     /// điều khiển (không bao giờ là URL đầy đủ). Thời lượng kẹp 0..86400.
     /// blocked là cờ tùy chọn (extension 0.1.7): có mà không phải boolean
     /// thì visit không hợp lệ; chỉ ghi vào dòng khi true (dòng thường giữ
     /// nguyên hình dạng cũ để Service cũ đọc được — Service cũ vốn bỏ qua
     /// trường lạ, và dòng không có blocked thì Service mới coi là false).
+    /// path là đường dẫn tùy chọn (extension 0.1.10): có mà không phải
+    /// chuỗi thì visit không hợp lệ (cùng độ nghiêm với blocked); chuỗi
+    /// thì cắt qua <see cref="WebVisitPath"/> (bỏ query/fragment, trần
+    /// 500 ký tự) và chỉ ghi vào dòng khi cắt ra đường dẫn dùng được —
+    /// dòng không có path thì Service mới coi là không có đường dẫn.
+    /// Lượt bị chặn không bao giờ mang path (chỉ domain), nên path của
+    /// visit bị chặn bị bỏ kể cả khi extension gửi kèm.
     /// </summary>
     private static string? TryFormatVisitLine(JsonElement visit)
     {
@@ -387,6 +396,18 @@ internal static class NativeHostApp
             blocked = blockedElement.GetBoolean();
         }
 
+        string? path = null;
+        if (visit.TryGetProperty("path", out JsonElement pathElement))
+        {
+            if (pathElement.ValueKind != JsonValueKind.String
+                || pathElement.GetString() is not string rawPath)
+            {
+                return null;
+            }
+
+            path = WebVisitPath.Sanitize(rawPath);
+        }
+
         if (blocked)
         {
             return JsonSerializer.Serialize(new
@@ -395,6 +416,17 @@ internal static class NativeHostApp
                 startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
                 durationSec,
                 blocked = true,
+            });
+        }
+
+        if (path is not null)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                domain,
+                startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
+                durationSec,
+                path,
             });
         }
 
