@@ -18,9 +18,11 @@ namespace SafePC.Agent.NativeHost;
 /// Message:
 /// - {"type":"getRules"} -&gt; {"type":"rules","rules":&lt;nội dung
 ///   domain_rules.json&gt; | null khi chưa có file}.
-/// - {"type":"reportUsage","visits":[{"domain","startedAt","durationSec"}]}
-///   -&gt; ghi thêm (append) các dòng JSONL vào web_usage.jsonl, trả
-///   {"type":"ack","ok":true|false}.
+/// - {"type":"reportUsage","visits":[{"domain","startedAt","durationSec",
+///   "blocked"?}]} -&gt; ghi thêm (append) các dòng JSONL vào web_usage.jsonl,
+///   trả {"type":"ack","ok":true|false}. blocked (tùy chọn, extension 0.1.7)
+///   chỉ ghi vào dòng JSONL khi true; dòng cũ không có blocked thì Service
+///   coi là false — cả hai chiều đều tương thích ngược.
 /// Mỗi message getRules/reportUsage (kể cả message lỗi) còn ghi đè timestamp
 /// UTC hiện tại vào extension_heartbeat.txt — dấu hiệu extension còn sống để
 /// Service đọc và báo lên server (Sprint 2 đợt 3). Ghi heartbeat không bao
@@ -307,9 +309,13 @@ internal static class NativeHostApp
 
     /// <summary>
     /// Kiểm tra và định dạng một visit thành dòng JSONL {domain, startedAt,
-    /// durationSec}. Trả về null khi visit không hợp lệ. Domain chỉ chấp
+    /// durationSec, blocked?}. Trả về null khi visit không hợp lệ. Domain chỉ chấp
     /// nhận 1-253 ký tự, không chứa '/', '?', '#', khoảng trắng hay ký tự
     /// điều khiển (không bao giờ là URL đầy đủ). Thời lượng kẹp 0..86400.
+    /// blocked là cờ tùy chọn (extension 0.1.7): có mà không phải boolean
+    /// thì visit không hợp lệ; chỉ ghi vào dòng khi true (dòng thường giữ
+    /// nguyên hình dạng cũ để Service cũ đọc được — Service cũ vốn bỏ qua
+    /// trường lạ, và dòng không có blocked thì Service mới coi là false).
     /// </summary>
     private static string? TryFormatVisitLine(JsonElement visit)
     {
@@ -360,6 +366,29 @@ internal static class NativeHostApp
         }
 
         int durationSec = (int)Math.Clamp(Math.Truncate(seconds), 0, 86400);
+
+        bool blocked = false;
+        if (visit.TryGetProperty("blocked", out JsonElement blockedElement))
+        {
+            if (blockedElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            {
+                return null;
+            }
+
+            blocked = blockedElement.GetBoolean();
+        }
+
+        if (blocked)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                domain,
+                startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
+                durationSec,
+                blocked = true,
+            });
+        }
+
         return JsonSerializer.Serialize(new
         {
             domain,
