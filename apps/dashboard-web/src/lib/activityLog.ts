@@ -14,7 +14,7 @@
 //   quy tắc (migration 10). Lịch sử thi hành chỉ bắt đầu từ khi migration
 //   10 được áp + bản Agent/extension mới được cài trên máy con.
 //
-// KHÔNG có nguồn cho "ai đổi rule nào": bảng rules không có lịch sử sửa
+// KHÔNG có nguồn cho "ai đổi quy tắc nào": bảng rules không có lịch sử sửa
 // đổi và Dashboard không ghi audit khi sửa rule. Trang này không bịa
 // mục đó — ghi chú rõ trong UI, để đợt migration + trigger ghi audit
 // riêng sau.
