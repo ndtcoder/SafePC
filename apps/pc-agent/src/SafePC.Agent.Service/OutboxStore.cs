@@ -631,6 +631,56 @@ public sealed class OutboxStore
         }
     }
 
+    /// <summary>
+    /// Đọc mốc sàn lệnh khóa/mở bền vững (khóa <c>ForcedLockCommandFloor</c>
+    /// trong <c>device_state</c>). Null khi chưa từng áp lệnh khóa/mở nào
+    /// hoặc giá trị lưu bị hỏng — hỏng thì coi như không có mốc (fail-open
+    /// về hành vi cũ, lần nâng sau ghi đè giá trị đúng).
+    /// </summary>
+    public async Task<DateTimeOffset?> GetForcedLockCommandFloorAsync(CancellationToken ct)
+    {
+        string? value = await GetStateAsync(StateKeys.ForcedLockCommandFloor, ct);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (DateTimeOffset.TryParse(
+                value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset floor))
+        {
+            return floor;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Nâng mốc sàn lệnh khóa/mở lên <c>commandCreatedAt</c> (chỉ nâng, không
+    /// bao giờ hạ). Gọi mỗi khi áp một lệnh lock_now hoặc unlock — kể cả
+    /// lệnh khóa bị chốt chặn giữ ghi đè mở khóa mới hơn, vì cờ khóa cưỡng
+    /// chế vẫn được đặt và trạng thái khóa khi đó phản ánh đúng lệnh khóa
+    /// này. Chỉ vòng poll lệnh ghi khóa này nên đọc-rồi-ghi không đua tranh
+    /// với luồng khác. Mốc <c>default</c> (lệnh thiếu giờ tạo — không xảy ra
+    /// qua RPC thật) thì bỏ qua, không ghi mốc năm 1 xuống DB.
+    /// </summary>
+    public async Task RaiseForcedLockCommandFloorAsync(DateTimeOffset commandCreatedAt, CancellationToken ct)
+    {
+        if (commandCreatedAt == default)
+        {
+            return;
+        }
+
+        DateTimeOffset? current = await GetForcedLockCommandFloorAsync(ct);
+        DateTimeOffset raised = OverrideCommandOrder.RaiseFloor(current, commandCreatedAt);
+        if (current is null || raised > current.Value)
+        {
+            await SetStateAsync(
+                StateKeys.ForcedLockCommandFloor,
+                raised.ToString("o", CultureInfo.InvariantCulture),
+                ct);
+        }
+    }
+
     private static async Task DeleteOverrideRowAsync(SqliteConnection connection, CancellationToken ct)
     {
         await using var delete = connection.CreateCommand();

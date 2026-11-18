@@ -2154,9 +2154,20 @@ public sealed class AgentWorker : BackgroundService
         switch (command.Type)
         {
             case CommandTypes.LockNow:
+                // Lệnh khóa cũ gửi lại (ack rớt) không được đặt lại cờ khóa
+                // sau khi lệnh mở mới hơn đã xóa — kiểm tra TRƯỚC khi đặt
+                // cờ, kể cả trước chốt chặn ghi đè bên dưới. Bỏ qua thì vẫn
+                // trả true để ack done và rời khỏi hàng pending (xem
+                // IsStaleForcedLockCommandAsync).
+                if (await IsStaleForcedLockCommandAsync(command, ct))
+                {
+                    return true;
+                }
+
                 // Lưu bền vững: khóa cưỡng chế sống sót qua khởi động lại
                 // Service, chỉ hết khi có lệnh unlock.
                 await _outbox.SetStateAsync(StateKeys.ForcedLock, "1", ct);
+                await _outbox.RaiseForcedLockCommandFloorAsync(command.CreatedAt, ct);
 
                 // HÀNH ĐỘNG SAU THẮNG HÀNH ĐỘNG TRƯỚC (sửa 17/11/2026 theo
                 // yêu cầu test máy thật): đang "mở khóa ngay" mà phụ huynh
@@ -2245,7 +2256,17 @@ public sealed class AgentWorker : BackgroundService
                 return true;
 
             case CommandTypes.Unlock:
+                // Lệnh mở cũ gửi lại (ack rớt) không được xóa cờ khóa do
+                // lệnh khóa mới hơn đã đặt. Bỏ qua thì vẫn trả true để ack
+                // done và rời khỏi hàng pending (xem
+                // IsStaleForcedLockCommandAsync).
+                if (await IsStaleForcedLockCommandAsync(command, ct))
+                {
+                    return true;
+                }
+
                 await _outbox.DeleteStateAsync(StateKeys.ForcedLock, ct);
+                await _outbox.RaiseForcedLockCommandFloorAsync(command.CreatedAt, ct);
                 _pendingLockAt = null;
                 // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
                 // gửi rớt thì tick sau gửi lại từ quyết định Allowed.
@@ -2313,6 +2334,41 @@ public sealed class AgentWorker : BackgroundService
         _log.Warning(
             "Bỏ qua lệnh ghi đè cũ (action " + action + ", tạo lúc " + command.CreatedAt.ToString("o")
             + ", id " + command.Id + "): đã có lệnh mới hơn (mốc " + floor!.Value.ToString("o") + ").");
+        return true;
+    }
+
+    /// <summary>
+    /// Lệnh khóa/mở (lock_now/unlock) này có cũ hơn lệnh khóa/mở mới nhất đã
+    /// áp không. Cùng lớp vấn đề như lệnh ghi đè: ack rớt khiến lệnh cũ vẫn
+    /// còn <c>pending</c> và được poll trả lại sau khi lệnh mới hơn đã áp —
+    /// không có mốc, lệnh khóa cũ sẽ đặt lại cờ khóa cưỡng chế sau khi lệnh
+    /// mở mới hơn đã xóa, và ngược lại. Mốc là watermark bền vững riêng
+    /// (<c>ForcedLockCommandFloor</c>), tách biệt với mốc sàn lệnh ghi đè:
+    /// ghi đè mở khóa tạm thời không xóa cờ khóa cưỡng chế nên không được
+    /// nâng mốc này — khóa cưỡng chế có hiệu lực trở lại khi ghi đè hết hạn
+    /// là ngữ nghĩa đã chốt (xem <see cref="RuleEngine"/>). So sánh dùng
+    /// <c>created_at</c> do server sinh nên không bị ảnh hưởng nếu đồng hồ
+    /// máy con bị chỉnh; hòa mốc thì vẫn áp (cùng quy tắc như lệnh ghi đè —
+    /// xem <see cref="OverrideCommandOrder.IsStale"/>). Lệnh thiếu mốc giờ
+    /// (không xảy ra qua RPC thật) thì không kết luận là cũ, áp như trước.
+    /// Cũ hơn thì ghi log cảnh báo rõ ràng — không bỏ qua im lặng.
+    /// </summary>
+    private async Task<bool> IsStaleForcedLockCommandAsync(Command command, CancellationToken ct)
+    {
+        if (command.CreatedAt == default)
+        {
+            return false;
+        }
+
+        DateTimeOffset? floor = await _outbox.GetForcedLockCommandFloorAsync(ct);
+        if (!OverrideCommandOrder.IsStale(command.CreatedAt, floor))
+        {
+            return false;
+        }
+
+        _log.Warning(
+            "Bỏ qua lệnh khóa/mở cũ (loại " + command.Type + ", tạo lúc " + command.CreatedAt.ToString("o")
+            + ", id " + command.Id + "): đã có lệnh khóa/mở mới hơn (mốc " + floor!.Value.ToString("o") + ").");
         return true;
     }
 
