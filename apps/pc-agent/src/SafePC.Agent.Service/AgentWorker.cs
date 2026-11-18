@@ -106,8 +106,38 @@ public sealed class AgentWorker : BackgroundService
 
     // Cache phân tích rule theo app/focus: chỉ phân tích lại khi chữ ký
     // rules đổi, để không phân tích JSON và ghi log cảnh báo lặp mỗi 15s.
+    // Vòng tick và lượt thi hành ngay (khi nhận báo cáo foreground) cùng
+    // đọc/ghi cache này nên mọi truy cập qua khóa này — nếu không, hai
+    // luồng phân tích xen kẽ có thể để lại chữ ký của đợt này đi kèm kết
+    // quả của đợt kia (rule cũ áp cho chữ ký mới).
+    private readonly object _appRulesCacheLock = new();
     private string? _appRulesSignature;
     private ParsedAppRules? _parsedAppRules;
+
+    // Cổng chống chồng chéo cho thi hành theo app (18/11/2026): lượt thi
+    // hành ngay (khi nhận báo cáo foreground) và vòng tick 15 giây cùng
+    // chạy qua cổng này, vào bằng TryEnter KHÔNG CHỜ — lượt tới sau thấy
+    // cổng bận thì bỏ qua (gộp burst), vì lượt đang chạy đã đọc báo cáo
+    // mới nhất; báo cáo tới giữa chừng được vòng tick sau bắt lại trong
+    // ≤15 giây (cửa tươi 90 giây). Không bao giờ chờ: chờ sẽ treo vòng
+    // tick hoặc chồng chất lượt thi hành ngay. Cổng này không lồng với
+    // khóa ghi IPC (SendToTrayAsync lấy khóa ghi bên trong rồi trả) nên
+    // không deadlock với vòng đọc pipe.
+    private readonly SemaphoreSlim _appEnforcementGate = new(1, 1);
+
+    // Kết quả thi hành app/focus gần nhất: vòng tick dùng khi cổng bận
+    // (lượt thi hành ngay đang chạy) để snapshot enforcement không dao
+    // động về rỗng trong lúc chờ. Mọi truy cập qua khóa này.
+    private readonly object _lastAppEnforcementLock = new();
+    private (bool FocusActive, List<string> AppBlocks) _lastAppEnforcement = (false, new List<string>());
+
+    // Chống spam breadcrumb "thi hành ngay": tối đa 1 dòng/15 phút.
+    private DateTimeOffset _lastImmediateEnforcementLogAt;
+
+    // Token dừng của Service, chụp ở đầu ExecuteAsync để lượt thi hành ngay
+    // (kích hoạt từ event, ngoài vòng lặp) dùng chung. Trước khi ExecuteAsync
+    // chạy thì là None — lượt thi hành lúc đó vẫn chạy xong bình thường.
+    private CancellationToken _stoppingToken;
 
     // Báo cáo trạng thái thi hành (migration 6): vòng kiểm tra rules dựng
     // snapshot mỗi 15s và để ở đây; vòng heartbeat (60 giây) gửi lên server
@@ -145,10 +175,16 @@ public sealed class AgentWorker : BackgroundService
         _publisher = publisher;
         _foregroundState = foregroundState;
         _queryState = queryState;
+
+        // Thi hành app NGAY khi nhận báo cáo foreground mới (18/11/2026):
+        // handler chỉ kích hoạt fire-and-forget, không bao giờ chặn thread
+        // xử lý message của pipe (xem OnForegroundReportReceived).
+        _foregroundState.ReportReceived += OnForegroundReportReceived;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stoppingToken = stoppingToken;
         _log.Info("SafePC Agent Service khởi động (phiên bản " + AgentConstants.AgentVersion + ", session " + LocalLogger.CurrentSessionId + ").");
 
         try
@@ -963,8 +999,10 @@ public sealed class AgentWorker : BackgroundService
                 // app nào đang bị chặn) đi vào snapshot enforcement bên dưới.
                 // Thi hành theo app/focus luôn chạy, kể cả trong lúc mở khóa
                 // tạm thời (quyết định ngày 18/11/2026): mở khóa chỉ thêm
-                // giờ dùng máy, app bị chặn vẫn bị đóng.
-                (bool focusActive, List<string> appBlocks) = await EnforceAppRulesAsync(parsedAppRules, now, activeOverride, ct);
+                // giờ dùng máy, app bị chặn vẫn bị đóng. Qua cổng chống
+                // chồng chéo với lượt thi hành ngay khi nhận báo cáo
+                // foreground: cổng bận thì dùng kết quả gần nhất.
+                (bool focusActive, List<string> appBlocks) = await EnforceAppRulesForTickAsync(parsedAppRules, now, activeOverride, ct);
 
                 // Snapshot trạng thái thi hành + chẩn đoán quyết định: dựng
                 // mỗi lần kiểm tra và gửi lên server ngay khi đổi (gọi
@@ -1136,27 +1174,30 @@ public sealed class AgentWorker : BackgroundService
     /// </summary>
     private ParsedAppRules GetParsedAppRules(IReadOnlyList<Rule> rules)
     {
-        var signature = new StringBuilder();
-        foreach (Rule rule in rules)
+        lock (_appRulesCacheLock)
         {
-            if (rule.Type != RuleTypes.App && rule.Type != RuleTypes.Website)
+            var signature = new StringBuilder();
+            foreach (Rule rule in rules)
             {
-                continue;
+                if (rule.Type != RuleTypes.App && rule.Type != RuleTypes.Website)
+                {
+                    continue;
+                }
+
+                signature.Append(rule.Id).Append('|').Append(rule.Enabled ? '1' : '0').Append('|')
+                    .Append(rule.Type).Append('|').Append(rule.Config.GetRawText()).Append('\n');
             }
 
-            signature.Append(rule.Id).Append('|').Append(rule.Enabled ? '1' : '0').Append('|')
-                .Append(rule.Type).Append('|').Append(rule.Config.GetRawText()).Append('\n');
-        }
+            string key = signature.ToString();
+            if (key == _appRulesSignature && _parsedAppRules is not null)
+            {
+                return _parsedAppRules;
+            }
 
-        string key = signature.ToString();
-        if (key == _appRulesSignature && _parsedAppRules is not null)
-        {
+            _parsedAppRules = AppRuleParser.Parse(rules, _log);
+            _appRulesSignature = key;
             return _parsedAppRules;
         }
-
-        _parsedAppRules = AppRuleParser.Parse(rules, _log);
-        _appRulesSignature = key;
-        return _parsedAppRules;
     }
 
     /// <summary>
@@ -1254,6 +1295,119 @@ public sealed class AgentWorker : BackgroundService
         }
 
         return (newest - streakStart) + AgentConstants.ForegroundSampleInterval;
+    }
+
+    /// <summary>
+    /// Kích hoạt khi <see cref="ForegroundState"/> ghi nhận báo cáo
+    /// foreground mới. Chạy trên thread xử lý message của handler pipe nên
+    /// CHỈ kích hoạt fire-and-forget và trả về ngay — không await, không
+    /// chặn, không ném. Lượt thi hành chạy trên thread-pool.
+    /// </summary>
+    private void OnForegroundReportReceived(ForegroundReport report)
+    {
+        _ = EnforceAppRulesOnReportAsync(report);
+    }
+
+    /// <summary>
+    /// Lượt thi hành app NGAY khi nhận báo cáo foreground mới, không chờ
+    /// tick 15 giây (18/11/2026): app bị chặn bị đóng trong ~vài giây sau
+    /// khi mở, thay vì tới ~1 phút. Dùng chung
+    /// <see cref="EnforceAppRulesAsync"/> với vòng tick (không nhân đôi
+    /// logic kill), tôn trọng cùng quy tắc tươi/fail-open. Cổng TryEnter
+    /// gộp burst: đang có lượt chạy (tick hoặc lượt ngay khác) thì lượt
+    /// này bỏ qua — lượt đang chạy đọc báo cáo mới nhất; báo cáo tới giữa
+    /// chừng được vòng tick sau bắt lại trong ≤15 giây (cửa tươi 90 giây).
+    /// Tự bắt mọi lỗi để không bao giờ ném ra thread xử lý pipe.
+    /// </summary>
+    private async Task EnforceAppRulesOnReportAsync(ForegroundReport report)
+    {
+        CancellationToken ct = _stoppingToken;
+        try
+        {
+            if (!await _appEnforcementGate.WaitAsync(0, ct))
+            {
+                return;
+            }
+
+            try
+            {
+                IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
+                TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideAsync(ct);
+                DateTimeOffset now = DateTimeOffset.Now;
+                await RunAndCacheAppEnforcementAsync(GetParsedAppRules(rules), now, activeOverride, ct);
+
+                // Breadcrumb chống spam (tối đa 1 dòng/15 phút): đủ để log
+                // trả lời được "đường thi hành ngay có chạy không" mà không
+                // lấp log mỗi lần đổi cửa sổ. Lượt đóng app đã có dòng log
+                // riêng trong KillAppAsync.
+                if (DateTimeOffset.UtcNow - _lastImmediateEnforcementLogAt >= TimeSpan.FromMinutes(15))
+                {
+                    _lastImmediateEnforcementLogAt = DateTimeOffset.UtcNow;
+                    _log.Info("Thi hành quy tắc app ngay khi nhận báo cáo foreground (phiên #" + report.Payload.SessionId + ").");
+                }
+            }
+            finally
+            {
+                _appEnforcementGate.Release();
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Service đang dừng.
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Thi hành quy tắc app ngay khi foreground đổi lỗi.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Thi hành theo app cho vòng tick, qua cổng chống chồng chéo với lượt
+    /// thi hành ngay: cổng bận thì trả về kết quả gần nhất (snapshot không
+    /// dao động về rỗng) thay vì chờ — tick không bao giờ chờ lượt kia.
+    /// </summary>
+    private async Task<(bool FocusActive, List<string> AppBlocks)> EnforceAppRulesForTickAsync(
+        ParsedAppRules parsed,
+        DateTimeOffset now,
+        TemporaryOverride? activeOverride,
+        CancellationToken ct)
+    {
+        if (!await _appEnforcementGate.WaitAsync(0, ct))
+        {
+            lock (_lastAppEnforcementLock)
+            {
+                return _lastAppEnforcement;
+            }
+        }
+
+        try
+        {
+            return await RunAndCacheAppEnforcementAsync(parsed, now, activeOverride, ct);
+        }
+        finally
+        {
+            _appEnforcementGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Chạy <see cref="EnforceAppRulesAsync"/> rồi lưu kết quả làm "gần
+    /// nhất" cho vòng tick dùng khi cổng bận. Nơi gọi phải giữ
+    /// <see cref="_appEnforcementGate"/> trước khi gọi.
+    /// </summary>
+    private async Task<(bool FocusActive, List<string> AppBlocks)> RunAndCacheAppEnforcementAsync(
+        ParsedAppRules parsed,
+        DateTimeOffset now,
+        TemporaryOverride? activeOverride,
+        CancellationToken ct)
+    {
+        (bool focusActive, List<string> appBlocks) = await EnforceAppRulesAsync(parsed, now, activeOverride, ct);
+        lock (_lastAppEnforcementLock)
+        {
+            _lastAppEnforcement = (focusActive, appBlocks);
+        }
+
+        return (focusActive, appBlocks);
     }
 
     /// <summary>

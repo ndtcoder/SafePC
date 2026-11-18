@@ -24,14 +24,36 @@ public sealed class ForegroundState
     private readonly object _gate = new();
     private readonly Dictionary<int, ForegroundReport> _reports = new();
 
+    /// <summary>
+    /// Gọi sau mỗi lần ghi nhận báo cáo foreground mới. Nơi đăng ký
+    /// (AgentWorker) PHẢI trả về ngay và không bao giờ ném: callback chạy
+    /// trên thread xử lý message của handler pipe — chặn hay ném ở đây sẽ
+    /// treo/giết vòng đọc của kết nối đó. Lượt thi hành ngay chạy
+    /// fire-and-forget trên thread-pool, gộp burst bằng cổng TryEnter.
+    /// </summary>
+    public event Action<ForegroundReport>? ReportReceived;
+
     /// <summary>Ghi nhận báo cáo foreground mới nhất của một session (ghi đè báo cáo cũ).</summary>
     public void Report(ForegroundChangedPayload payload)
     {
         ArgumentNullException.ThrowIfNull(payload);
 
+        ForegroundReport report;
         lock (_gate)
         {
-            _reports[payload.SessionId] = new ForegroundReport(payload, DateTimeOffset.UtcNow);
+            report = new ForegroundReport(payload, DateTimeOffset.UtcNow);
+            _reports[payload.SessionId] = report;
+        }
+
+        // Ngoài khóa + bọc try/catch: subscriber lỗi không được phá vòng
+        // đọc pipe (lưới an toàn cuối — subscriber theo hợp đồng không ném).
+        try
+        {
+            ReportReceived?.Invoke(report);
+        }
+        catch
+        {
+            // Bỏ qua: subscriber phải tự bắt lỗi của nó.
         }
     }
 
