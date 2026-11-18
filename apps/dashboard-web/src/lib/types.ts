@@ -221,6 +221,15 @@ export interface NotificationSend {
   created_at: string
 }
 
+// Dòng notification_reads theo migration 20: mốc "đã đọc" của mỗi phụ
+// huynh cho mục Thông báo trong Dashboard. Một hàng cho mỗi user; sự
+// kiện mới hơn read_at thì tính là chưa đọc. RLS chỉ cho đọc/ghi hàng
+// của chính mình (auth.uid() = user_id).
+export interface NotificationRead {
+  user_id: string
+  read_at: string
+}
+
 // Dòng pairing_codes theo migration 1: mã ghép nối 6 số, chỉ lưu hash.
 // Dashboard KHÔNG bao giờ SELECT cột code_hash (xem ChildDataTab): mã
 // thô chỉ tồn tại lúc tạo, hash không có giá trị xuất dữ liệu.
