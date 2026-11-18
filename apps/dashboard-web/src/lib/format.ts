@@ -645,3 +645,26 @@ export function toVietnameseError(error: unknown): string {
   }
   return message
 }
+
+/**
+ * Lỗi này có phải là "cột chưa tồn tại" (migration chưa áp dụng) cho
+ * đúng `column` không? PostgREST báo bằng mã 42703 (undefined_column)
+ * kèm thông điệp "column <bảng>.<cột> does not exist". Chỉ kết luận
+ * khi tên cột xuất hiện trong thông điệp, để lỗi ở cột khác không bị
+ * nhận nhầm thành thiếu migration. Dùng để hiện trạng thái "cần
+ * migration" thay cho lỗi chung, hoặc để thử lại truy vấn không có cột
+ * mới (tương thích khi migration chưa áp dụng).
+ */
+export function isMissingColumnError(error: unknown, column: string): boolean {
+  if (!error || typeof error !== 'object') return false
+  const record = error as { message?: unknown; code?: unknown }
+  const message = typeof record.message === 'string' ? record.message : ''
+  // Khớp chặt: tên cột phải xuất hiện dạng "bảng.cột" (thông điệp thật
+  // của PostgREST: "column web_visits.path does not exist") hoặc trong
+  // dấu nháy — tránh nhận nhầm cột khác có tên chứa cột này (vd "pathx").
+  const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const qualified = new RegExp(`\\.${escaped}(?![\\w$])|"${escaped}"`)
+  if (!qualified.test(message)) return false
+  if (typeof record.code === 'string' && record.code === '42703') return true
+  return /does not exist/i.test(message)
+}

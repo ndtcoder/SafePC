@@ -580,3 +580,61 @@ export function buildSuggestions(input: SuggestionInput): string[] {
 
   return suggestions
 }
+
+// ---------------------------------------------------------------------------
+// Tìm kiếm lịch sử web (migration 19 + extension 0.1.10)
+// ---------------------------------------------------------------------------
+
+/** Các khoảng ngày cho phép tìm kiếm lịch sử web (tối đa 90 ngày = thời gian giữ). */
+export const WEB_HISTORY_RANGES = [7, 30, 90] as const
+export type WebHistoryRangeDays = (typeof WEB_HISTORY_RANGES)[number]
+
+/** Nhãn cho ô chọn khoảng: "7 ngày qua", "30 ngày qua", "90 ngày qua". */
+export function webHistoryRangeLabel(days: number): string {
+  return `${days} ngày qua`
+}
+
+/** Đầu khoảng tìm kiếm: `days` × 24 giờ trước `now` (cửa sổ lăn, không cắt theo ngày). */
+export function webHistoryRangeStart(days: number, now: Date = new Date()): Date {
+  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
+}
+
+export interface WebHistoryFilter {
+  /** Chuỗi tìm kiếm: khớp một phần, không phân biệt hoa thường. Rỗng = không lọc. */
+  query: string
+  /** true = chỉ lượt bị chặn. */
+  blockedOnly: boolean
+}
+
+/**
+ * Lọc lịch sử web ở phía client: chuỗi tìm kiếm khớp một phần (không
+ * phân biệt hoa thường) trên tên miền HOẶC đường dẫn; lượt không có
+ * đường dẫn chỉ khớp theo tên miền. `blockedOnly` thì chỉ giữ lượt bị
+ * chặn. Thứ tự đầu vào được giữ nguyên (mới nhất trước).
+ */
+export function filterWebHistory(
+  visits: readonly WebVisit[],
+  filter: WebHistoryFilter,
+): WebVisit[] {
+  const needle = filter.query.trim().toLowerCase()
+  return visits.filter((visit) => {
+    if (filter.blockedOnly && !visit.blocked) return false
+    if (needle.length === 0) return true
+    if (visit.domain.toLowerCase().includes(needle)) return true
+    const path = visit.path ?? ''
+    return path.length > 0 && path.toLowerCase().includes(needle)
+  })
+}
+
+// Tên miền an toàn để dựng link mở trang: chỉ nhãn chữ thường/số/gạch
+// nối, ít nhất 2 nhãn, mỗi nhãn 1–63 ký tự, không bắt đầu/kết thúc bằng
+// gạch nối. Tên miền trong DB do Agent kiểm tra ký tự trước khi gửi,
+// nhưng kiểm tra lại ở đây để chuỗi lạ (vd hàng viết tay) không bao giờ
+// thành link — giao diện khi đó hiện tên miền dạng chữ thường.
+const SAFE_DOMAIN_FOR_LINK =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/
+
+/** Tên miền có an toàn để mở thành link `https://<domain>` không? */
+export function isSafeDomainForLink(domain: string): boolean {
+  return SAFE_DOMAIN_FOR_LINK.test(domain.toLowerCase())
+}

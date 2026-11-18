@@ -46,7 +46,7 @@ export const CHILD_DATA_SECTIONS: Array<{
   { key: 'requests', label: 'Yêu cầu', description: 'Yêu cầu xin thêm giờ / xin mở app của con.' },
   { key: 'commands', label: 'Lệnh', description: 'Lệnh phụ huynh đã gửi xuống máy của con.' },
   { key: 'app_usage', label: 'Lịch sử dùng app', description: 'Thời gian dùng từng app trên máy của con.' },
-  { key: 'web_visits', label: 'Lịch sử web', description: 'Domain đã xem (chỉ domain, không đường dẫn).' },
+  { key: 'web_visits', label: 'Lịch sử web', description: 'Tên miền và đường dẫn đã xem (đường dẫn bỏ phần truy vấn, chỉ có từ bản extension mới).' },
   { key: 'audit_logs', label: 'Nhật ký kiểm tra', description: 'Sự kiện can thiệp và thi hành gắn với con.' },
   { key: 'time_bank_grants', label: 'Thưởng giờ', description: 'Lịch sử thưởng / thu hồi giờ của ngân hàng giờ.' },
   { key: 'notification_sends', label: 'Thông báo đã gửi', description: 'Email thông báo đã gửi gắn với con.' },

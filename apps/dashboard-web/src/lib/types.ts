@@ -113,9 +113,11 @@ export interface AppUsage {
   created_at: string
 }
 
-// Dòng web_visits theo migration 1 + cột duration_sec của migration 4.
-// Chỉ lưu domain (không path/query). Cột `blocked` là true với lượt web
-// bị chặn (extension 0.1.7 báo cáo qua RPC, migration 10), kèm
+// Dòng web_visits theo migration 1 + cột duration_sec của migration 4
+// + cột path của migration 19. Lượt xem thường từ extension 0.1.10 mang
+// thêm đường dẫn (đã cắt query/fragment, trần 500 ký tự); lượt ghi từ
+// bản cũ và lượt bị chặn có path = null. Cột `blocked` là true với lượt
+// web bị chặn (extension 0.1.7 báo cáo qua RPC, migration 10), kèm
 // duration_sec = 0; lượt xem thường có blocked = false.
 export interface WebVisit {
   id: string
@@ -123,6 +125,8 @@ export interface WebVisit {
   device_id: string
   child_id: string
   domain: string
+  /** Đường dẫn đã cắt, hoặc null khi lượt thăm không mang đường dẫn. */
+  path: string | null
   visited_at: string
   blocked: boolean
   duration_sec: number
