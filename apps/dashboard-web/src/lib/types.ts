@@ -138,6 +138,28 @@ export interface Command {
   created_at: string
 }
 
+/** Trạng thái một lần thưởng giờ (bảng time_bank_grants, migration 13). */
+export type TimeBankGrantStatus = 'active' | 'voided'
+
+/**
+ * Một lần phụ huynh thưởng giờ cho con (bảng time_bank_grants, migration
+ * 13). Phút thưởng cộng vào mức trần giờ hôm nay, hiệu lực tới
+ * expires_at (hết ngày); hết hạn thì không tính vào tổng nữa nhưng hàng
+ * lịch sử vẫn giữ. Chỉ ghi qua RPC safepc_grant_time_bank /
+ * safepc_void_time_bank_grant — Dashboard chỉ đọc bảng này.
+ */
+export interface TimeBankGrant {
+  id: string
+  family_id: string
+  child_id: string
+  minutes: number
+  reason: string | null
+  granted_by: string
+  status: TimeBankGrantStatus
+  expires_at: string
+  created_at: string
+}
+
 // Dòng audit_logs theo migration 1: loại sự kiện nằm ở cột `action`
 // (vd 'clock_drift'), `target` giữ id thiết bị dạng text. Các cột tùy
 // chọn phía dưới do migration 5 thêm; chưa áp dụng migration 5 thì các
