@@ -866,7 +866,6 @@ public sealed class AgentWorker : BackgroundService
                 }
 
                 bool forcedLock = await _outbox.GetStateAsync(StateKeys.ForcedLock, ct) is not null;
-                RuleDecision decision = _ruleEngine.Evaluate(rules, usedToday, now, foregroundAppName: null, activeOverride, forcedLock: forcedLock);
 
                 // Ghi đè mở máy tạm thời (unlock) nghĩa là "máy được dùng thêm
                 // giờ": RuleEngine mở máy theo giờ giấc, nhưng nghỉ bắt buộc
@@ -879,18 +878,11 @@ public sealed class AgentWorker : BackgroundService
 
                 ParsedAppRules parsedAppRules = GetParsedAppRules(rules);
 
-                // Nghỉ bắt buộc được đánh giá TRƯỚC switch: đang trong giờ
-                // nghỉ thì ép quyết định thành khóa; hết giờ nghỉ thì dọn
-                // trạng thái rồi đánh giá bình thường.
-                // Nghỉ bắt buộc luôn được đánh giá, kể cả trong lúc mở khóa
-                // tạm thời (quyết định ngày 18/11/2026): dùng liên tục đủ
-                // lâu thì vẫn khóa tới hết giờ nghỉ.
-                bool breakActive = await EvaluateForcedBreakAsync(parsedAppRules, now, ct);
-
-                if (breakActive)
-                {
-                    decision = new RuleDecision(RuleDecisionKind.Lock, "Đến giờ nghỉ bắt buộc", 0);
-                }
+                // Quyết định khóa/mở hiện tại: RuleEngine + nghỉ bắt buộc ép
+                // thành khóa, qua đường dùng chung với handler ghi đè mở
+                // khóa — một nguồn sự thật duy nhất.
+                (RuleDecision decision, bool breakActive) = await EvaluateLockDecisionAsync(
+                    rules, usedToday, activeOverride, forcedLock, parsedAppRules, now, ct);
 
                 switch (decision.Kind)
                 {
@@ -1198,6 +1190,40 @@ public sealed class AgentWorker : BackgroundService
             _appRulesSignature = key;
             return _parsedAppRules;
         }
+    }
+
+    /// <summary>
+    /// Đánh giá quyết định khóa/mở HIỆN TẠI theo đúng một đường duy nhất:
+    /// <see cref="RuleEngine.Evaluate"/> (ghi đè + khóa cưỡng chế + giờ
+    /// giấc), rồi nghỉ bắt buộc ép thành khóa khi đang trong giờ nghỉ.
+    /// Vòng kiểm tra rules và handler ghi đè mở khóa tạm thời cùng dùng hàm
+    /// này — một nguồn sự thật duy nhất, không nhân bản logic nghỉ bắt buộc
+    /// sang handler. Trả về cả cờ nghỉ bắt buộc để vòng kiểm tra nhắc lại
+    /// lệnh khóa ở mọi lần kiểm tra trong giờ nghỉ.
+    /// </summary>
+    private async Task<(RuleDecision Decision, bool BreakActive)> EvaluateLockDecisionAsync(
+        IReadOnlyList<Rule> rules,
+        TimeSpan usedToday,
+        TemporaryOverride? activeOverride,
+        bool forcedLock,
+        ParsedAppRules parsedAppRules,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        RuleDecision decision = _ruleEngine.Evaluate(rules, usedToday, now, foregroundAppName: null, activeOverride, forcedLock: forcedLock);
+
+        // Nghỉ bắt buộc được đánh giá sau RuleEngine: đang trong giờ nghỉ
+        // thì ép quyết định thành khóa; hết giờ nghỉ thì dọn trạng thái rồi
+        // đánh giá bình thường. Nghỉ bắt buộc luôn được đánh giá, kể cả
+        // trong lúc mở khóa tạm thời (quyết định ngày 18/11/2026): dùng
+        // liên tục đủ lâu thì vẫn khóa tới hết giờ nghỉ.
+        bool breakActive = await EvaluateForcedBreakAsync(parsedAppRules, now, ct);
+        if (breakActive)
+        {
+            decision = new RuleDecision(RuleDecisionKind.Lock, "Đến giờ nghỉ bắt buộc", 0);
+        }
+
+        return (decision, breakActive);
     }
 
     /// <summary>
@@ -2147,12 +2173,49 @@ public sealed class AgentWorker : BackgroundService
         }
         else if (!isDomainAction && action == OverrideActions.Unlock)
         {
-            // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
-            // gửi rớt thì tick sau gửi lại từ ghi đè đang hiệu lực.
-            int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
-            if (unlockSent > 0)
+            // Chỉ gửi IPC Unlock NGAY khi quyết định thi hành HIỆN TẠI
+            // (đánh giá với ghi đè mới vừa áp, đúng đường của vòng kiểm tra
+            // rules) là được mở. Đang trong giờ nghỉ bắt buộc — hoặc bất kỳ
+            // thi hành khóa nào khác không phải khóa theo giờ giấc — thì BỎ
+            // QUA lần gửi này: vòng kiểm tra giữ màn hình khóa, và khi hết
+            // giờ nghỉ thì vòng kiểm tra tự gửi Unlock từ ghi đè đang còn
+            // hiệu lực. Gửi Unlock mù ở đây từng gây nháy màn hình khóa:
+            // mở ra rồi ≤15 giây sau vòng kiểm tra khóa lại (MINOR review
+            // 18/11/2026). Bỏ qua thì cũng không xóa _lockSent: cờ vẫn đúng
+            // vì màn hình khóa vẫn đang hiện.
+            RuleDecisionKind currentKind;
+            try
             {
-                _lockSent = false;
+                IReadOnlyList<Rule> currentRules = await _outbox.GetCachedRulesAsync(ct);
+                TimeSpan usedToday = await _outbox.GetUsageTodayAsync(ct);
+                TemporaryOverride? currentOverride = await _outbox.GetActiveOverrideAsync(ct);
+                bool forcedLock = await _outbox.GetStateAsync(StateKeys.ForcedLock, ct) is not null;
+                (RuleDecision currentDecision, _) = await EvaluateLockDecisionAsync(
+                    currentRules, usedToday, currentOverride, forcedLock,
+                    GetParsedAppRules(currentRules), DateTimeOffset.Now, ct);
+                currentKind = currentDecision.Kind;
+                if (currentKind != RuleDecisionKind.Allowed)
+                {
+                    _log.Info("Ghi đè mở khóa đã lưu nhưng máy vẫn bị khóa (" + currentDecision.Reason + ") — bỏ qua IPC Unlock, để vòng kiểm tra rules thi hành.");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Đánh giá lỗi thì coi như "không được mở": bỏ qua IPC, vòng
+                // kiểm tra thi hành từ ghi đè đã lưu. Không ném ra ngoài để
+                // lệnh vẫn ack thành công đúng với việc ghi đè đã lưu.
+                _log.Warning("Đánh giá trạng thái khóa sau ghi đè mở khóa lỗi: " + ex.Message + " — bỏ qua IPC Unlock, để vòng kiểm tra rules thi hành.");
+                currentKind = RuleDecisionKind.Lock;
+            }
+            if (currentKind == RuleDecisionKind.Allowed)
+            {
+                // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
+                // gửi rớt thì tick sau gửi lại từ ghi đè đang hiệu lực.
+                int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                if (unlockSent > 0)
+                {
+                    _lockSent = false;
+                }
             }
         }
 
