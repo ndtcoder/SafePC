@@ -404,6 +404,7 @@ export interface RequestSummary {
   denied: number;
   extraTime: number;
   unblockApp: number;
+  unblockDomain: number;
 }
 
 export function summarizeRequests(requests: readonly RequestRow[]): RequestSummary {
@@ -414,6 +415,7 @@ export function summarizeRequests(requests: readonly RequestRow[]): RequestSumma
     denied: 0,
     extraTime: 0,
     unblockApp: 0,
+    unblockDomain: 0,
   };
   for (const request of requests) {
     if (request.status === "pending") summary.pending += 1;
@@ -421,6 +423,7 @@ export function summarizeRequests(requests: readonly RequestRow[]): RequestSumma
     else if (request.status === "denied") summary.denied += 1;
     if (request.type === "extra_time") summary.extraTime += 1;
     else if (request.type === "unblock_app") summary.unblockApp += 1;
+    else if (request.type === "unblock_domain") summary.unblockDomain += 1;
   }
   return summary;
 }
@@ -689,6 +692,8 @@ export function requestTypeLabel(type: string): string {
       return "Xin thêm giờ";
     case "unblock_app":
       return "Xin mở ứng dụng";
+    case "unblock_domain":
+      return "Xin mở trang web";
     default:
       return type;
   }
@@ -1020,7 +1025,7 @@ export function buildChildSectionHtml(report: ChildWeekReport, rangeText: string
   const s = report.requestStats;
   body += `<h3 style="${h3}">Yêu cầu xin thêm giờ</h3>`;
   body += `<p style="${p}">Tổng số: <strong>${s.total}</strong> · Đã duyệt: <strong>${s.approved}</strong> · Đã từ chối: <strong>${s.denied}</strong> · Đang chờ: <strong>${s.pending}</strong>.<br>` +
-    `Trong đó: ${s.extraTime} yêu cầu xin thêm giờ, ${s.unblockApp} yêu cầu xin mở ứng dụng.</p>`;
+    `Trong đó: ${s.extraTime} yêu cầu xin thêm giờ, ${s.unblockApp} yêu cầu xin mở ứng dụng, ${s.unblockDomain} yêu cầu xin mở trang web.</p>`;
   if (report.requests.length > 0) {
     const items = report.requests
       .map((r) => {
@@ -1129,7 +1134,7 @@ export function buildChildSectionText(report: ChildWeekReport, rangeText: string
   const s = report.requestStats;
   lines.push("Yêu cầu xin thêm giờ");
   lines.push(`- Tổng số: ${s.total} · Đã duyệt: ${s.approved} · Đã từ chối: ${s.denied} · Đang chờ: ${s.pending}.`);
-  lines.push(`- Trong đó: ${s.extraTime} yêu cầu xin thêm giờ, ${s.unblockApp} yêu cầu xin mở ứng dụng.`);
+  lines.push(`- Trong đó: ${s.extraTime} yêu cầu xin thêm giờ, ${s.unblockApp} yêu cầu xin mở ứng dụng, ${s.unblockDomain} yêu cầu xin mở trang web.`);
   for (const r of report.requests) {
     const minutes = r.type === "extra_time" && r.minutes != null ? ` (${r.minutes} phút)` : "";
     const reason = r.reason ? ` — ${r.reason}` : "";
