@@ -221,6 +221,52 @@ function allowRule(id, priority, domain) {
   };
 }
 
+// Mẫu URL "host/path" (batch 4): chỉ chặn đúng đường dẫn đó, các đường
+// dẫn khác cùng host vẫn mở được. requestDomains không diễn đạt được
+// đường dẫn, còn urlFilter đã chứng minh không đáng tin trên máy thật
+// (xem ghi chú ở redirectRule) nên mẫu URL dùng regexFilter (RE2).
+// Trả về null khi mẫu sai hình dạng (rỗng, thiếu "/", host xấu) —
+// caller bỏ qua lặng lẽ (fail-open), không bao giờ throw.
+function buildUrlPatternRegex(pattern) {
+  if (typeof pattern !== "string") return null;
+  const trimmed = pattern.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) return null;
+  const host = normalizeDomain(trimmed.slice(0, slash));
+  if (!host) return null;
+  const path = trimmed.slice(slash);
+  if (path.length === 0) return null;
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Ranh giới host: ([^/]*\.)? chỉ cho phép tên miền con thật — "notbing.com"
+  // và "bing.com.evil.com" đều không khớp (cùng kiểu chặn như
+  // youtubeRestrictedRule). Ranh giới path: mẫu kết thúc bằng "/" là tiền tố
+  // thư mục (khớp mọi thứ bên dưới); ngược lại, sau path phải hết URL hoặc
+  // bắt đầu bằng / ? # — "/videos" không khớp "/videosabc".
+  const boundary = path.endsWith("/") ? ".*" : "((?:[/?#].*)?)$";
+  return "^https?://([^/]*\\.)?" + escapeRe(host) + escapeRe(path) + boundary;
+}
+
+function redirectRegexRule(id, priority, regexFilter, reason) {
+  return {
+    id,
+    priority,
+    action: {
+      type: "redirect",
+      redirect: { url: chrome.runtime.getURL("blocked.html?reason=" + reason) },
+    },
+    condition: { regexFilter, resourceTypes: ["main_frame"] },
+  };
+}
+
+function blockRegexRule(id, priority, regexFilter) {
+  return {
+    id,
+    priority,
+    action: { type: "block" },
+    condition: { regexFilter, resourceTypes: SUB_RESOURCE_TYPES },
+  };
+}
+
 // RE2 (regex của DNR) không có lookahead nên không viết được "URL chưa có
 // safe=active". Mẹo: chỉ khớp URL mà phần query KHÔNG bắt đầu đúng bằng
 // "<param>&" — sau redirect, query bắt đầu đúng bằng "<param>&" nên rule
@@ -442,6 +488,21 @@ function buildDnrRules(rules, usageSeconds, now) {
   if (!focusActive) {
     for (const domain of tempAllow) rulesOut.push(allowRule(nextId++, PRIORITY.tempAllow, domain));
     addPair(blocked, PRIORITY.blocked, "blocked");
+    // Mẫu URL (batch 4): rules.urlPatterns = ["host/path", ...] từ
+    // DomainRulesPublisher (chỉ mode block_domains). Cùng nhánh
+    // !focusActive và cùng mức ưu tiên chặn domain (30) với cặp chặn
+    // domain — focus áp đảo bằng cấu trúc nên mẫu URL cũng bỏ qua khi
+    // focus hiệu lực. Mẫu sai hình dạng bị bỏ qua lặng lẽ (fail-open);
+    // khử trùng lặp theo chuỗi regex để không phí quota rule.
+    const urlPatternFilters = new Set();
+    const rawPatterns = Array.isArray(rules.urlPatterns) ? rules.urlPatterns : [];
+    for (const pattern of rawPatterns) {
+      const filter = buildUrlPatternRegex(pattern);
+      if (!filter || urlPatternFilters.has(filter)) continue;
+      urlPatternFilters.add(filter);
+      rulesOut.push(redirectRegexRule(nextId++, PRIORITY.blocked, filter, "blocked"));
+      rulesOut.push(blockRegexRule(nextId++, PRIORITY.blocked, filter));
+    }
     addPair(timeBlocked, PRIORITY.time, "time");
     addPair(exhausted, PRIORITY.limit, "limit");
   }
