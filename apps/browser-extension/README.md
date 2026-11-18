@@ -20,6 +20,11 @@ Extension làm:
   domain; Agent mở rộng danh mục thành domain và extension hiện đúng lý do
   theo danh mục trên trang chặn. Danh sách domain của từng danh mục là
   danh sách hạt giống trong Agent (xem mục 7), không phải danh sách đầy đủ.
+- Nút xin mở trang trên trang chặn (từ 0.1.9): con bấm nút để gửi yêu cầu
+  mở tên miền đang bị chặn tới phụ huynh (chỉ tên miền, không URL); phụ
+  huynh duyệt trên trang Yêu cầu kèm thời lượng, lệnh cho phép tạm thời
+  xuống máy trong ~15 giây và extension làm mới trong ~1 phút, con quay
+  lại rồi mở lại trang thì vào được.
 - Giờ học tập trung: trong khung giờ học, chỉ các website học tập được phép
   mới mở được (xem mục 7).
 - Giới hạn thời gian xem theo domain (ví dụ: YouTube 30 phút/ngày), tính

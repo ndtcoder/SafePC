@@ -43,6 +43,14 @@
 // theo danh mục trên trang chặn (cả đường DNR lẫn tab watcher). Extension
 // cũ không đọc trường này vẫn chặn đúng nhờ `blocked`.
 //
+// Nút xin mở trang trên trang chặn (0.1.9): trang chặn hỏi background
+// domain bị chặn của tab mình (đường watcher: tham số domain trong URL
+// chuyển hướng; đường DNR: quy chiếu rule vừa khớp như lượt chặn 0.1.7),
+// rồi gửi yêu cầu mở qua NativeHost (message `requestUnblock`) để Agent
+// đẩy lên bảng requests cho phụ huynh duyệt. Chỉ tên miền được gửi —
+// không URL/path/query. Duyệt xong, lệnh cho phép tạm thời đi theo đúng
+// đường ghi đè domain hiện có (tempAllow); con quay lại rồi mở lại trang thì mở được.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -150,6 +158,19 @@ let pendingBlocked = [];
 // Chỉ rule có domain cụ thể mới vào map: rule chặn-tất-cả (focus/allowlist)
 // không có domain nên lượt chặn đó không quy chiếu được và bị bỏ qua.
 let blockingRuleDomains = new Map();
+// Domain bị chặn của từng tab đang ở trang chặn (tabId -> domain), ghi khi
+// watcher chuyển tab hoặc khi quy chiếu DNR thành công — để trang chặn hỏi
+// lại khi con bấm nút xin mở (0.1.9). Chỉ sống trong bộ nhớ: service worker
+// ngủ đông rồi tỉnh lại thì map rỗng, trang chặn sẽ hỏi lại qua
+// getMatchedRules (cửa sổ 10 giây) hoặc dùng tham số domain trong URL.
+const blockedDomainByTab = new Map();
+const BLOCKED_DOMAIN_BY_TAB_CAP = 200;
+// Chống spam nút xin mở (0.1.9): cùng một domain chỉ gửi một yêu cầu trong
+// 5 phút (con bấm lại, tải lại trang rồi bấm tiếp). Lớp chống trùng thật
+// nằm ở RPC phía server; đây chỉ tránh gửi message native vô ích.
+const UNBLOCK_REQUEST_DEDUPE_MS = 5 * 60 * 1000;
+const UNBLOCK_REQUEST_DEDUPE_CAP = 200;
+const unblockRequestDedupe = new Map();
 // Tiền tố URL trang chặn của chính extension, tính lười ở isBlockedPageUrl.
 let blockedPagePrefix = null;
 let activeTabId = null;
@@ -1069,12 +1090,17 @@ async function redirectTabIfBlocked(tabId, candidateUrl) {
   }
   const reason = isTabUrlBlocked(liveUrl, currentRules, new Date());
   if (!reason) return;
-  const target = chrome.runtime.getURL("blocked.html?reason=" + reason);
+  // Domain bị chặn của URL này (đánh giá một lần, dùng cho cả tham số URL
+  // trang chặn lẫn lượt chặn): rule khớp thì lấy domain của rule, không thì
+  // lấy hostname của URL vừa chuyển làm dự phòng.
+  const hostname = hostnameFromUrl(liveUrl);
+  const blockedDomain = matchedBlockRuleDomain(liveUrl, currentRules, new Date()) || hostname;
+  let target = chrome.runtime.getURL("blocked.html?reason=" + reason);
+  if (blockedDomain) target += "&domain=" + encodeURIComponent(blockedDomain);
   if (liveUrl === target) return;
   if (!watcherRedirectAllowed(tabId, target)) return;
   try {
     await chrome.tabs.update(tabId, { url: target });
-    const hostname = hostnameFromUrl(liveUrl);
     console.warn(
       "[SafePC] Tab watcher: đã chuyển tab #" +
         tabId +
@@ -1084,16 +1110,15 @@ async function redirectTabIfBlocked(tabId, candidateUrl) {
         reason +
         ").",
     );
-    // Lượt web bị chặn (0.1.7): ghi theo DOMAIN CỦA RULE đã khớp
-    // (matchedBlockRuleDomain), cùng đơn vị với đường quy chiếu DNR, để
-    // dedupe 60s chung gộp được một lần chặn dù cả hai đường cùng ghi
-    // (watcher chuyển tab xong, handleBlockedPageShown lại quy chiếu qua
-    // DNR). Đánh giá lại ở đây — rule có thể đã đổi trong lúc chờ
-    // tabs.update — nên không xác định được rule thì dùng hostname của
-    // URL vừa chuyển làm dự phòng. Chỉ ghi khi chuyển thành công (tab
-    // đã tới trang chặn).
-    const blockedDomain = matchedBlockRuleDomain(liveUrl, currentRules, new Date()) || hostname;
-    if (blockedDomain) recordBlockedVisit(blockedDomain, Date.now());
+    // Lượt web bị chặn (0.1.7) ghi theo DOMAIN CỦA RULE đã khớp, cùng đơn
+    // vị với đường quy chiếu DNR, để dedupe 60s chung gộp được một lần
+    // chặn dù cả hai đường cùng ghi. Chỉ ghi khi chuyển thành công (tab
+    // đã tới trang chặn). Đồng thời ghi domain vào map theo tab để nút
+    // xin mở trên trang chặn (0.1.9) hỏi lại được.
+    if (blockedDomain) {
+      recordBlockedDomainForTab(tabId, blockedDomain);
+      recordBlockedVisit(blockedDomain, Date.now());
+    }
   } catch (error) {
     console.warn("[SafePC] Tab watcher: không chuyển được tab #" + tabId + ":", error);
   }
@@ -1261,9 +1286,49 @@ function isBlockedPageUrl(url) {
   return url.startsWith(blockedPagePrefix);
 }
 
+// Ghi domain bị chặn của một tab đang ở trang chặn, để nút xin mở hỏi lại
+// được (0.1.9). Map có trần: quá trần thì xóa mục cũ nhất (Map giữ thứ tự
+// chèn). Không bao giờ throw.
+function recordBlockedDomainForTab(tabId, domain) {
+  try {
+    if (!Number.isInteger(tabId) || typeof domain !== "string" || domain.length === 0) return;
+    blockedDomainByTab.set(tabId, domain);
+    if (blockedDomainByTab.size > BLOCKED_DOMAIN_BY_TAB_CAP) {
+      const oldest = blockedDomainByTab.keys().next().value;
+      if (oldest !== undefined) blockedDomainByTab.delete(oldest);
+    }
+  } catch (error) {
+    console.warn("[SafePC] Không ghi được domain theo tab:", error);
+  }
+}
+
+// Chọn domain của rule redirect vừa khớp gần nhất trong các mục
+// getMatchedRules: chỉ xét mục trong cửa sổ thời gian, có ruleId trong map
+// rule chặn và là rule redirect. Hàm thuần, không throw — trả về null khi
+// không quy chiếu được.
+function pickMatchedBlockedDomain(matched, ruleMap, minTimeStamp) {
+  try {
+    if (!Array.isArray(matched) || !ruleMap || typeof ruleMap.get !== "function") return null;
+    let best = null;
+    for (const entry of matched) {
+      if (!entry || typeof entry !== "object") continue;
+      if (!Number.isInteger(entry.ruleId) || typeof entry.timeStamp !== "number") continue;
+      if (entry.timeStamp < minTimeStamp) continue;
+      const info = ruleMap.get(entry.ruleId);
+      if (!info || !info.isRedirect) continue;
+      if (!best || entry.timeStamp > best.timeStamp) best = { timeStamp: entry.timeStamp, domain: info.domain };
+    }
+    return best ? best.domain : null;
+  } catch (error) {
+    console.warn("[SafePC] Không chọn được rule chặn vừa khớp:", error);
+    return null;
+  }
+}
+
 // Tab vừa tới trang chặn qua redirect DNR: tra rule redirect vừa khớp
-// trong 10 giây gần nhất và ghi lượt chặn theo domain của rule đó. Không
-// có rule nào khớp (watcher chuyển tab, rule chặn-tất-cả, API trống/lỗi)
+// trong 10 giây gần nhất và ghi lượt chặn theo domain của rule đó, đồng
+// thời ghi domain vào map theo tab để nút xin mở hỏi lại được. Không có
+// rule nào khớp (watcher chuyển tab, rule chặn-tất-cả, API trống/lỗi)
 // thì bỏ qua lặng lẽ — không đoán domain. Không bao giờ throw.
 async function handleBlockedPageShown(tabId) {
   try {
@@ -1276,19 +1341,89 @@ async function handleBlockedPageShown(tabId) {
     }
     const minTimeStamp = Date.now() - BLOCKED_MATCH_WINDOW_MS;
     const matched = await chrome.declarativeNetRequest.getMatchedRules({ tabId, minTimeStamp });
-    if (!Array.isArray(matched)) return;
-    let best = null;
-    for (const entry of matched) {
-      if (!entry || typeof entry !== "object") continue;
-      if (!Number.isInteger(entry.ruleId) || typeof entry.timeStamp !== "number") continue;
-      if (entry.timeStamp < minTimeStamp) continue;
-      const info = blockingRuleDomains.get(entry.ruleId);
-      if (!info || !info.isRedirect) continue;
-      if (!best || entry.timeStamp > best.timeStamp) best = { timeStamp: entry.timeStamp, domain: info.domain };
+    const domain = pickMatchedBlockedDomain(matched, blockingRuleDomains, minTimeStamp);
+    if (domain) {
+      recordBlockedDomainForTab(tabId, domain);
+      recordBlockedVisit(domain, Date.now());
     }
-    if (best) recordBlockedVisit(best.domain, Date.now());
   } catch (error) {
     console.warn("[SafePC] Không quy chiếu được domain cho trang chặn:", error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Nút xin mở trang trên trang chặn (0.1.9)
+// ---------------------------------------------------------------------------
+
+// Domain bị chặn của tab gửi message: ưu tiên map theo tab (ghi lúc
+// watcher chuyển tab hoặc lúc quy chiếu DNR), rồi tra trực tiếp rule vừa
+// khớp (trường hợp map rỗng vì service worker vừa tỉnh lại). Trả về null
+// khi không xác định được — không đoán. Không bao giờ throw.
+async function resolveBlockedDomainForTab(sender) {
+  try {
+    const tabId = sender && sender.tab && sender.tab.id;
+    if (!Number.isInteger(tabId)) return null;
+    const mapped = blockedDomainByTab.get(tabId);
+    if (typeof mapped === "string" && mapped.length > 0) return mapped;
+    if (blockingRuleDomains.size === 0) return null;
+    if (
+      !chrome.declarativeNetRequest ||
+      typeof chrome.declarativeNetRequest.getMatchedRules !== "function"
+    ) {
+      return null;
+    }
+    const minTimeStamp = Date.now() - BLOCKED_MATCH_WINDOW_MS;
+    const matched = await chrome.declarativeNetRequest.getMatchedRules({ tabId, minTimeStamp });
+    const domain = pickMatchedBlockedDomain(matched, blockingRuleDomains, minTimeStamp);
+    if (domain) recordBlockedDomainForTab(tabId, domain);
+    return domain;
+  } catch (error) {
+    console.warn("[SafePC] Không xác định được domain bị chặn của tab:", error);
+    return null;
+  }
+}
+
+// Cùng một domain có được gửi yêu cầu mở không: chưa gửi, hoặc lần gửi
+// trước đã quá 5 phút. Chỉ kiểm tra, không ghi dấu — ghi dấu do
+// recordUnblockRequestSent, chỉ sau khi gửi thành công, để gửi lỗi thì
+// con bấm lại được ngay thay vì bị báo "đã gửi" oan.
+function unblockRequestAllowed(domain, nowMs) {
+  const last = unblockRequestDedupe.get(domain);
+  return last === undefined || nowMs - last >= UNBLOCK_REQUEST_DEDUPE_MS;
+}
+
+// Ghi dấu một lần gửi yêu cầu mở thành công. Chỉ gọi khi NativeHost đã
+// ack ok.
+function recordUnblockRequestSent(domain, nowMs) {
+  unblockRequestDedupe.set(domain, nowMs);
+  if (unblockRequestDedupe.size > UNBLOCK_REQUEST_DEDUPE_CAP) {
+    for (const [oldDomain, oldMs] of unblockRequestDedupe) {
+      if (nowMs - oldMs >= UNBLOCK_REQUEST_DEDUPE_MS) unblockRequestDedupe.delete(oldDomain);
+    }
+  }
+}
+
+// Xử lý yêu cầu xin mở từ trang chặn. Domain dùng để gửi là domain
+// background tự quy chiếu cho tab (đáng tin nhất); khi không quy chiếu
+// được thì dùng domain trang chặn gửi kèm (đến từ tham số URL do chính
+// background đặt lúc chuyển hướng, hoặc từ lần hỏi getBlockedDomain
+// trước) sau khi chuẩn hóa. Chỉ tên miền được gửi đi — không URL. Trả về
+// {ok} và cờ alreadySent khi yêu cầu đã gửi trong cửa sổ dedupe.
+async function handleUnblockRequest(message, sender) {
+  try {
+    const resolved = await resolveBlockedDomainForTab(sender);
+    const domain = resolved || normalizeDomain(message && message.domain);
+    if (!domain) return { ok: false, reason: "no-domain" };
+    if (!unblockRequestAllowed(domain, Date.now())) return { ok: true, alreadySent: true };
+    const response = await sendNativeMessage({ type: "requestUnblock", domain });
+    if (response && response.ok === true) {
+      recordUnblockRequestSent(domain, Date.now());
+      return { ok: true };
+    }
+    return { ok: false, reason: "native" };
+  } catch (error) {
+    console.warn("[SafePC] Không gửi được yêu cầu xin mở:", error);
+    return { ok: false, reason: "error" };
   }
 }
 
@@ -1541,12 +1676,29 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  blockedDomainByTab.delete(tabId);
   if (tabId !== activeTabId) return;
   const nowMs = Date.now();
   closeSegment(nowMs);
   activeTabId = null;
   activeHostname = null;
   activeSince = nowMs;
+});
+
+// Trang chặn (0.1.9): hỏi domain bị chặn của tab mình (getBlockedDomain)
+// và gửi yêu cầu xin mở (requestUnblock). Trả lời bất đồng bộ nên trả về
+// true để giữ kênh message mở; message lạ thì bỏ qua.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message !== "object" || typeof message.type !== "string") return false;
+  if (message.type === "getBlockedDomain") {
+    void resolveBlockedDomainForTab(sender).then((domain) => sendResponse({ domain }));
+    return true;
+  }
+  if (message.type === "requestUnblock") {
+    void handleUnblockRequest(message, sender).then((result) => sendResponse(result));
+    return true;
+  }
+  return false;
 });
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
