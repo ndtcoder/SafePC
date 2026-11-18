@@ -812,7 +812,7 @@ public sealed class IpcPipeServer : BackgroundService
                 RemainingTimeRequestPayload? remainingRequest = message.GetPayload<RemainingTimeRequestPayload>();
                 string remainingRequestId = remainingRequest?.RequestId ?? string.Empty;
                 RemainingTimeResponsePayload remainingResponse;
-                if (_queryState.TryGetDecision(out RuleDecision decision, out DateTimeOffset evaluatedAt))
+                if (_queryState.TryGetDecisionWithBonus(out RuleDecision decision, out DateTimeOffset evaluatedAt, out int? activeBonusMinutes))
                 {
                     string decisionText = decision.Kind switch
                     {
@@ -825,7 +825,8 @@ public sealed class IpcPipeServer : BackgroundService
                         decision.MinutesLeft == int.MaxValue ? null : decision.MinutesLeft,
                         decision.Reason,
                         evaluatedAt,
-                        remainingRequestId);
+                        remainingRequestId,
+                        activeBonusMinutes);
                 }
                 else
                 {

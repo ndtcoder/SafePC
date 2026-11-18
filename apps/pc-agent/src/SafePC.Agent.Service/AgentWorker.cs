@@ -1181,7 +1181,17 @@ public sealed class AgentWorker : BackgroundService
                     displayDecision = new RuleDecision(RuleDecisionKind.Allowed, displayReason, remainingMinutes);
                 }
 
-                _queryState.UpdateDecision(displayDecision, now);
+                // Phút thưởng thêm đang hiệu lực để Tray hiện cho con thấy giờ
+                // thưởng của mình (ngân hàng giờ). Điều kiện giống hệt chỗ
+                // RuleEngine cộng bonus (GetRemainingMinutes): ghi đè còn
+                // hạn và đúng action bonus_minutes — không thêm ngữ nghĩa
+                // mới, chỉ đọc lại ghi đè của lần đánh giá này.
+                int? activeBonusMinutes = activeOverride is not null && activeOverride.ExpiresAt > now
+                    && activeOverride.Action == OverrideActions.BonusMinutes
+                    ? activeOverride.Minutes
+                    : null;
+
+                _queryState.UpdateDecision(displayDecision, now, activeBonusMinutes);
 
                 LogRuleDecisionIfDue(decision, ruleIds, usedToday, activeOverride);
             }
