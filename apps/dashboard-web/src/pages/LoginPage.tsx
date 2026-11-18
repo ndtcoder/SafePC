@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
-import { Link, Navigate, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
+import { isValidInviteNextPath } from '../lib/familyInvites'
 import { toVietnameseError } from '../lib/format'
 import { Field, inputClassName, primaryButtonClassName } from '../components/ui'
 
@@ -28,6 +29,12 @@ const MODE_TITLES: Record<Mode, { title: string; description: string; submit: st
 export default function LoginPage() {
   const { configured, user, loading } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  // Nơi quay lại sau khi đăng nhập: chỉ chấp nhận đường dẫn chấp nhận
+  // lời mời cùng origin (?next=/moi/<token>); mọi giá trị khác đều về
+  // trang tổng quan để ?next= không thành chuyển hướng mở.
+  const nextParam = searchParams.get('next')
+  const redirectTo = nextParam && isValidInviteNextPath(nextParam) ? nextParam : '/hom-nay'
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -36,7 +43,7 @@ export default function LoginPage() {
   const [notice, setNotice] = useState<string | null>(null)
 
   if (!loading && user) {
-    return <Navigate to="/hom-nay" replace />
+    return <Navigate to={redirectTo} replace />
   }
 
   const switchMode = (next: Mode) => {
@@ -55,7 +62,7 @@ export default function LoginPage() {
       if (mode === 'login') {
         const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
         if (authError) throw authError
-        navigate('/hom-nay', { replace: true })
+        navigate(redirectTo, { replace: true })
       } else if (mode === 'signup') {
         const { error: authError } = await supabase.auth.signUp({
           email,

@@ -12,6 +12,7 @@ import {
   NotConfiguredState,
   PageHeader,
 } from '../components/ui'
+import FamilyInviteSection from '../components/FamilyInviteSection'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -104,6 +105,9 @@ export default function ProfilesPage() {
             Tới trang Thiết bị để thêm hồ sơ con
           </Link>
         </div>
+        <div className="mt-6">
+          <FamilyInviteSection />
+        </div>
       </div>
     )
   }
@@ -174,6 +178,9 @@ export default function ProfilesPage() {
             </Card>
           )
         })}
+      </div>
+      <div className="mt-6">
+        <FamilyInviteSection />
       </div>
     </div>
   )
