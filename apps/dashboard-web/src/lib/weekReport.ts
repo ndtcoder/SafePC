@@ -239,6 +239,7 @@ export interface RequestSummary {
   denied: number
   extraTime: number
   unblockApp: number
+  unblockDomain: number
 }
 
 export function summarizeRequests(requests: readonly AppRequest[]): RequestSummary {
@@ -249,6 +250,7 @@ export function summarizeRequests(requests: readonly AppRequest[]): RequestSumma
     denied: 0,
     extraTime: 0,
     unblockApp: 0,
+    unblockDomain: 0,
   }
   for (const request of requests) {
     if (request.status === 'pending') summary.pending += 1
@@ -256,6 +258,7 @@ export function summarizeRequests(requests: readonly AppRequest[]): RequestSumma
     else if (request.status === 'denied') summary.denied += 1
     if (request.type === 'extra_time') summary.extraTime += 1
     else if (request.type === 'unblock_app') summary.unblockApp += 1
+    else if (request.type === 'unblock_domain') summary.unblockDomain += 1
   }
   return summary
 }

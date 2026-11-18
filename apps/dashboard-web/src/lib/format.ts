@@ -128,6 +128,8 @@ export function requestTypeLabel(type: RequestType): string {
       return 'Xin thêm giờ'
     case 'unblock_app':
       return 'Xin mở ứng dụng'
+    case 'unblock_domain':
+      return 'Xin mở trang web'
   }
 }
 

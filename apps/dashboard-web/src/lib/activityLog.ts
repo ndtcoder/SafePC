@@ -238,6 +238,9 @@ export function requestToEvents(req: AppRequest, ctx: ActivityContext): Activity
   if (req.type === 'extra_time' && typeof req.minutes === 'number') {
     detailParts.push(`Xin thêm ${formatMinutes(req.minutes)} phút`)
   }
+  if (req.type === 'unblock_domain' && req.domain) {
+    detailParts.push(`Trang web: ${req.domain}`)
+  }
   const reason = (req.reason ?? '').trim()
   if (reason) detailParts.push(`Lý do: ${reason}`)
   const events: ActivityEvent[] = [

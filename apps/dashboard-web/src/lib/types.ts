@@ -4,7 +4,7 @@
 
 export type DeviceStatus = 'online' | 'offline' | 'locked'
 export type RuleType = 'daily_limit' | 'bedtime' | 'time_window' | 'app' | 'website'
-export type RequestType = 'extra_time' | 'unblock_app'
+export type RequestType = 'extra_time' | 'unblock_app' | 'unblock_domain'
 export type RequestStatus = 'pending' | 'approved' | 'denied'
 export type CommandType = 'lock_now' | 'unlock' | 'refresh_rules' | 'update' | 'temporary_override'
 export type CommandStatus = 'pending' | 'sent' | 'done' | 'failed'
@@ -143,6 +143,10 @@ export interface AppRequest {
   // yêu cầu cũ hoặc khi migration 7 chưa áp dụng.
   minutes?: number | null
   device_id?: string | null
+  // Tên miền con xin mở (thêm ở migration 18, chỉ với loại
+  // unblock_domain). CHỈ tên miền — không path/query/URL. Vắng mặt với
+  // yêu cầu loại khác hoặc khi migration 18 chưa áp dụng.
+  domain?: string | null
 }
 
 export interface Command {
