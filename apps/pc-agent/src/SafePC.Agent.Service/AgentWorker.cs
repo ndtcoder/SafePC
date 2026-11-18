@@ -2169,8 +2169,34 @@ public sealed class AgentWorker : BackgroundService
                 if (conflictingOverride is not null && conflictingOverride.ExpiresAt > DateTimeOffset.UtcNow
                     && conflictingOverride.Action == OverrideActions.Unlock)
                 {
-                    await _outbox.ClearOverrideAsync(ct);
-                    _log.Info("Lệnh khóa mới hủy ghi đè mở khóa đang hiệu lực (hành động sau thắng hành động trước).");
+                    // Lệnh khóa CŨ gửi lại (ack rớt) không được hủy ghi đè
+                    // mở khóa MỚI HƠN đã áp sau nó: so mốc giờ server của
+                    // lệnh đã tạo ra ghi đè với giờ server của lệnh khóa.
+                    // Bằng mốc thì vẫn hủy (cùng quy tắc hòa mốc như lệnh
+                    // ghi đè — xem OverrideCommandOrder.IsStale).
+                    if (conflictingOverride.CommandCreatedAt is not null
+                        && conflictingOverride.CommandCreatedAt.Value > command.CreatedAt)
+                    {
+                        _log.Warning(
+                            "Bỏ qua phần hủy ghi đè của lệnh khóa cũ (tạo lúc " + command.CreatedAt.ToString("o")
+                            + "): ghi đè mở khóa mới hơn (tạo lúc " + conflictingOverride.CommandCreatedAt.Value.ToString("o") + ") vẫn giữ nguyên.");
+                        // Dừng ở đây: không gửi cảnh báo/khóa xuống Tray và
+                        // không đặt hẹn khóa — ghi đè mở mới hơn đang thắng
+                        // trong RuleEngine nên vòng kiểm tra rules sẽ gửi
+                        // Unlock (nếu màn hình khóa đang hiện) từ trạng thái
+                        // bền vững. Gửi Lock Immediate ở đây chỉ làm màn hình
+                        // khóa hiện thoáng qua rồi tự mở lại ở tick sau.
+                        return true;
+                    }
+                    else
+                    {
+                        await _outbox.ClearOverrideAsync(ct);
+                        // Nâng mốc sàn lên giờ của lệnh khóa để lệnh mở
+                        // khóa cũ gửi lại sau không hồi sinh ghi đè vừa bị
+                        // hủy (hàng đã xóa nên mốc trong hàng cũng mất).
+                        await _outbox.RaiseOverrideCommandFloorAsync(command.CreatedAt, ct);
+                        _log.Info("Lệnh khóa mới hủy ghi đè mở khóa đang hiệu lực (hành động sau thắng hành động trước).");
+                    }
                 }
 
                 // Độ trễ khóa (Dashboard cho chọn 0–5 phút): delay > 0 và
@@ -2259,12 +2285,48 @@ public sealed class AgentWorker : BackgroundService
     }
 
     /// <summary>
+    /// Lệnh ghi đè này có cũ hơn trạng thái đang hiệu lực không. Ack của một
+    /// lệnh có thể rớt (lỗi mạng sau khi thi hành, Service chết giữa chừng)
+    /// nên lệnh vẫn còn <c>pending</c> và được poll trả lại ở chu kỳ sau —
+    /// sau khi một lệnh mới hơn đã được áp và ack xong. So sánh dùng
+    /// <c>created_at</c> do server sinh ở cả hai phía (lệnh tới và mốc sàn
+    /// trong hàng ghi đè/watermark bền vững) nên không bị ảnh hưởng nếu
+    /// đồng hồ máy con bị chỉnh. Lệnh thiếu mốc giờ (không xảy ra qua RPC
+    /// thật — cột <c>created_at</c> NOT NULL) thì không kết luận là cũ, áp
+    /// như trước. Cũ hơn thì ghi log cảnh báo rõ ràng — không bỏ qua im lặng.
+    /// </summary>
+    private async Task<bool> IsStaleOverrideCommandAsync(Command command, string action, CancellationToken ct)
+    {
+        if (command.CreatedAt == default)
+        {
+            return false;
+        }
+
+        TemporaryOverride? current = await _outbox.GetActiveOverrideAsync(ct);
+        DateTimeOffset? watermark = await _outbox.GetOverrideCommandFloorAsync(ct);
+        DateTimeOffset? floor = OverrideCommandOrder.Floor(current?.CommandCreatedAt, watermark);
+        if (!OverrideCommandOrder.IsStale(command.CreatedAt, floor))
+        {
+            return false;
+        }
+
+        _log.Warning(
+            "Bỏ qua lệnh ghi đè cũ (action " + action + ", tạo lúc " + command.CreatedAt.ToString("o")
+            + ", id " + command.Id + "): đã có lệnh mới hơn (mốc " + floor!.Value.ToString("o") + ").");
+        return true;
+    }
+
+    /// <summary>
     /// Thi hành lệnh ghi đè tạm thời (payload: action, minutes, expires_at;
     /// ghi đè domain thêm domains, ghi đè app thêm apps). Ghi đè được lưu
     /// xuống SQLite để sống sót qua khởi động lại Service; lệnh mới nhất
     /// thay thế lệnh trước đó (chỉ 1 hàng active_override — ghi đè app mới
     /// sẽ thay ghi đè giờ giấc/domain đang có và ngược lại).
     /// Payload thiếu/sai thì bỏ qua và trả về false — không đoán ý phụ huynh.
+    /// Lệnh cũ hơn trạng thái đang hiệu lực (ack rớt nên poll trả lại sau
+    /// khi lệnh mới hơn đã áp) thì bị bỏ qua nhưng vẫn trả về true để được
+    /// ack done và rời khỏi hàng pending — xem
+    /// <see cref="IsStaleOverrideCommandAsync"/>.
     /// Ghi đè domain (allow_domain/block_domain) CHỈ ảnh hưởng file
     /// domain_rules.json (xuất bản lại ngay), không mở/khóa máy, không gửi
     /// IPC xuống Tray; RuleEngine cũng bỏ qua chúng (xem chốt chặn ở đó).
@@ -2278,7 +2340,17 @@ public sealed class AgentWorker : BackgroundService
 
         if (action == OverrideActions.Cancel)
         {
+            // Lệnh hủy cũ không được xóa ghi đè mới hơn đã áp sau nó.
+            if (await IsStaleOverrideCommandAsync(command, OverrideActions.Cancel, ct))
+            {
+                return true;
+            }
+
             await _outbox.ClearOverrideAsync(ct);
+            // Nâng mốc sàn: hàng đã xóa nên mốc trong hàng cũng mất — không
+            // nâng thì lệnh ghi đè cũ gửi lại sau sẽ hồi sinh trạng thái
+            // vừa bị hủy.
+            await _outbox.RaiseOverrideCommandFloorAsync(command.CreatedAt, ct);
             // KHÔNG xóa _lockSent ở đây (review batch #5): nếu màn hình khóa
             // đang hiện mà cờ bị xóa trước, tick sau quyết định Allowed nhưng
             // nhánh Allowed thấy cờ đã false nên không gửi Unlock và màn hình
@@ -2342,7 +2414,16 @@ public sealed class AgentWorker : BackgroundService
             return true;
         }
 
-        await _outbox.SaveOverrideAsync(new TemporaryOverride(action!, minutes, expiresAt, domains, apps), ct);
+        // Lệnh cũ hơn trạng thái đang hiệu lực thì bỏ qua — kiểm tra SAU
+        // khi payload đã hợp lệ và còn hạn, để lệnh sai payload vẫn ack
+        // failed như trước (không đổi ngữ nghĩa lỗi).
+        if (await IsStaleOverrideCommandAsync(command, action!, ct))
+        {
+            return true;
+        }
+
+        await _outbox.SaveOverrideAsync(new TemporaryOverride(action!, minutes, expiresAt, domains, apps, command.CreatedAt), ct);
+        await _outbox.RaiseOverrideCommandFloorAsync(command.CreatedAt, ct);
         if (isDomainAction)
         {
             _log.Info("Đã lưu ghi đè domain: " + action + " " + domains!.Count + " domain, " + minutes + " phút, hết hạn " + expiresAt.ToString("o") + ".");

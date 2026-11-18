@@ -85,6 +85,7 @@ public sealed class OutboxStore
                 expires_at TEXT NOT NULL,
                 domains_json TEXT,
                 apps_json TEXT,
+                command_created_at TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS device_state (
@@ -99,9 +100,11 @@ public sealed class OutboxStore
         // và apps_json (ghi đè app). CREATE TABLE IF NOT EXISTS không thêm
         // cột vào bảng đã có, nên kiểm tra PRAGMA và ALTER TABLE khi cần.
         // DB mới đã có cả hai cột từ CREATE TABLE ở trên nên các nhánh này
-        // không chạy.
+        // không chạy. Cùng mẫu: cột command_created_at (mốc chống lệnh ghi
+        // đè cũ gửi lại) cho DB đã tồn tại từ trước đợt cứng hóa này.
         await EnsureOverrideDomainsColumnAsync(connection, ct);
         await EnsureOverrideAppsColumnAsync(connection, ct);
+        await EnsureOverrideCommandCreatedAtColumnAsync(connection, ct);
     }
 
     /// <summary>Thêm cột <c>domains_json</c> vào bảng <c>active_override</c> nếu chưa có.</summary>
@@ -154,6 +157,33 @@ public sealed class OutboxStore
         {
             await using var alter = connection.CreateCommand();
             alter.CommandText = "ALTER TABLE active_override ADD COLUMN apps_json TEXT;";
+            await alter.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    /// <summary>Thêm cột <c>command_created_at</c> vào bảng <c>active_override</c> nếu chưa có (mốc chống lệnh ghi đè cũ gửi lại, mirror hai cột trên). Hàng cũ để NULL — coi như không có mốc.</summary>
+    private static async Task EnsureOverrideCommandCreatedAtColumnAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool hasColumn = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(active_override);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                // PRAGMA table_info: cid, name, type, notnull, dflt_value, pk.
+                if (reader.GetString(1) == "command_created_at")
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE active_override ADD COLUMN command_created_at TEXT;";
             await alter.ExecuteNonQueryAsync(ct);
         }
     }
@@ -378,7 +408,9 @@ public sealed class OutboxStore
     /// Lưu ghi đè tạm thời đang hiệu lực (ghi đè mới thay thế ghi đè cũ).
     /// Chỉ có tối đa 1 hàng (id = 1). Domains của ghi đè domain được lưu
     /// dạng mảng JSON trong cột <c>domains_json</c> (null với ghi đè khác);
-    /// apps của ghi đè app lưu tương tự trong cột <c>apps_json</c>.
+    /// apps của ghi đè app lưu tương tự trong cột <c>apps_json</c>;
+    /// <c>CommandCreatedAt</c> (giờ server của lệnh đã tạo ghi đè) lưu trong
+    /// cột <c>command_created_at</c> để lần poll sau so mốc chống lệnh cũ.
     /// </summary>
     public async Task SaveOverrideAsync(TemporaryOverride ov, CancellationToken ct)
     {
@@ -389,14 +421,15 @@ public sealed class OutboxStore
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO active_override (id, action, minutes, expires_at, domains_json, apps_json, updated_at)
-            VALUES (1, $action, $minutes, $expires, $domains, $apps, $now)
+            INSERT INTO active_override (id, action, minutes, expires_at, domains_json, apps_json, command_created_at, updated_at)
+            VALUES (1, $action, $minutes, $expires, $domains, $apps, $created, $now)
             ON CONFLICT(id) DO UPDATE SET
                 action = excluded.action,
                 minutes = excluded.minutes,
                 expires_at = excluded.expires_at,
                 domains_json = excluded.domains_json,
                 apps_json = excluded.apps_json,
+                command_created_at = excluded.command_created_at,
                 updated_at = excluded.updated_at;
             """;
         command.Parameters.AddWithValue("$action", ov.Action);
@@ -404,6 +437,7 @@ public sealed class OutboxStore
         command.Parameters.AddWithValue("$expires", ov.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$domains", ov.Domains is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Domains));
         command.Parameters.AddWithValue("$apps", ov.Apps is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Apps));
+        command.Parameters.AddWithValue("$created", ov.CommandCreatedAt is null ? DBNull.Value : (object)ov.CommandCreatedAt.Value.ToString("o", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -424,9 +458,10 @@ public sealed class OutboxStore
         string? expiresText = null;
         string? domainsJson = null;
         string? appsJson = null;
+        string? commandCreatedAtText = null;
         await using (var select = connection.CreateCommand())
         {
-            select.CommandText = "SELECT action, minutes, expires_at, domains_json, apps_json FROM active_override WHERE id = 1;";
+            select.CommandText = "SELECT action, minutes, expires_at, domains_json, apps_json, command_created_at FROM active_override WHERE id = 1;";
             await using var reader = await select.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct))
             {
@@ -435,6 +470,7 @@ public sealed class OutboxStore
                 expiresText = reader.GetString(2);
                 domainsJson = reader.IsDBNull(3) ? null : reader.GetString(3);
                 appsJson = reader.IsDBNull(4) ? null : reader.GetString(4);
+                commandCreatedAtText = reader.IsDBNull(5) ? null : reader.GetString(5);
             }
         }
 
@@ -458,8 +494,17 @@ public sealed class OutboxStore
 
         // domains_json/apps_json hỏng thì coi như không có danh sách (ghi đè
         // domain/app sẽ không sinh entry nào — an toàn hơn là đoán), không
-        // xóa hàng.
-        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson), ParseOverrideApps(appsJson));
+        // xóa hàng. command_created_at hỏng thì coi như không có mốc — hàng
+        // vẫn hiệu lực, watermark bền vững (nếu có) vẫn chặn lệnh cũ.
+        DateTimeOffset? commandCreatedAt = null;
+        if (!string.IsNullOrWhiteSpace(commandCreatedAtText)
+            && DateTimeOffset.TryParse(
+                commandCreatedAtText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsedCreatedAt))
+        {
+            commandCreatedAt = parsedCreatedAt;
+        }
+
+        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson), ParseOverrideApps(appsJson), commandCreatedAt);
     }
 
     /// <summary>Đọc mảng domains từ chuỗi JSON đã lưu. Null/hỏng thì trả về null.</summary>
@@ -534,6 +579,56 @@ public sealed class OutboxStore
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
         await DeleteOverrideRowAsync(connection, ct);
+    }
+
+    /// <summary>
+    /// Đọc mốc sàn lệnh ghi đè bền vững (khóa <c>OverrideCommandFloor</c>
+    /// trong <c>device_state</c>). Null khi chưa từng áp lệnh ghi đè nào
+    /// hoặc giá trị lưu bị hỏng — hỏng thì coi như không có mốc (hàng ghi
+    /// đè, nếu còn, vẫn tự mang mốc của nó).
+    /// </summary>
+    public async Task<DateTimeOffset?> GetOverrideCommandFloorAsync(CancellationToken ct)
+    {
+        string? value = await GetStateAsync(StateKeys.OverrideCommandFloor, ct);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (DateTimeOffset.TryParse(
+                value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset floor))
+        {
+            return floor;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Nâng mốc sàn lệnh ghi đè lên <c>commandCreatedAt</c> (chỉ nâng, không
+    /// bao giờ hạ). Gọi mỗi khi áp một lệnh ghi đè — kể cả lệnh hủy, vì hủy
+    /// xóa hàng ghi đè nên mốc trong hàng sẽ mất theo; và khi lệnh lock_now
+    /// xóa ghi đè mở khóa đang hiệu lực. Chỉ vòng poll lệnh ghi khóa này
+    /// nên đọc-rồi-ghi không đua tranh với luồng khác. Mốc <c>default</c>
+    /// (lệnh thiếu giờ tạo — không xảy ra qua RPC thật) thì bỏ qua, không
+    /// ghi mốc năm 1 xuống DB.
+    /// </summary>
+    public async Task RaiseOverrideCommandFloorAsync(DateTimeOffset commandCreatedAt, CancellationToken ct)
+    {
+        if (commandCreatedAt == default)
+        {
+            return;
+        }
+
+        DateTimeOffset? current = await GetOverrideCommandFloorAsync(ct);
+        DateTimeOffset raised = OverrideCommandOrder.RaiseFloor(current, commandCreatedAt);
+        if (current is null || raised > current.Value)
+        {
+            await SetStateAsync(
+                StateKeys.OverrideCommandFloor,
+                raised.ToString("o", CultureInfo.InvariantCulture),
+                ct);
+        }
     }
 
     private static async Task DeleteOverrideRowAsync(SqliteConnection connection, CancellationToken ct)

@@ -60,5 +60,72 @@ public static class OverrideActions
 /// <see cref="Apps"/> tương tự, cho ghi đè app (<c>block_app</c>/
 /// <c>allow_app</c>): tên exe thô như Dashboard gửi, lưu trong cột
 /// <c>apps_json</c>; chuẩn hóa/so khớp bằng <c>ExeNames</c> lúc thi hành.
+/// <see cref="CommandCreatedAt"/> là <c>created_at</c> của lệnh đã tạo ra
+/// ghi đè này (giờ server Postgres, cột <c>command_created_at</c>): mốc để
+/// bỏ qua lệnh ghi đè cũ gửi lại sau (ack rớt) khi đã có lệnh mới hơn.
+/// Null với hàng do bản Agent cũ ghi (chưa có cột) — coi như không có mốc.
 /// </summary>
-public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null, IReadOnlyList<string>? Apps = null);
+public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null, IReadOnlyList<string>? Apps = null, DateTimeOffset? CommandCreatedAt = null);
+
+/// <summary>
+/// Thứ tự lệnh ghi đè theo giờ server — logic thuần, không chạm DB, để
+/// kiểm tra được bằng harness.
+///
+/// Bối cảnh: lệnh <c>temporary_override</c> là một lần (pending -&gt; done),
+/// nhưng ack của một lệnh có thể rớt (lỗi mạng sau khi thi hành, Service
+/// chết giữa chừng) nên lệnh cũ vẫn còn <c>pending</c> và được poll trả lại
+/// ở chu kỳ sau — SAU KHI một lệnh mới hơn đã được áp và ack xong. Không có
+/// mốc so sánh, lệnh cũ sẽ ghi đè trạng thái mới hơn (kể cả tổng ngân hàng
+/// giờ mới hơn). Mốc là <c>created_at</c> do Postgres sinh
+/// (<c>default now()</c>, không bên nào tự đặt), nên phép so sánh chỉ dùng
+/// giờ server và không bị ảnh hưởng nếu đồng hồ máy con bị chỉnh.
+/// </summary>
+public static class OverrideCommandOrder
+{
+    /// <summary>
+    /// Mốc sàn hiệu lực: giá trị mới hơn trong hai nguồn (hàng ghi đè đang
+    /// hiệu lực và watermark bền vững trong <c>device_state</c>). Null khi
+    /// cả hai đều vắng — chưa từng có lệnh ghi đè nào được áp.
+    /// </summary>
+    public static DateTimeOffset? Floor(DateTimeOffset? rowCommandCreatedAt, DateTimeOffset? watermark)
+    {
+        if (rowCommandCreatedAt is null)
+        {
+            return watermark;
+        }
+
+        if (watermark is null)
+        {
+            return rowCommandCreatedAt;
+        }
+
+        return rowCommandCreatedAt.Value > watermark.Value ? rowCommandCreatedAt.Value : watermark.Value;
+    }
+
+    /// <summary>
+    /// Lệnh này có cũ hơn mốc sàn không. Chỉ cũ hơn THẬT SỰ mới bị bỏ qua:
+    /// bằng mốc thì vẫn áp — hai lệnh không phân biệt được thứ tự bằng
+    /// mốc (cùng một lệnh gửi lại thì áp lại đúng trạng thái cũ, vô hại;
+    /// hai lệnh khác nhau cùng mốc gần như không xảy ra vì mỗi lệnh là
+    /// một transaction riêng với độ phân giải micro-giây, và áp thì giữ
+    /// đúng ngữ nghĩa "lệnh xử lý sau thắng" trong cùng một đợt poll).
+    /// </summary>
+    public static bool IsStale(DateTimeOffset commandCreatedAt, DateTimeOffset? floor)
+    {
+        return floor is not null && commandCreatedAt < floor.Value;
+    }
+
+    /// <summary>
+    /// Watermark mới sau khi áp một lệnh: chỉ nâng lên, không bao giờ hạ
+    /// xuống (lệnh cũ hơn mốc hiện tại không được kéo mốc về quá khứ).
+    /// </summary>
+    public static DateTimeOffset RaiseFloor(DateTimeOffset? currentFloor, DateTimeOffset commandCreatedAt)
+    {
+        if (currentFloor is null || commandCreatedAt > currentFloor.Value)
+        {
+            return commandCreatedAt;
+        }
+
+        return currentFloor.Value;
+    }
+}
