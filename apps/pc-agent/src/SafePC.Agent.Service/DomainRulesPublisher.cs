@@ -22,7 +22,10 @@ namespace SafePC.Agent.Service;
 /// hợp từ mọi rule focus) — trường cộng thêm, Version vẫn là 1. Bản sửa lỗi
 /// sau đó thêm <c>allowlistByTime</c> (allowlist chỉ trong khung giờ, hợp từ
 /// mọi rule mode 'allowlist_by_time'; khóa vắng mặt khi không có rule nào) —
-/// cũng là trường cộng thêm, Version vẫn là 1.
+/// cũng là trường cộng thêm, Version vẫn là 1. Batch 4 thêm <c>urlPatterns</c>
+/// (mẫu "host/path" chỉ chặn đúng đường dẫn đó, hợp từ mọi rule mode
+/// 'block_domains'; khóa vắng mặt khi không có mẫu nào) — cũng là trường
+/// cộng thêm, Version vẫn là 1.
 ///
 /// File chỉ ghi lại khi nội dung (trừ <c>updated_at</c>) thay đổi, để vòng
 /// lặp đồng bộ mỗi phút không chạm đĩa vô ích. Ghi nguyên tử: ghi file tạm
@@ -118,6 +121,7 @@ public sealed class DomainRulesPublisher
             EnsureRulesFileAcl(DomainRulesFilePath);
             _lastPublishedBody = bodyJson;
             _log.Info("Đã xuất bản domain_rules.json: " + file.Blocked.Count + " domain chặn, "
+                + (file.UrlPatterns is null ? 0 : file.UrlPatterns.Count) + " mẫu URL, "
                 + file.BlockedByTime.Count + " chặn theo giờ, "
                 + (file.Allowlist is null ? "không có allowlist" : file.Allowlist.Count + " domain cho phép") + ", "
                 + (file.AllowlistByTime is null ? "không có allowlist theo giờ" : file.AllowlistByTime.Count + " allowlist theo giờ") + ", "
@@ -146,6 +150,7 @@ public sealed class DomainRulesPublisher
     {
         var file = new DomainRulesFile();
         var blocked = new HashSet<string>(StringComparer.Ordinal);
+        var urlPatterns = new HashSet<string>(StringComparer.Ordinal);
         HashSet<string>? allowlist = null;
         bool safeSearch = false;
         bool youtubeRestricted = false;
@@ -183,10 +188,12 @@ public sealed class DomainRulesPublisher
             {
                 case "block_domains":
                     AddRuleDomains(blocked, config);
+                    AddRuleUrlPatterns(urlPatterns, config);
                     break;
 
                 case "block_domains_by_time":
                 {
+                    WarnIfUrlPatternsPresent(config, "block_domains_by_time");
                     var domains = new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(domains, config);
                     Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
@@ -205,12 +212,14 @@ public sealed class DomainRulesPublisher
                 }
 
                 case "allowlist":
+                    WarnIfUrlPatternsPresent(config, "allowlist");
                     allowlist ??= new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(allowlist, config);
                     break;
 
                 case "allowlist_by_time":
                 {
+                    WarnIfUrlPatternsPresent(config, "allowlist_by_time");
                     var domains = new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(domains, config);
                     Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
@@ -230,6 +239,7 @@ public sealed class DomainRulesPublisher
 
                 case "domain_time_limit":
                 {
+                    WarnIfUrlPatternsPresent(config, "domain_time_limit");
                     int? minutes = TryGetInt32(config, "minutes_per_day") ?? TryGetInt32(config, "minutesPerDay");
                     if (minutes is null || minutes.Value <= 0 || minutes.Value > 1440)
                     {
@@ -291,6 +301,9 @@ public sealed class DomainRulesPublisher
         }
 
         file.Blocked = blocked.OrderBy(d => d, StringComparer.Ordinal).ToList();
+        file.UrlPatterns = urlPatterns.Count == 0
+            ? null
+            : urlPatterns.OrderBy(p => p, StringComparer.Ordinal).ToList();
         file.Allowlist = allowlist is null || allowlist.Count == 0
             ? null
             : allowlist.OrderBy(d => d, StringComparer.Ordinal).ToList();
@@ -380,6 +393,110 @@ public sealed class DomainRulesPublisher
             }
 
             target.Add(normalized);
+        }
+    }
+
+    /// <summary>
+    /// Đọc mảng <c>urlPatterns</c> trong config rule mode 'block_domains',
+    /// chuẩn hóa và thêm vào tập đích. Mỗi mẫu là "host/path": host qua
+    /// <see cref="NormalizeDomain"/> (chữ thường), path giữ nguyên chữ hoa/
+    /// thường như phụ huynh gõ. Khóa vắng mặt hoặc không phải mảng nghĩa là
+    /// rule không có mẫu nào (không cảnh báo — hầu hết rule chặn domain chỉ
+    /// có <c>domains</c>). Mẫu sai chỉ ghi Warning và bỏ qua, không bao giờ
+    /// ném exception hay làm hỏng lần xuất bản.
+    /// </summary>
+    private void AddRuleUrlPatterns(HashSet<string> target, JsonElement config)
+    {
+        if (!config.TryGetProperty("urlPatterns", out JsonElement array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (JsonElement element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                _log.Warning("Mục urlPatterns không phải chuỗi trong rule website, đã bỏ qua.");
+                continue;
+            }
+
+            string? raw = element.GetString();
+            string? normalized = NormalizeUrlPattern(raw);
+            if (normalized is null)
+            {
+                _log.Warning("Mẫu URL không hợp lệ trong rule website, đã bỏ qua: " + TruncateForLog(raw?.Trim()));
+                continue;
+            }
+
+            target.Add(normalized);
+        }
+    }
+
+    /// <summary>
+    /// Chuẩn hóa một mẫu URL "host/path": bỏ khoảng trắng đầu/cuối, bỏ scheme
+    /// http:// hoặc https:// ở đầu, tách ở dấu '/' đầu tiên — host qua
+    /// <see cref="NormalizeDomain"/>, path giữ nguyên (bắt đầu bằng '/') trừ
+    /// phần query/fragment (bỏ từ '?' hoặc '#') và dấu '/' cuối (bỏ, để
+    /// "bing.com/videos/" cũng khớp "/videos"). Trả về null khi thiếu host
+    /// hợp lệ hoặc thiếu đường dẫn (kể cả một mình "/" — hãy dùng rule
+    /// domain trần cho cả domain). Khớp với chuẩn hóa phía Dashboard.
+    /// </summary>
+    private static string? NormalizeUrlPattern(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        string value = raw.Trim();
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            int schemeEnd = value.IndexOf("://", StringComparison.Ordinal);
+            value = value[(schemeEnd + 3)..];
+        }
+
+        int slash = value.IndexOf('/');
+        if (slash <= 0)
+        {
+            return null;
+        }
+
+        string? host = NormalizeDomain(value[..slash]);
+        if (host is null)
+        {
+            return null;
+        }
+
+        string path = value[slash..];
+        int cutAt = path.IndexOfAny(new[] { '?', '#' });
+        if (cutAt >= 0)
+        {
+            path = path[..cutAt];
+        }
+
+        path = path.TrimEnd('/');
+        if (path.Length == 0)
+        {
+            return null;
+        }
+
+        return host + path;
+    }
+
+    /// <summary>
+    /// Phòng thủ sâu (đợt 4): Agent chỉ thi hành <c>urlPatterns</c> ở mode
+    /// <c>block_domains</c>. Các mode website khác mà config vẫn mang mảng
+    /// <c>urlPatterns</c> không rỗng (ví dụ sửa tay trong DB) thì ghi Warning
+    /// để khoảng trống thi hành hiện rõ trong log thay vì lặng lẽ bỏ qua.
+    /// </summary>
+    private void WarnIfUrlPatternsPresent(JsonElement config, string mode)
+    {
+        if (config.TryGetProperty("urlPatterns", out JsonElement array)
+            && array.ValueKind == JsonValueKind.Array
+            && array.GetArrayLength() > 0)
+        {
+            _log.Warning("Rule " + mode + " có urlPatterns nhưng Agent chưa thi hành đường dẫn ở mode này, đã bỏ qua các mẫu URL.");
         }
     }
 
@@ -756,6 +873,18 @@ internal sealed class DomainRulesFile
 
     [JsonPropertyName("blockedByTime")]
     public List<TimeBlockedEntry> BlockedByTime { get; set; } = new();
+
+    /// <summary>
+    /// Mẫu URL (batch 4, cộng thêm — Version vẫn là 1): mỗi mẫu là
+    /// "host/path" (host chữ thường đã chuẩn hóa, path giữ nguyên như phụ
+    /// huynh gõ). Extension chỉ chặn đúng đường dẫn đó, các đường dẫn khác
+    /// cùng host vẫn mở được. Null = không có mẫu nào — khóa JSON được BỎ
+    /// HOÀN TOÀN khi null (WhenWritingNull, cùng mẫu với allowlistByTime) để
+    /// extension cũ không thấy khóa lạ.
+    /// </summary>
+    [JsonPropertyName("urlPatterns")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? UrlPatterns { get; set; }
 
     /// <summary>Null = không có chế độ allowlist (chỉ chặn theo danh sách); mảng = chỉ cho phép các domain này.</summary>
     [JsonPropertyName("allowlist")]
