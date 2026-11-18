@@ -138,10 +138,13 @@ public sealed class UsageRecord
 
 /// <summary>
 /// Một lượt thăm web đã tổng hợp theo domain, khớp bảng <c>web_visits</c>
-/// (migration 1 + cột <c>duration_sec</c> ở migration 4).
-/// Chỉ lưu domain + thời điểm + thời lượng (giây) — KHÔNG lưu URL, path,
-/// query hay tiêu đề trang (docs/03-SECURITY.md mục 3). family_id/device_id/
-/// child_id do server suy ra từ device đã xác thực, không gửi kèm.
+/// (migration 1 + cột <c>duration_sec</c> ở migration 4 + cờ <c>blocked</c>
+/// ở migration 10).
+/// Chỉ lưu domain + thời điểm + thời lượng (giây) + cờ bị chặn — KHÔNG lưu
+/// URL, path, query hay tiêu đề trang (docs/03-SECURITY.md mục 3). Lượt bị
+/// chặn có <see cref="Blocked"/> = true và DurationSec = 0.
+/// family_id/device_id/child_id do server suy ra từ device đã xác thực,
+/// không gửi kèm.
 /// </summary>
 public sealed class WebVisitRecord
 {
@@ -153,4 +156,7 @@ public sealed class WebVisitRecord
 
     [JsonPropertyName("duration_sec")]
     public int DurationSec { get; set; }
+
+    [JsonPropertyName("blocked")]
+    public bool Blocked { get; set; }
 }
