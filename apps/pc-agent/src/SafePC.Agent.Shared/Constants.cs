@@ -111,4 +111,7 @@ public static class StateKeys
 
     /// <summary>Mốc sàn lệnh ghi đè (ISO-8601, giờ server trong created_at của lệnh): lệnh ghi đè có created_at cũ hơn mốc này thì bị bỏ qua. Được nâng lên mỗi khi áp một lệnh ghi đè (kể cả lệnh hủy) và khi lệnh lock_now xóa ghi đè mở khóa đang hiệu lực; sống sót qua hủy/hết hạn ghi đè và khởi động lại Service, để lệnh cũ gửi lại sau không hồi sinh trạng thái đã bị thay thế. Vắng mặt = chưa từng áp lệnh ghi đè nào.</summary>
     public const string OverrideCommandFloor = "override_command_floor";
+
+    /// <summary>Mốc sàn lệnh khóa/mở (ISO-8601, giờ server trong created_at của lệnh): lệnh lock_now/unlock có created_at cũ hơn mốc này thì bị bỏ qua. Được nâng lên mỗi khi áp một lệnh lock_now hoặc unlock; sống sót qua khởi động lại Service, để lệnh khóa/mở cũ gửi lại sau (ack rớt) không lật lại trạng thái khóa do lệnh mới hơn đã đặt. Riêng biệt với mốc sàn lệnh ghi đè: ghi đè mở khóa tạm thời KHÔNG xóa cờ khóa cưỡng chế nên không được nâng mốc này. Vắng mặt = chưa từng áp lệnh khóa/mở nào, kể cả máy nâng cấp từ bản cũ — khi đó lệnh đầu tiên áp như trước.</summary>
+    public const string ForcedLockCommandFloor = "forced_lock_command_floor";
 }
