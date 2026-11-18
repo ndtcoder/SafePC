@@ -20,6 +20,7 @@ async function render() {
   const dnrBlockedEl = document.getElementById("dnr-blocked");
   const dnrAppliedEl = document.getElementById("dnr-applied");
   const dnrErrorEl = document.getElementById("dnr-error");
+  const dnrHostPermissionsEl = document.getElementById("dnr-host-permissions");
   const dnrDomainsEl = document.getElementById("dnr-domains");
   const dnrRulesEl = document.getElementById("dnr-rules");
 
@@ -105,6 +106,21 @@ async function render() {
     } else {
       dnrErrorEl.textContent = "";
       dnrErrorEl.hidden = true;
+    }
+  }
+
+  // Cảnh báo thiếu quyền host (0.1.6): chỉ hiện khi chẩn đoán ghi rõ
+  // hostPermissionsOk === false (redirect DNR chết lặng khi thiếu quyền).
+  // Chẩn đoán cũ (trước 0.1.6) không có trường này thì không hiện —
+  // fail-open, không báo động giả.
+  if (dnrHostPermissionsEl) {
+    if (dnrOk && dnr.hostPermissionsOk === false) {
+      dnrHostPermissionsEl.textContent =
+        "Thiếu quyền truy cập trang web — trang chặn có thể không hiện.";
+      dnrHostPermissionsEl.hidden = false;
+    } else {
+      dnrHostPermissionsEl.textContent = "";
+      dnrHostPermissionsEl.hidden = true;
     }
   }
 

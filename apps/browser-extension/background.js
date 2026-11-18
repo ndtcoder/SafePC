@@ -21,6 +21,11 @@
 // tập con vô điều kiện (chặn domain, mẫu URL, chặn tạm thời, trừ cho phép
 // tạm thời) — xem isTabUrlBlocked.
 //
+// Tự kiểm tra quyền host (0.1.6): redirect DNR chết lặng khi thiếu host
+// permission (bài học 0.1.4), nên background.js kiểm tra định kỳ bằng
+// chrome.permissions.contains và ghi kết quả vào chẩn đoán để popup cảnh
+// báo — xem checkHostPermissions.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -119,6 +124,11 @@ let activeHostname = null;
 let activeSince = 0;
 let windowFocused = true;
 let initStarted = false;
+// Kết quả tự kiểm tra quyền host gần nhất (xem checkHostPermissions):
+// mặc định true (fail-open) cho tới khi kiểm tra lần đầu.
+let lastHostPermissionCheckMs = 0;
+let lastHostPermissionOk = true;
+let hostPermissionCheckPromise = null;
 
 // ---------------------------------------------------------------------------
 // Native messaging (callback -> Promise, để chạy giống nhau trên Chrome/Edge)
@@ -248,11 +258,15 @@ function buildUrlPatternRegex(pattern) {
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // Ranh giới host: ([^/]*\.)? chỉ cho phép tên miền con thật — "notbing.com"
   // và "bing.com.evil.com" đều không khớp (cùng kiểu chặn như
-  // youtubeRestrictedRule). Ranh giới path: mẫu kết thúc bằng "/" là tiền tố
+  // youtubeRestrictedRule). Cổng显式 tùy chọn (?::\d+)? sau host (0.1.6,
+  // sửa MINOR-6): "bing.com:443/videos" phải khớp mẫu "bing.com/videos" —
+  // trước đây URL có cổng thoát khỏi mẫu đường dẫn. Nhóm cổng chỉ nhận
+  // ":số" nên "bing.com:443.evil.com" vẫn bị loại (sau ":443" là "." chứ
+  // không phải path). Ranh giới path: mẫu kết thúc bằng "/" là tiền tố
   // thư mục (khớp mọi thứ bên dưới); ngược lại, sau path phải hết URL hoặc
   // bắt đầu bằng / ? # — "/videos" không khớp "/videosabc".
   const boundary = path.endsWith("/") ? ".*" : "((?:[/?#].*)?)$";
-  return "^https?://([^/]*\\.)?" + escapeRe(host) + escapeRe(path) + boundary;
+  return "^https?://([^/]*\\.)?" + escapeRe(host) + "(?::\\d+)?" + escapeRe(path) + boundary;
 }
 
 function redirectRegexRule(id, priority, regexFilter, reason) {
@@ -579,11 +593,14 @@ function errorMessage(error) {
 // mỗi rule một mục {id, priority, action, pattern}. Bỏ qua mục sai hình
 // dạng, không bao giờ throw — chẩn đoán không được làm hỏng lần rebuild.
 // Pattern là mẫu của rule (urlFilter/regexFilter/requestDomains), không phải URL đã duyệt.
+// Không giới hạn số mục (0.1.6, sửa MINOR-5): danh sách phải bao hết mọi
+// rule đang áp — kể cả rule regex của mẫu URL — để khớp đúng với số lượng
+// appliedCount mà popup hiển thị; giới hạn cũ (10 mục) khiến danh sách
+// hiện ngắn hơn số lượng khi có hơn 10 rule.
 function buildRuleSummary(rules) {
   const summary = [];
   const list = Array.isArray(rules) ? rules : [];
   for (const rule of list) {
-    if (summary.length >= 10) break;
     if (!rule || typeof rule !== "object") continue;
     if (!Number.isInteger(rule.id) || !Number.isInteger(rule.priority)) continue;
     const condition = rule.condition;
@@ -603,6 +620,54 @@ function buildRuleSummary(rules) {
     });
   }
   return summary;
+}
+
+// Tự kiểm tra quyền host (0.1.6, bài học 0.1.4): rule DNR redirect BẮT
+// BUỘC phải có host permission khớp URL request — thiếu thì trình duyệt bỏ
+// qua rule lặng lẽ, không lỗi, không dấu hiệu. Hàm này kiểm tra bằng
+// chrome.permissions.contains (API này không cần khai báo thêm quyền nào
+// trong manifest) và kết quả được ghi vào chẩn đoán safepc_dnr để popup
+// cảnh báo khi thiếu. Throttle 3 phút: trạng thái quyền chỉ đổi khi người
+// dùng thu hồi thủ công trong chrome://extensions, nên không cần kiểm tra
+// mỗi lần rebuild (30 giây) hay mỗi lần điều hướng. Fail-open: API lỗi,
+// API vắng, hoặc trả về khác false đều coi như đủ quyền — chẩn đoán không
+// được báo động giả. Không bao giờ throw.
+const HOST_PERMISSION_ORIGINS = ["http://*/*", "https://*/*"];
+const HOST_PERMISSION_CHECK_INTERVAL_MS = 3 * 60 * 1000;
+
+async function checkHostPermissions() {
+  const nowMs = Date.now();
+  if (nowMs - lastHostPermissionCheckMs < HOST_PERMISSION_CHECK_INTERVAL_MS) {
+    return lastHostPermissionOk;
+  }
+  // Đang có lần kiểm tra chạy dở (rebuild chồng nhau): chờ nó thay vì gọi
+  // thêm API. Lỗi thì dùng kết quả cũ, lần sau thử lại.
+  if (hostPermissionCheckPromise) {
+    try {
+      await hostPermissionCheckPromise;
+    } catch {
+      // Dùng kết quả cũ (fail-open).
+    }
+    return lastHostPermissionOk;
+  }
+  hostPermissionCheckPromise = (async () => {
+    try {
+      if (chrome.permissions && typeof chrome.permissions.contains === "function") {
+        const granted = await chrome.permissions.contains({ origins: HOST_PERMISSION_ORIGINS });
+        lastHostPermissionOk = granted !== false;
+      }
+    } catch (error) {
+      console.warn("[SafePC] Không kiểm tra được host permissions:", error);
+    } finally {
+      lastHostPermissionCheckMs = Date.now();
+    }
+  })();
+  try {
+    await hostPermissionCheckPromise;
+  } finally {
+    hostPermissionCheckPromise = null;
+  }
+  return lastHostPermissionOk;
 }
 
 async function rebuildDynamicRules() {
@@ -644,8 +709,8 @@ async function rebuildDynamicRules() {
   // thực tế trình duyệt đang áp dụng (đọc lại sau khi cập nhật), số domain
   // đang chặn (hợp các domain chặn + chặn tạm thời chưa hết hạn, sau chuẩn
   // hóa), danh sách domain đang chặn, tóm tắt các rule đang áp dụng, lỗi
-  // của lần rebuild gần nhất. Chỉ ghi storage + console.warn, không throw,
-  // không hiện gì khác cho user.
+  // của lần rebuild gần nhất, và kết quả tự kiểm tra quyền host (0.1.6).
+  // Chỉ ghi storage + console.warn, không throw, không hiện gì khác cho user.
   let appliedRules = [];
   try {
     appliedRules = await chrome.declarativeNetRequest.getDynamicRules();
@@ -662,13 +727,25 @@ async function rebuildDynamicRules() {
   );
   const blockedUnion = new Set([...blockedDomains, ...tempBlocked]);
   const blockedCount = blockedUnion.size;
-  const blockedDomainsList = [...blockedUnion].sort().slice(0, 10);
+  // Không cắt danh sách: popup hiện "Đang chặn: N domain." kèm liệt kê,
+  // cắt ở 10 mục từng khiến số lượng và danh sách lệch nhau (cùng lớp
+  // lỗi MINOR-5 của ruleSummary, sửa chung ở 0.1.6).
+  const blockedDomainsList = [...blockedUnion].sort();
   let ruleSummary = [];
   try {
     ruleSummary = buildRuleSummary(appliedRules);
   } catch (summaryError) {
     console.warn("[SafePC] Không tóm tắt được dynamic rules:", summaryError);
     ruleSummary = [];
+  }
+  // Tự kiểm tra quyền host (0.1.6): có throttle bên trong nên lần rebuild
+  // nào cũng gọi được (khởi động + định kỳ theo alarm, không gọi mỗi lần
+  // điều hướng). Lỗi thì fail-open (true) — xem checkHostPermissions.
+  let hostPermissionsOk = true;
+  try {
+    hostPermissionsOk = await checkHostPermissions();
+  } catch (checkError) {
+    console.warn("[SafePC] Không kiểm tra được host permissions:", checkError);
   }
   try {
     await chrome.storage.local.set({
@@ -678,6 +755,7 @@ async function rebuildDynamicRules() {
         blockedDomains: blockedDomainsList,
         ruleSummary,
         error,
+        hostPermissionsOk,
         updatedAt: now.toISOString(),
       },
     });
