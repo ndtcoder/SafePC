@@ -71,6 +71,7 @@ import {
   primaryButtonClassName,
   secondaryButtonClassName,
 } from '../components/ui'
+import WebHistorySearch from './WebHistorySearch'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -979,6 +980,15 @@ export default function WeeklyReportPage() {
             </div>
           )}
         </Card>
+      )}
+
+      {selectedChildId !== '' && (
+        <div className="mt-4 sm:mt-6">
+          <WebHistorySearch
+            childId={selectedChildId}
+            childName={selectedChild?.display_name ?? 'Con'}
+          />
+        </div>
       )}
     </>
   )

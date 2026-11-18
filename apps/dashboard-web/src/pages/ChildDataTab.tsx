@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
-import { toVietnameseError } from '../lib/format'
+import { isMissingColumnError, toVietnameseError } from '../lib/format'
 import {
   AlertBox,
   Card,
@@ -316,16 +316,33 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
           .range(from, to)
         return throwOnError<AppUsage>(data as AppUsage[] | null, queryError)
       })
+      // Cột path chỉ có sau migration 19: thử đọc kèm path, nếu lỗi
+      // thiếu cột thì đọc lại không có path cho trang đó và các trang
+      // sau — xuất vẫn đủ dữ liệu cũ thay vì đánh dấu cả mục không đọc
+      // được (khác với bảng của migration chưa áp dụng).
+      let webVisitsPathSupported: boolean | null = null
       const webVisits = await readSection<WebVisit>('web_visits', async (from, to) => {
-        const { data, error: queryError } = await client
-          .from('web_visits')
-          .select(
-            'id, family_id, device_id, child_id, domain, visited_at, blocked, duration_sec, created_at',
-          )
-          .eq('child_id', childId)
-          .order('id')
-          .range(from, to)
-        return throwOnError<WebVisit>(data as WebVisit[] | null, queryError)
+        const columnsWithPath =
+          'id, family_id, device_id, child_id, domain, path, visited_at, blocked, duration_sec, created_at'
+        const columnsLegacy =
+          'id, family_id, device_id, child_id, domain, visited_at, blocked, duration_sec, created_at'
+        const runQuery = async (columns: string) =>
+          client
+            .from('web_visits')
+            .select(columns)
+            .eq('child_id', childId)
+            .order('id')
+            .range(from, to)
+        let result = await runQuery(webVisitsPathSupported === false ? columnsLegacy : columnsWithPath)
+        if (
+          result.error &&
+          webVisitsPathSupported !== false &&
+          isMissingColumnError(result.error, 'path')
+        ) {
+          webVisitsPathSupported = false
+          result = await runQuery(columnsLegacy)
+        }
+        return throwOnError<WebVisit>(result.data as WebVisit[] | null, result.error)
       })
       const auditLogs = await readSection<AuditLog>('audit_logs', async (from, to) => {
         if (devicesUnavailable) throw deviceListUnknown
