@@ -4,7 +4,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 
 ## 1. Nguyên tắc
 
-1. **Thu thập tối thiểu:** Chỉ metadata cần cho quy tắc (tên app, thời lượng, domain). Không keylogger, không nội dung, không mic/camera.
+1. **Thu thập tối thiểu:** Chỉ metadata cần cho quy tắc (tên app, thời lượng, domain + đường dẫn web đã bỏ query/fragment, giữ 90 ngày). Không keylogger, không nội dung, không mic/camera.
 2. **Minh bạch với con:** Con luôn thấy Agent đang chạy, thấy quy tắc của mình, thấy lý do bị chặn. Không chạy ẩn hoàn toàn.
 3. **Phân tách quyền:** Mật khẩu phụ huynh != mã PIN gỡ Agent != device token. Lộ 1 cái không lộ tất cả.
 4. **Mặc định từ chối:** API/DB từ chối nếu không có quyền. Không tin tưởng client (Agent/Dashboard) — mọi kiểm tra quyền làm ở server + RLS.
@@ -29,7 +29,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 | Mật khẩu | Không tự lưu. Dùng Supabase Auth (bcrypt). Không log. |
 | Device token, pairing code, PIN | Chỉ lưu hash. Không log giá trị thô. |
 | Tên app / đường dẫn exe | Hash đường dẫn, chỉ lưu tên hiển thị + hash. Tránh lộ username Windows. |
-| Domain web | Chỉ lưu domain (vd: youtube.com) + thời lượng xem (giây), cắt bỏ path/query để tránh lộ nội dung tìm kiếm. Extension chỉ gửi domain + thời lượng qua NativeHost; không gửi URL, không đọc nội dung trang. |
+| Domain web | Lưu domain (vd: youtube.com) + đường dẫn (vd: /watch, đã cắt bỏ query/fragment, trần 500 ký tự) + thời lượng xem (giây), tự xóa sau 90 ngày (migration 19). Extension chỉ gửi domain + đường dẫn + thời lượng qua NativeHost; không gửi URL đầy đủ, không đọc nội dung trang. Lượt web bị chặn chỉ lưu domain, không có đường dẫn. |
 | Tiêu đề cửa sổ | MVP: KHÔNG thu thập. Chỉ lấy tên process. Nếu giai đoạn 3 cần, phải có opt-in + lọc từ khóa tại chỗ, không gửi nguyên văn lên server. |
 | Ảnh chụp màn hình | Mặc định TẮT. Nếu bật: mã hóa, tự xóa sau 7 ngày, con thấy rõ khi nào bị chụp. |
 | IP | Chỉ lưu hash IP cho audit, không lưu IP thô quá 30 ngày. |
@@ -56,10 +56,10 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - [ ] Log local không chứa token/mật khẩu. Log tự xoay vòng, tối đa 10MB.
 
 **Extension (Sprint 2 đợt 2, đã triển khai):**
-- Quyền tối thiểu: chỉ `declarativeNetRequest`, `tabs` (lấy hostname của tab đang hiển thị để đếm giờ, bỏ URL ngay), `alarms`, `storage`, `nativeMessaging`. Không `host_permissions` (DNR không cần), không `declarativeNetRequestFeedback`, không `webRequest`, không `cookies`. Không gửi full URL lên server.
+- Quyền tối thiểu: chỉ `declarativeNetRequest`, `tabs` (lấy hostname + đường dẫn của tab đang hiển thị để đếm giờ và ghi lịch sử web, bỏ query/fragment và URL ngay), `alarms`, `storage`, `nativeMessaging`. Không `host_permissions` (DNR không cần), không `declarativeNetRequestFeedback`, không `webRequest`, không `cookies`. Không gửi full URL lên server.
 - Ranh giới NativeHost: host stdio (`com.safepc.agent`) chỉ đọc/ghi trong `%ProgramData%\SafePC\shared\`, không bao giờ chạm tới file token hay database của Service, không gọi mạng, không chạy lệnh. Input xấu không làm crash host (log stderr, trả ack false). Manifest `allowed_origins` hiện là ID extension placeholder — ID thật lấy từ store publishing (xem `apps/browser-extension/README.md`).
 - ACL file chia sẻ: thư mục `shared/` có SYSTEM toàn quyền + Users chỉ đọc (kế thừa), cộng quyền tạo file chỉ ở mức thư mục để NativeHost ghi `web_usage.jsonl`; bản thân `domain_rules.json` có ACL riêng ở cấp file (SYSTEM + Administrators toàn quyền, Users chỉ đọc, không kế thừa) nên tài khoản Standard không sửa/xóa được quy tắc. Đặt ACL là best-effort, thất bại thì log cảnh báo.
-- Thu thập tối thiểu: extension chỉ thu thập domain + thời lượng xem; không tiêu đề trang, không nội dung, không phím gõ, không mic/camera. Khi chưa nối được NativeHost thì fail-open và báo rõ trạng thái chưa kết nối.
+- Thu thập tối thiểu: extension chỉ thu thập domain + đường dẫn (đã bỏ query/fragment) + thời lượng xem, tự xóa sau 90 ngày; không tiêu đề trang, không nội dung, không phím gõ, không mic/camera. Khi chưa nối được NativeHost thì fail-open và báo rõ trạng thái chưa kết nối.
 - [ ] Cứng hóa sau: đăng extension lên store + ép cài bằng chính sách `ExtensionInstallForcelist` (bản unpacked hiện có thể bị Standard User tắt — giới hạn đã ghi rõ trong README của extension).
 
 **Thi hành theo app / nghỉ bắt buộc / cảnh báo can thiệp (Sprint 2 đợt 3, đã triển khai):**
