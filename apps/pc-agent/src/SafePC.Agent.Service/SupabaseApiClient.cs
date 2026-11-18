@@ -265,12 +265,15 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
-    /// Gửi một batch web visits lên bảng web_visits (migration 4). Hình dạng
-    /// payload: mỗi sample là {domain, visited_at, duration_sec}, khớp cột
-    /// recordset của RPC <c>safepc_push_web_visits</c> và cột bảng
-    /// web_visits. family_id/child_id/device_id do server suy ra từ device
-    /// đã xác thực. Trả về true chỉ khi server xác nhận đã nhận (để nơi gọi
-    /// cắt file web_usage.jsonl); false thì giữ file lại gửi sau.
+    /// Gửi một batch web visits lên bảng web_visits (migration 4, sửa ở
+    /// migration 10 thêm cờ blocked, migration 19 thêm đường dẫn). Hình
+    /// dạng payload: mỗi sample là {domain, path, visited_at,
+    /// duration_sec, blocked}, khớp cột recordset của RPC
+    /// <c>safepc_push_web_visits</c> và cột bảng web_visits. Sample thiếu
+    /// path (client cũ) thì RPC ghi NULL — client cũ vẫn chạy. family_id/
+    /// child_id/device_id do server suy ra từ device đã xác thực. Trả về
+    /// true chỉ khi server xác nhận đã nhận (để nơi gọi cắt file
+    /// web_usage.jsonl); false thì giữ file lại gửi sau.
     /// </summary>
     public async Task<bool> SendWebVisitsAsync(IReadOnlyList<WebVisitRecord> records, CancellationToken ct)
     {
@@ -293,6 +296,7 @@ public sealed class SupabaseApiClient
             samples.Add(new
             {
                 domain = record.Domain,
+                path = record.Path,
                 visited_at = record.VisitedAt,
                 duration_sec = record.DurationSec,
                 blocked = record.Blocked,

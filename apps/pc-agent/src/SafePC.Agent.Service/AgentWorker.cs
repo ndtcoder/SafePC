@@ -1015,7 +1015,7 @@ public sealed class AgentWorker : BackgroundService
     }
 
     /// <summary>
-    /// Phân tích một dòng JSONL {domain, startedAt, durationSec}. Trả về null
+    /// Phân tích một dòng JSONL {domain, startedAt, durationSec, blocked?, path?}. Trả về null
     /// khi thiếu/sai trường. Domain phải dài 1-253 ký tự, không chứa khoảng
     /// trắng, '/', '?' hay '#'; thời lượng kẹp về 0..86400 (khớp RPC).
     /// Không log giá trị domain — chỉ đếm dòng lỗi ở nơi gọi.
@@ -1097,7 +1097,32 @@ public sealed class AgentWorker : BackgroundService
                 blocked = blockedElement.GetBoolean();
             }
 
-            return new WebVisitRecord { Domain = domain, VisitedAt = visitedAt, DurationSec = durationSec, Blocked = blocked };
+            // Đường dẫn (migration 19, extension 0.1.10): dòng cũ không
+            // có trường này thì coi là không có đường dẫn; có mà không
+            // phải chuỗi thì dòng không hợp lệ (cùng độ nghiêm với cờ
+            // blocked). Chuỗi thì cắt lại qua WebVisitPath — phòng thủ
+            // theo chiều sâu vì file JSONL nằm ở thư mục chia sẻ, dòng
+            // viết tay có thể mang query/fragment; cắt không ra đường
+            // dẫn dùng được thì giữ lượt thăm ở dạng chỉ-domain, không
+            // vứt cả dòng. Lượt bị chặn không mang đường dẫn.
+            string? path = null;
+            if (root.TryGetProperty("path", out JsonElement pathElement))
+            {
+                if (pathElement.ValueKind != JsonValueKind.String
+                    || pathElement.GetString() is not string rawPath)
+                {
+                    return null;
+                }
+
+                path = WebVisitPath.Sanitize(rawPath);
+            }
+
+            if (blocked)
+            {
+                path = null;
+            }
+
+            return new WebVisitRecord { Domain = domain, Path = path, VisitedAt = visitedAt, DurationSec = durationSec, Blocked = blocked };
         }
     }
 
