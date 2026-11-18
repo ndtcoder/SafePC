@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { OfflineBanner, primaryButtonClassName, secondaryButtonClassName } from './ui'
 
 const NAV_ITEMS = [
   { to: '/hom-nay', label: 'Hôm nay' },
@@ -12,8 +13,8 @@ const NAV_ITEMS = [
 
 function navLinkClassName({ isActive }: { isActive: boolean }): string {
   return isActive
-    ? 'block rounded-lg bg-indigo-600 px-3 py-2.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2'
-    : 'block rounded-lg px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2'
+    ? 'flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2'
+    : 'flex min-h-[44px] items-center rounded-lg px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2'
 }
 
 /** Icon vẽ tay (không thêm dependency) cho thanh tab dưới cùng trên điện thoại. */
@@ -118,7 +119,7 @@ export default function Layout() {
                 <button
                   type="button"
                   onClick={handleSignOut}
-                  className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 motion-reduce:transition-none"
+                  className={secondaryButtonClassName}
                 >
                   Đăng xuất
                 </button>
@@ -126,7 +127,7 @@ export default function Layout() {
             ) : (
               <Link
                 to="/dang-nhap"
-                className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 motion-reduce:transition-none"
+                className={primaryButtonClassName}
               >
                 Đăng nhập
               </Link>
@@ -134,6 +135,8 @@ export default function Layout() {
           </div>
         </div>
       </header>
+
+      <OfflineBanner />
 
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-4 sm:px-6 sm:py-6 lg:flex-row lg:items-start">
         {/* Sidebar — chỉ hiện từ màn hình lớn; trên điện thoại dùng thanh tab dưới cùng. */}

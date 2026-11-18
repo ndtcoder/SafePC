@@ -24,6 +24,7 @@ import {
   type WeekdayNumber,
 } from '../lib/ruleConfig'
 import {
+  checkboxClassName,
   chipClassName,
   dangerOutlineButtonClassName,
   inputClassName,
@@ -262,7 +263,7 @@ export function BedtimeForm({
                 type="checkbox"
                 checked={day.enabled}
                 onChange={(e) => setDay(value, { enabled: e.target.checked })}
-                className="h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
+                className={checkboxClassName}
               />
               {label}
             </label>
@@ -522,7 +523,7 @@ export function BlockDomainsForm({
                 type="checkbox"
                 checked={draft.categories.includes(category.value)}
                 onChange={(e) => toggleCategory(category.value, e.target.checked)}
-                className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
+                className={`mt-0.5 ${checkboxClassName}`}
               />
               <span>
                 <span className="block font-medium">{category.label}</span>
@@ -685,7 +686,7 @@ export function SafeSearchForm({
           type="checkbox"
           checked={draft.searchProviders}
           onChange={(e) => onChange({ ...draft, searchProviders: e.target.checked })}
-          className="h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
+          className={checkboxClassName}
         />
         Bật SafeSearch cho công cụ tìm kiếm (Google, Bing…)
       </label>
@@ -694,7 +695,7 @@ export function SafeSearchForm({
           type="checkbox"
           checked={draft.youtubeRestricted}
           onChange={(e) => onChange({ ...draft, youtubeRestricted: e.target.checked })}
-          className="h-5 w-5 shrink-0 rounded border-slate-300 accent-indigo-600"
+          className={checkboxClassName}
         />
         Bật chế độ hạn chế của YouTube (Restricted Mode)
       </label>

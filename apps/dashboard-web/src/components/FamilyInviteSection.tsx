@@ -15,10 +15,12 @@ import {
 } from '../lib/familyInvites'
 import { formatDateTimeVi, toVietnameseError } from '../lib/format'
 import {
+  AlertBox,
   Card,
   ErrorState,
   Field,
   LoadingState,
+  MigrationMissingState,
   dangerOutlineButtonClassName,
   inputClassName,
   primaryButtonClassName,
@@ -266,16 +268,11 @@ export default function FamilyInviteSection() {
   if (missingMigration) {
     return (
       <Card title="Mời phụ huynh thứ hai">
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4" role="status">
-          <p className="text-sm font-medium text-amber-900">Tính năng này chưa sẵn sàng</p>
-          <p className="mt-1 text-sm text-amber-800">
-            Tính năng này cần migration 14 (bảng lời mời + 3 hàm xử lý). Hãy áp dụng file{' '}
-            <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-xs">
-              20261118190000_family_invites.sql
-            </code>{' '}
-            trong thư mục backend/supabase/migrations/ qua Supabase SQL Editor, rồi tải lại trang.
-          </p>
-        </div>
+        <MigrationMissingState
+          title="Tính năng này chưa sẵn sàng"
+          detail="migration 14 (bảng lời mời + 3 hàm xử lý)"
+          file="20261118190000_family_invites.sql"
+        />
       </Card>
     )
   }
@@ -289,14 +286,14 @@ export default function FamilyInviteSection() {
       </p>
 
       {actionMessage && (
-        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+        <AlertBox tone="success" className="mt-4">
           {actionMessage}
-        </div>
+        </AlertBox>
       )}
       {actionError && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+        <AlertBox tone="error" className="mt-4">
           {actionError}
-        </div>
+        </AlertBox>
       )}
 
       <div className="mt-4 space-y-3">
