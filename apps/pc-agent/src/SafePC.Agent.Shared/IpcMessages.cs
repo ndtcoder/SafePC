@@ -119,9 +119,13 @@ public sealed record RemainingTimeRequestPayload(string RequestId);
 /// Payload của <see cref="IpcMessageTypes.RemainingTimeResponse"/>.
 /// <c>Decision</c>: "allow" | "warn" | "lock" | "unknown" (Service chưa đánh
 /// giá lần nào). <c>MinutesLeft</c> null = không giới hạn (hoặc chưa biết).
+/// <c>BonusMinutes</c>: phút thưởng thêm đang hiệu lực (ghi đè bonus_minutes
+/// còn hạn — ngân hàng giờ), null khi không có; Tray hiện cho con thấy giờ
+/// thưởng của mình. Tham số tùy chọn để phía gửi cũ (self-test giả lập)
+/// vẫn biên dịch và phía nhận cũ vẫn giải mã được khi thiếu trường này.
 /// <c>RequestId</c> vọng lại id của câu hỏi.
 /// </summary>
-public sealed record RemainingTimeResponsePayload(string Decision, int? MinutesLeft, string Reason, DateTimeOffset EvaluatedAt, string RequestId);
+public sealed record RemainingTimeResponsePayload(string Decision, int? MinutesLeft, string Reason, DateTimeOffset EvaluatedAt, string RequestId, int? BonusMinutes = null);
 
 /// <summary>
 /// Payload của <see cref="IpcMessageTypes.PinVerifyRequest"/>: PIN con/người
