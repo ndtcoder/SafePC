@@ -362,12 +362,16 @@ export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
 export type BlockDomainsConfig = {
   mode: 'block_domains'
   domains: string[]
+  /** Đường dẫn chặn theo tiền tố (đợt 4): "host/path", vd "bing.com/videos". Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[]
 }
 
 /** Chặn các domain trong danh sách, chỉ trong các khung giờ theo thứ. */
 export type BlockDomainsByTimeConfig = {
   mode: 'block_domains_by_time'
   domains: string[]
+  /** Đường dẫn chặn theo tiền tố (đợt 4), cùng khung giờ với `domains`. Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[]
   windowsByWeekday: WindowsByWeekday
 }
 
@@ -375,6 +379,8 @@ export type BlockDomainsByTimeConfig = {
 export type AllowlistConfig = {
   mode: 'allowlist'
   domains: string[]
+  /** Đường dẫn cho phép theo tiền tố (đợt 4): "host/path". Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[]
 }
 
 /**
@@ -386,6 +392,8 @@ export type AllowlistConfig = {
 export type AllowlistByTimeConfig = {
   mode: 'allowlist_by_time'
   domains: string[]
+  /** Đường dẫn cho phép theo tiền tố (đợt 4), cùng khung giờ với `domains`. Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[]
   windowsByWeekday: WindowsByWeekday
 }
 
@@ -393,6 +401,8 @@ export type AllowlistByTimeConfig = {
 export type DomainTimeLimitConfig = {
   mode: 'domain_time_limit'
   domains: string[]
+  /** Đường dẫn giới hạn theo tiền tố (đợt 4): "host/path". Vắng mặt = không có quy tắc đường dẫn. */
+  urlPatterns?: string[]
   minutes_per_day: number
 }
 
@@ -627,6 +637,149 @@ export function validateWebsiteDomainsText(text: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Đường dẫn website (đợt 4): mục nhập "host/path" chỉ khớp các link bắt
+// đầu bằng đúng phần đó (vd "bing.com/videos" chặn video trên Bing nhưng
+// không chặn "bing.com/abc"). Hợp đồng với PC Agent / extension:
+// host chữ thường, không scheme, không khoảng trắng; path giữ nguyên như
+// đã gõ (kể cả chữ hoa); không lưu ký tự đại diện (*).
+// ---------------------------------------------------------------------------
+
+/**
+ * Chuẩn hoá một mục nhập đường dẫn thành "host/path": host chuẩn hoá như
+ * `normalizeDomain` (bỏ scheme/userinfo, chữ thường, bỏ dấu chấm ở
+ * đầu/cuối); path giữ nguyên như đã gõ (kể cả chữ hoa), chỉ bỏ
+ * query/fragment. Hàm này không kiểm tra tính hợp lệ — xem
+ * `urlPatternError`. Mục không có dấu / thì trả về hostname đã chuẩn hoá
+ * (nơi gọi phân loại domain/đường dẫn trước bằng dấu /). Dấu / cuối của
+ * path (khi path dài hơn 1 ký tự) được bỏ, để "bing.com/videos/" cũng
+ * khớp "/videos" như "bing.com/videos".
+ */
+export function normalizeUrlPattern(raw: string): string {
+  let value = raw.trim()
+  const schemeIndex = value.indexOf('://')
+  if (schemeIndex >= 0) value = value.slice(schemeIndex + 3)
+  else if (value.startsWith('//')) value = value.slice(2)
+  const slashIndex = value.indexOf('/')
+  if (slashIndex < 0) return normalizeDomain(value)
+  const host = normalizeDomain(value.slice(0, slashIndex))
+  let path = value.slice(slashIndex)
+  const cutAt = path.search(/[?#]/)
+  if (cutAt >= 0) path = path.slice(0, cutAt)
+  if (path.length > 1) path = path.replace(/\/+$/, '')
+  return `${host}${path}`
+}
+
+/**
+ * Kiểm tra một đường dẫn ĐÃ chuẩn hoá bằng `normalizeUrlPattern`. Trả về
+ * null khi hợp lệ, ngược lại trả về thông báo lỗi tiếng Việt (không kèm
+ * tên mục nhập — nơi gọi sẽ gắn tên mục nhập vào, như `domainError`).
+ * Host phải là domain hợp lệ (dùng chung `domainError`); path phải bắt
+ * đầu bằng "/" và có ít nhất một ký tự sau dấu / đó (một mình "/" thì
+ * gần như cả domain, hãy gõ domain trần thay cho nó), không được chứa
+ * khoảng trắng, ký tự đại diện (*) hay ký tự điều khiển.
+ */
+export function urlPatternError(pattern: string): string | null {
+  if (pattern === '') return 'Đường dẫn không được để trống.'
+  if (/\s/.test(pattern)) return 'Đường dẫn không được chứa khoảng trắng.'
+  if (pattern.includes('*')) {
+    return 'Đường dẫn không được chứa ký tự đại diện (*). Hãy gõ đúng phần đầu của link, ví dụ bing.com/videos.'
+  }
+  if (pattern.length > 512) return 'Đường dẫn quá dài (tối đa 512 ký tự).'
+  const slashIndex = pattern.indexOf('/')
+  if (slashIndex < 0) {
+    return 'Đường dẫn phải có dạng "tên miền/đường dẫn", ví dụ bing.com/videos.'
+  }
+  const host = pattern.slice(0, slashIndex)
+  if (host === '') return 'Thiếu tên miền trước dấu /, ví dụ bing.com/videos.'
+  const hostError = domainError(host)
+  if (hostError) return hostError
+  if (pattern.slice(slashIndex) === '/') {
+    return 'Chỉ có dấu / sau tên miền thì gần như cả domain sẽ bị chặn. Hãy gõ tên miền không kèm dấu / (ví dụ bing.com) để chặn cả domain, hoặc gõ thêm phần đường dẫn (ví dụ bing.com/videos).'
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1F\x7F]/.test(pattern)) return 'Đường dẫn không được chứa ký tự điều khiển.'
+  return null
+}
+
+export interface ParsedWebsiteEntries {
+  domains: string[]
+  urlPatterns: string[]
+  error: string | null
+}
+
+/**
+ * Tách chuỗi nhập thành danh sách domain và danh sách đường dẫn, mỗi danh
+ * sách đã chuẩn hoá và loại trùng (giữ thứ tự nhập). Định dạng như
+ * `parseDomainsInput` (mỗi dòng một mục, dấu phẩy cũng được chấp nhận).
+ * Phân loại theo hợp đồng đợt 4: sau khi trim và bỏ scheme, mục còn dấu
+ * / thì là đường dẫn, ngược lại là domain. Gặp mục nhập không hợp lệ thì
+ * dừng và trả về lỗi kèm đúng mục đó (không bao giờ lưu lặng lẽ mục sai);
+ * cả hai danh sách rỗng cũng là lỗi.
+ */
+export function parseWebsiteEntriesInput(text: string): ParsedWebsiteEntries {
+  const seenDomains = new Set<string>()
+  const seenPatterns = new Set<string>()
+  const domains: string[] = []
+  const urlPatterns: string[] = []
+  for (const rawEntry of text.split(/[\r\n,]+/)) {
+    const raw = rawEntry.trim()
+    if (raw === '') continue
+    let probe = raw
+    const schemeIndex = probe.indexOf('://')
+    if (schemeIndex >= 0) probe = probe.slice(schemeIndex + 3)
+    else if (probe.startsWith('//')) probe = probe.slice(2)
+    if (probe.includes('/')) {
+      const normalized = normalizeUrlPattern(raw)
+      const error = urlPatternError(normalized)
+      if (error) return { domains: [], urlPatterns: [], error: `“${raw}”: ${error}` }
+      if (!seenPatterns.has(normalized)) {
+        seenPatterns.add(normalized)
+        urlPatterns.push(normalized)
+      }
+    } else {
+      const normalized = normalizeDomain(raw)
+      const error = domainError(normalized)
+      if (error) return { domains: [], urlPatterns: [], error: `“${raw}”: ${error}` }
+      if (!seenDomains.has(normalized)) {
+        seenDomains.add(normalized)
+        domains.push(normalized)
+      }
+    }
+  }
+  if (domains.length === 0 && urlPatterns.length === 0) {
+    return {
+      domains: [],
+      urlPatterns: [],
+      error: 'Hãy nhập ít nhất một domain hoặc một đường dẫn (ví dụ: youtube.com hoặc bing.com/videos).',
+    }
+  }
+  return { domains, urlPatterns, error: null }
+}
+
+export function validateWebsiteEntriesText(text: string): string | null {
+  return parseWebsiteEntriesInput(text).error
+}
+
+/**
+ * Kiểm tra ô nhập của các mode website CHƯA thi hành đường dẫn (allowlist,
+ * chặn theo giờ, allowlist theo giờ, giới hạn thời gian): chấp nhận domain
+ * như `validateWebsiteEntriesText`, nhưng từ chối mọi mục đường dẫn vì
+ * Agent hiện chỉ thi hành `urlPatterns` ở mode "block_domains". Trả về
+ * lỗi parse (nếu có) hoặc lỗi từ chối đường dẫn, ngược lại null. Các hàm
+ * build* vẫn giữ `urlPatterns` khi đọc lại config đã lưu, để rule cũ có
+ * đường dẫn không bị cắt lặng lẽ thành cả domain khi sửa/lưu lại — chỉ
+ * không lưu được cho tới khi phụ huynh xóa các dòng đường dẫn.
+ */
+export function rejectUrlPatternsError(text: string): string | null {
+  const parsed = parseWebsiteEntriesInput(text)
+  if (parsed.error) return parsed.error
+  if (parsed.urlPatterns.length > 0) {
+    return 'Quy tắc đường dẫn (mục có dấu /, ví dụ bing.com/videos) hiện chỉ dùng được trong quy tắc "Chặn website". Hãy nhập domain, hoặc chuyển sang quy tắc "Chặn website".'
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Đọc config website đã lưu (kèm tương thích hình dạng cũ) -> dạng chuẩn.
 // Trả về null khi không nhận dạng được (mode lạ và không có domain nào).
 // ---------------------------------------------------------------------------
@@ -662,6 +815,26 @@ function readStoredDomains(config: Record<string, unknown>, key = 'domains'): st
     }
   }
   return domains
+}
+
+/**
+ * Đọc danh sách đường dẫn từ config đã lưu (khóa `urlPatterns`, đợt 4),
+ * chỉ giữ các mục hợp lệ sau chuẩn hoá (đọc khoan dung như
+ * `readStoredDomains` để phần mô tả/sửa không vỡ khi gặp dữ liệu lạ).
+ * Path giữ nguyên chữ hoa/chữ thường như đã lưu; host chuẩn hoá chữ thường.
+ */
+function readStoredUrlPatterns(config: Record<string, unknown>): string[] {
+  const rawEntries = asStringArray(config['urlPatterns'])
+  const seen = new Set<string>()
+  const patterns: string[] = []
+  for (const raw of rawEntries) {
+    const normalized = normalizeUrlPattern(raw)
+    if (urlPatternError(normalized) === null && !seen.has(normalized)) {
+      seen.add(normalized)
+      patterns.push(normalized)
+    }
+  }
+  return patterns
 }
 
 /**
@@ -720,22 +893,23 @@ const APP_MODES: AppMode[] = [
 export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConfig | null {
   const modeRaw = config['mode']
   const domains = readStoredDomains(config)
+  const urlPatterns = readStoredUrlPatterns(config)
   if (typeof modeRaw === 'string') {
     if (!WEBSITE_MODES.includes(modeRaw as WebsiteMode)) return null
     const mode = modeRaw as WebsiteMode
     switch (mode) {
       case 'block_domains':
-        return { mode, domains }
+        return { mode, domains, urlPatterns }
       case 'block_domains_by_time':
-        return { mode, domains, windowsByWeekday: parseTimeWindowConfig(config) }
+        return { mode, domains, urlPatterns, windowsByWeekday: parseTimeWindowConfig(config) }
       case 'allowlist':
-        return { mode, domains }
+        return { mode, domains, urlPatterns }
       case 'allowlist_by_time':
-        return { mode, domains, windowsByWeekday: parseTimeWindowConfig(config) }
+        return { mode, domains, urlPatterns, windowsByWeekday: parseTimeWindowConfig(config) }
       case 'domain_time_limit': {
         const minutes =
           asNonNegativeInt(config['minutes_per_day']) ?? asNonNegativeInt(config['minutes']) ?? 0
-        return { mode, domains, minutes_per_day: minutes }
+        return { mode, domains, urlPatterns, minutes_per_day: minutes }
       }
       case 'safe_search':
         return {
@@ -754,9 +928,10 @@ export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConf
   }
   // Không có mode: hình dạng cũ (1 domain + action) hoặc mảng domains trần.
   // `action: "allow"` cũ được hiểu như allowlist 1 domain; còn lại là chặn.
-  if (domains.length === 0) return null
-  if (config['action'] === 'allow') return { mode: 'allowlist', domains }
-  return { mode: 'block_domains', domains }
+  // Config chỉ có urlPatterns (không mode, không domain) cũng hiểu như chặn.
+  if (domains.length === 0 && urlPatterns.length === 0) return null
+  if (config['action'] === 'allow') return { mode: 'allowlist', domains, urlPatterns }
+  return { mode: 'block_domains', domains, urlPatterns }
 }
 
 // ---------------------------------------------------------------------------
@@ -870,17 +1045,22 @@ export function emptyFocusDraft(): FocusDraft {
   return { windows: emptyTimeWindowDraft(), allowedDomainsText: '', apps: [{ exe: '', name: '' }] }
 }
 
+/** Ghép domain + đường dẫn đã lưu thành văn bản ô nhập (mỗi dòng một mục), để sửa rule không mất mục nào ở mảng nào. */
+function entriesToDomainsText(domains: string[], urlPatterns: string[] | undefined): string {
+  return [...domains, ...(urlPatterns ?? [])].join('\n')
+}
+
 export function websiteConfigToDomainsDraft(config: WebsiteConfig | null): WebsiteDomainsDraft {
   if (!config || config.mode === 'safe_search' || config.mode === 'focus') {
     return emptyWebsiteDomainsDraft()
   }
-  return { domainsText: config.domains.join('\n') }
+  return { domainsText: entriesToDomainsText(config.domains, config.urlPatterns) }
 }
 
 export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): BlockDomainsByTimeDraft {
   const draft = emptyBlockDomainsByTimeDraft()
   if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
-  draft.domainsText = config.domains.join('\n')
+  draft.domainsText = entriesToDomainsText(config.domains, config.urlPatterns)
   if (config.mode === 'block_domains_by_time') {
     draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
   }
@@ -892,7 +1072,7 @@ export function websiteConfigToAllowlistByTimeDraft(
 ): AllowlistByTimeDraft {
   const draft = emptyAllowlistByTimeDraft()
   if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
-  draft.domainsText = config.domains.join('\n')
+  draft.domainsText = entriesToDomainsText(config.domains, config.urlPatterns)
   if (config.mode === 'allowlist_by_time') {
     draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
   }
@@ -902,7 +1082,7 @@ export function websiteConfigToAllowlistByTimeDraft(
 export function websiteConfigToTimeLimitDraft(config: WebsiteConfig | null): DomainTimeLimitDraft {
   const draft = emptyDomainTimeLimitDraft()
   if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
-  draft.domainsText = config.domains.join('\n')
+  draft.domainsText = entriesToDomainsText(config.domains, config.urlPatterns)
   if (config.mode === 'domain_time_limit' && config.minutes_per_day > 0) {
     draft.minutes = String(config.minutes_per_day)
   }
@@ -933,44 +1113,58 @@ export function websiteConfigToFocusDraft(config: WebsiteConfig | null): FocusDr
 // ---------------------------------------------------------------------------
 
 export function buildBlockDomainsConfig(domainsText: string): BlockDomainsConfig {
-  return { mode: 'block_domains', domains: parseDomainsInput(domainsText).domains }
+  const parsed = parseWebsiteEntriesInput(domainsText)
+  return {
+    mode: 'block_domains',
+    domains: parsed.domains,
+    ...(parsed.urlPatterns.length > 0 ? { urlPatterns: parsed.urlPatterns } : {}),
+  }
 }
 
 export function buildAllowlistConfig(domainsText: string): AllowlistConfig {
-  return { mode: 'allowlist', domains: parseDomainsInput(domainsText).domains }
+  const parsed = parseWebsiteEntriesInput(domainsText)
+  return {
+    mode: 'allowlist',
+    domains: parsed.domains,
+    ...(parsed.urlPatterns.length > 0 ? { urlPatterns: parsed.urlPatterns } : {}),
+  }
 }
 
 export function validateBlockDomainsByTimeDraft(draft: BlockDomainsByTimeDraft): string | null {
-  const domainsError = validateWebsiteDomainsText(draft.domainsText)
-  if (domainsError) return domainsError
+  const entriesError = rejectUrlPatternsError(draft.domainsText)
+  if (entriesError) return entriesError
   return validateTimeWindowDraft(draft.windows)
 }
 
 export function buildBlockDomainsByTimeConfig(draft: BlockDomainsByTimeDraft): BlockDomainsByTimeConfig {
+  const parsed = parseWebsiteEntriesInput(draft.domainsText)
   return {
     mode: 'block_domains_by_time',
-    domains: parseDomainsInput(draft.domainsText).domains,
+    domains: parsed.domains,
+    ...(parsed.urlPatterns.length > 0 ? { urlPatterns: parsed.urlPatterns } : {}),
     windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
   }
 }
 
 export function validateAllowlistByTimeDraft(draft: AllowlistByTimeDraft): string | null {
-  const domainsError = validateWebsiteDomainsText(draft.domainsText)
-  if (domainsError) return domainsError
+  const entriesError = rejectUrlPatternsError(draft.domainsText)
+  if (entriesError) return entriesError
   return validateTimeWindowDraft(draft.windows)
 }
 
 export function buildAllowlistByTimeConfig(draft: AllowlistByTimeDraft): AllowlistByTimeConfig {
+  const parsed = parseWebsiteEntriesInput(draft.domainsText)
   return {
     mode: 'allowlist_by_time',
-    domains: parseDomainsInput(draft.domainsText).domains,
+    domains: parsed.domains,
+    ...(parsed.urlPatterns.length > 0 ? { urlPatterns: parsed.urlPatterns } : {}),
     windowsByWeekday: timeWindowDraftToConfig(draft.windows).windowsByWeekday,
   }
 }
 
 export function validateDomainTimeLimitDraft(draft: DomainTimeLimitDraft): string | null {
-  const domainsError = validateWebsiteDomainsText(draft.domainsText)
-  if (domainsError) return domainsError
+  const entriesError = rejectUrlPatternsError(draft.domainsText)
+  if (entriesError) return entriesError
   const text = draft.minutes.trim()
   if (text === '') return 'Hãy nhập số phút giới hạn mỗi ngày.'
   const minutes = Number(text)
@@ -981,9 +1175,11 @@ export function validateDomainTimeLimitDraft(draft: DomainTimeLimitDraft): strin
 }
 
 export function buildDomainTimeLimitConfig(draft: DomainTimeLimitDraft): DomainTimeLimitConfig {
+  const parsed = parseWebsiteEntriesInput(draft.domainsText)
   return {
     mode: 'domain_time_limit',
-    domains: parseDomainsInput(draft.domainsText).domains,
+    domains: parsed.domains,
+    ...(parsed.urlPatterns.length > 0 ? { urlPatterns: parsed.urlPatterns } : {}),
     minutes_per_day: Number(draft.minutes.trim()),
   }
 }

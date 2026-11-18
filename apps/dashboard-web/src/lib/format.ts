@@ -286,24 +286,68 @@ function formatDomainList(domains: string[]): string {
   return `${domains.slice(0, 8).join(', ')} và ${domains.length - 8} domain khác`
 }
 
+/** Liệt kê đường dẫn gọn: tối đa 8 mục, còn lại gộp thành "và N đường dẫn khác". */
+function formatPatternList(patterns: string[]): string {
+  if (patterns.length <= 8) return patterns.join(', ')
+  return `${patterns.slice(0, 8).join(', ')} và ${patterns.length - 8} đường dẫn khác`
+}
+
 /**
  * Mô tả quy tắc website theo chế độ (mode). Không bao giờ throw: config
  * thiếu/khuyết (vd chưa có domain nào) được mô tả bằng câu chung chung.
+ * Quy tắc có cả domain và đường dẫn thì liệt kê riêng từng danh sách:
+ * domain chặn/cho phép cả domain (kể cả tên miền con), đường dẫn chỉ
+ * khớp các link bắt đầu bằng phần đó. Quy tắc chỉ có domain thì mô tả
+ * giữ nguyên từng chữ như trước đợt 4.
  */
 function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
   switch (parsed.mode) {
-    case 'block_domains':
-      if (parsed.domains.length === 0) return ['Chặn website (chưa có domain nào).']
-      return [`Chặn: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`]
-    case 'allowlist':
-      if (parsed.domains.length === 0) return ['Chỉ cho phép một số website (chưa có domain nào).']
-      return [`Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con) — mọi website khác đều bị chặn`]
-    case 'allowlist_by_time': {
+    case 'block_domains': {
+      const patterns = parsed.urlPatterns ?? []
+      if (parsed.domains.length === 0 && patterns.length === 0) {
+        return ['Chặn website (chưa có domain nào).']
+      }
       const lines: string[] = []
-      if (parsed.domains.length === 0) {
+      if (parsed.domains.length > 0) {
+        lines.push(`Chặn: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+      }
+      if (patterns.length > 0) {
+        lines.push(`Chặn: ${formatPatternList(patterns)} (chỉ link bắt đầu bằng phần này)`)
+      }
+      return lines
+    }
+    case 'allowlist': {
+      const patterns = parsed.urlPatterns ?? []
+      if (parsed.domains.length === 0 && patterns.length === 0) {
+        return ['Chỉ cho phép một số website (chưa có domain nào).']
+      }
+      const lines: string[] = []
+      if (parsed.domains.length > 0) {
+        lines.push(
+          `Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con) — mọi website khác đều bị chặn`,
+        )
+      }
+      if (patterns.length > 0) {
+        lines.push(
+          `Chỉ cho phép đường dẫn: ${formatPatternList(patterns)} (chỉ link bắt đầu bằng phần này) — mọi website khác đều bị chặn`,
+        )
+      }
+      return lines
+    }
+    case 'allowlist_by_time': {
+      const patterns = parsed.urlPatterns ?? []
+      const lines: string[] = []
+      if (parsed.domains.length === 0 && patterns.length === 0) {
         lines.push('Chỉ cho phép một số website theo giờ (chưa có domain nào).')
       } else {
-        lines.push(`Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+        if (parsed.domains.length > 0) {
+          lines.push(`Chỉ cho phép: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+        }
+        if (patterns.length > 0) {
+          lines.push(
+            `Chỉ cho phép đường dẫn: ${formatPatternList(patterns)} (chỉ link bắt đầu bằng phần này)`,
+          )
+        }
       }
       const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
       for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
@@ -319,13 +363,32 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
       return lines
     }
     case 'domain_time_limit': {
-      if (parsed.domains.length === 0) return ['Giới hạn thời gian theo website (chưa có domain nào).']
-      if (parsed.minutes_per_day <= 0) {
-        return [`Giới hạn ${formatDomainList(parsed.domains)}: chưa đặt số phút.`]
+      const patterns = parsed.urlPatterns ?? []
+      if (parsed.domains.length === 0 && patterns.length === 0) {
+        return ['Giới hạn thời gian theo website (chưa có domain nào).']
       }
-      return [
-        `Giới hạn ${formatDomainList(parsed.domains)}: ${formatDurationVi(parsed.minutes_per_day * 60)} mỗi ngày (tổng cộng các domain)`,
-      ]
+      if (parsed.minutes_per_day <= 0) {
+        const lines: string[] = []
+        if (parsed.domains.length > 0) {
+          lines.push(`Giới hạn ${formatDomainList(parsed.domains)}: chưa đặt số phút.`)
+        }
+        if (patterns.length > 0) {
+          lines.push(`Giới hạn ${formatPatternList(patterns)}: chưa đặt số phút.`)
+        }
+        return lines
+      }
+      const lines: string[] = []
+      if (parsed.domains.length > 0) {
+        lines.push(
+          `Giới hạn ${formatDomainList(parsed.domains)}: ${formatDurationVi(parsed.minutes_per_day * 60)} mỗi ngày (tổng cộng các domain)`,
+        )
+      }
+      if (patterns.length > 0) {
+        lines.push(
+          `Giới hạn ${formatPatternList(patterns)}: ${formatDurationVi(parsed.minutes_per_day * 60)} mỗi ngày (chỉ link bắt đầu bằng phần này)`,
+        )
+      }
+      return lines
     }
     case 'safe_search': {
       const parts: string[] = []
@@ -360,9 +423,18 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
       return lines
     }
     case 'block_domains_by_time': {
+      const patterns = parsed.urlPatterns ?? []
       const lines: string[] = []
-      if (parsed.domains.length === 0) lines.push('Chặn website theo giờ (chưa có domain nào).')
-      else lines.push(`Chặn: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+      if (parsed.domains.length === 0 && patterns.length === 0) {
+        lines.push('Chặn website theo giờ (chưa có domain nào).')
+      } else {
+        if (parsed.domains.length > 0) {
+          lines.push(`Chặn: ${formatDomainList(parsed.domains)} (kể cả tên miền con)`)
+        }
+        if (patterns.length > 0) {
+          lines.push(`Chặn: ${formatPatternList(patterns)} (chỉ link bắt đầu bằng phần này)`)
+        }
+      }
       const perDay = fullWeek<TimeRangeValue[] | null>(parsed.windowsByWeekday, null)
       for (const group of groupWeekdays(perDay, (v) => (v === null ? 'none' : JSON.stringify(v)))) {
         if (group.value === null) lines.push(`${formatWeekdayGroup(group.days)}: không chặn`)
@@ -439,7 +511,7 @@ export function describeRuleConfig(rule: Rule): string[] {
     'end_time', 'end', 'bedtime_end', 'to',
     'app_name', 'app', 'name', 'process_name', 'action',
     'domain', 'website', 'url', 'host',
-    'mode', 'domains', 'searchProviders', 'youtubeRestricted',
+    'mode', 'domains', 'urlPatterns', 'searchProviders', 'youtubeRestricted',
     'apps', 'minutesPerDay', 'workMinutes', 'breakMinutes', 'allowedApps', 'allowedDomains',
   ])
   for (const [key, value] of Object.entries(config)) {
