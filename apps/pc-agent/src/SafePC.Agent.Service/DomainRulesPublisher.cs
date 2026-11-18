@@ -25,7 +25,13 @@ namespace SafePC.Agent.Service;
 /// cũng là trường cộng thêm, Version vẫn là 1. Batch 4 thêm <c>urlPatterns</c>
 /// (mẫu "host/path" chỉ chặn đúng đường dẫn đó, hợp từ mọi rule mode
 /// 'block_domains'; khóa vắng mặt khi không có mẫu nào) — cũng là trường
-/// cộng thêm, Version vẫn là 1.
+/// cộng thêm, Version vẫn là 1. Đợt danh mục chặn thêm <c>blockedCategories</c>
+/// (domain theo từng danh mục đã chọn, hợp từ mọi rule mode
+/// 'block_domains' mang mảng 'categories'; khóa vắng mặt khi không có
+/// danh mục nào) — cũng là trường cộng thêm, Version vẫn là 1. Domain
+/// danh mục đồng thời nằm trong <c>blocked</c> (cùng mức ưu tiên chặn 30
+/// phía extension); <c>blockedCategories</c> chỉ để extension hiện đúng
+/// lý do theo danh mục trên trang chặn.
 ///
 /// File chỉ ghi lại khi nội dung (trừ <c>updated_at</c>) thay đổi, để vòng
 /// lặp đồng bộ mỗi phút không chạm đĩa vô ích. Ghi nguyên tử: ghi file tạm
@@ -122,6 +128,9 @@ public sealed class DomainRulesPublisher
             _lastPublishedBody = bodyJson;
             _log.Info("Đã xuất bản domain_rules.json: " + file.Blocked.Count + " domain chặn, "
                 + (file.UrlPatterns is null ? 0 : file.UrlPatterns.Count) + " mẫu URL, "
+                + (file.BlockedCategories is null
+                    ? "không có danh mục"
+                    : "danh mục " + file.BlockedCategories.Count + " (" + file.BlockedCategories.Values.Sum(list => list.Count) + " domain)") + ", "
                 + file.BlockedByTime.Count + " chặn theo giờ, "
                 + (file.Allowlist is null ? "không có allowlist" : file.Allowlist.Count + " domain cho phép") + ", "
                 + (file.AllowlistByTime is null ? "không có allowlist theo giờ" : file.AllowlistByTime.Count + " allowlist theo giờ") + ", "
@@ -151,6 +160,11 @@ public sealed class DomainRulesPublisher
         var file = new DomainRulesFile();
         var blocked = new HashSet<string>(StringComparer.Ordinal);
         var urlPatterns = new HashSet<string>(StringComparer.Ordinal);
+
+        // Danh mục chặn: domain theo từng id danh mục, hợp qua mọi rule
+        // block_domains (xem AddRuleCategories). Sau vòng lặp, domain
+        // danh mục hợp vào tập chặn chung + xuất riêng theo danh mục.
+        var categoryDomains = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         HashSet<string>? allowlist = null;
         bool safeSearch = false;
         bool youtubeRestricted = false;
@@ -189,11 +203,13 @@ public sealed class DomainRulesPublisher
                 case "block_domains":
                     AddRuleDomains(blocked, config);
                     AddRuleUrlPatterns(urlPatterns, config);
+                    AddRuleCategories(categoryDomains, config);
                     break;
 
                 case "block_domains_by_time":
                 {
                     WarnIfUrlPatternsPresent(config, "block_domains_by_time");
+                    WarnIfCategoriesPresent(config, "block_domains_by_time");
                     var domains = new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(domains, config);
                     Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
@@ -213,6 +229,7 @@ public sealed class DomainRulesPublisher
 
                 case "allowlist":
                     WarnIfUrlPatternsPresent(config, "allowlist");
+                    WarnIfCategoriesPresent(config, "allowlist");
                     allowlist ??= new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(allowlist, config);
                     break;
@@ -220,6 +237,7 @@ public sealed class DomainRulesPublisher
                 case "allowlist_by_time":
                 {
                     WarnIfUrlPatternsPresent(config, "allowlist_by_time");
+                    WarnIfCategoriesPresent(config, "allowlist_by_time");
                     var domains = new HashSet<string>(StringComparer.Ordinal);
                     AddRuleDomains(domains, config);
                     Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
@@ -240,6 +258,7 @@ public sealed class DomainRulesPublisher
                 case "domain_time_limit":
                 {
                     WarnIfUrlPatternsPresent(config, "domain_time_limit");
+                    WarnIfCategoriesPresent(config, "domain_time_limit");
                     int? minutes = TryGetInt32(config, "minutes_per_day") ?? TryGetInt32(config, "minutesPerDay");
                     if (minutes is null || minutes.Value <= 0 || minutes.Value > 1440)
                     {
@@ -300,7 +319,30 @@ public sealed class DomainRulesPublisher
             }
         }
 
+        // Danh mục chặn: domain danh mục hợp vào tập chặn chung (extension
+        // chặn ở cùng mức ưu tiên như domain gõ tay, không đổi thang DNR),
+        // đồng thời xuất riêng theo danh mục để extension hiện đúng lý do
+        // trên trang chặn. Thứ tự danh mục chuẩn để chuỗi JSON so sánh ổn
+        // định giữa các lần xuất bản.
+        Dictionary<string, List<string>>? blockedCategories = null;
+        foreach (string categoryId in DomainCategoryLists.OrderedIds)
+        {
+            if (!categoryDomains.TryGetValue(categoryId, out HashSet<string>? domains) || domains.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (string domain in domains)
+            {
+                blocked.Add(domain);
+            }
+
+            blockedCategories ??= new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            blockedCategories[categoryId] = domains.OrderBy(d => d, StringComparer.Ordinal).ToList();
+        }
+
         file.Blocked = blocked.OrderBy(d => d, StringComparer.Ordinal).ToList();
+        file.BlockedCategories = blockedCategories;
         file.UrlPatterns = urlPatterns.Count == 0
             ? null
             : urlPatterns.OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -433,6 +475,51 @@ public sealed class DomainRulesPublisher
     }
 
     /// <summary>
+    /// Đọc mảng <c>categories</c> trong config rule mode 'block_domains',
+    /// mở rộng mỗi id danh mục thành danh sách domain hạt giống
+    /// (<see cref="DomainCategoryLists"/>) và thêm vào tập theo danh mục.
+    /// Khóa vắng mặt hoặc không phải mảng nghĩa là rule không chọn danh
+    /// mục nào (không cảnh báo — hầu hết rule chặn domain chỉ có
+    /// <c>domains</c>). Id lạ chỉ ghi Warning và bỏ qua, không bao giờ
+    /// ném exception hay làm hỏng lần xuất bản. Domain hạt giống đã là
+    /// hằng hợp lệ nên không chuẩn hóa lại.
+    /// </summary>
+    private void AddRuleCategories(Dictionary<string, HashSet<string>> target, JsonElement config)
+    {
+        if (!config.TryGetProperty("categories", out JsonElement array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (JsonElement element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                _log.Warning("Mục categories không phải chuỗi trong rule website, đã bỏ qua.");
+                continue;
+            }
+
+            string? id = element.GetString();
+            if (id is null || !DomainCategoryLists.ById.TryGetValue(id, out string[]? domains))
+            {
+                _log.Warning("Danh mục chặn không rõ trong rule website, đã bỏ qua: " + TruncateForLog(id) + ".");
+                continue;
+            }
+
+            if (!target.TryGetValue(id, out HashSet<string>? set))
+            {
+                set = new HashSet<string>(StringComparer.Ordinal);
+                target[id] = set;
+            }
+
+            foreach (string domain in domains)
+            {
+                set.Add(domain);
+            }
+        }
+    }
+
+    /// <summary>
     /// Chuẩn hóa một mẫu URL "host/path": bỏ khoảng trắng đầu/cuối, bỏ scheme
     /// http:// hoặc https:// ở đầu, tách ở dấu '/' đầu tiên — host qua
     /// <see cref="NormalizeDomain"/>, path giữ nguyên (bắt đầu bằng '/') trừ
@@ -497,6 +584,23 @@ public sealed class DomainRulesPublisher
             && array.GetArrayLength() > 0)
         {
             _log.Warning("Rule " + mode + " có urlPatterns nhưng Agent chưa thi hành đường dẫn ở mode này, đã bỏ qua các mẫu URL.");
+        }
+    }
+
+    /// <summary>
+    /// Phòng thủ sâu (đợt danh mục): Agent chỉ thi hành <c>categories</c>
+    /// ở mode <c>block_domains</c>. Các mode website khác mà config vẫn
+    /// mang mảng <c>categories</c> không rỗng (ví dụ sửa tay trong DB) thì
+    /// ghi Warning để khoảng trống thi hành hiện rõ trong log thay vì lặng
+    /// lẽ bỏ qua — cùng mẫu với <see cref="WarnIfUrlPatternsPresent"/>.
+    /// </summary>
+    private void WarnIfCategoriesPresent(JsonElement config, string mode)
+    {
+        if (config.TryGetProperty("categories", out JsonElement array)
+            && array.ValueKind == JsonValueKind.Array
+            && array.GetArrayLength() > 0)
+        {
+            _log.Warning("Rule " + mode + " có categories nhưng Agent chưa thi hành danh mục ở mode này, đã bỏ qua các danh mục.");
         }
     }
 
@@ -870,6 +974,22 @@ internal sealed class DomainRulesFile
 
     [JsonPropertyName("blocked")]
     public List<string> Blocked { get; set; } = new();
+
+    /// <summary>
+    /// Domain theo danh mục chặn (đợt danh mục, cộng thêm — Version vẫn
+    /// là 1): khóa là id danh mục ("adult", "gambling", "social"), giá
+    /// trị là danh sách domain hạt giống của danh mục đó đang được chặn.
+    /// Mọi domain ở đây ĐỒNG THỜI nằm trong <see cref="Blocked"/> (cùng
+    /// mức ưu tiên chặn 30 phía extension, không đổi thang DNR); trường
+    /// này chỉ để extension hiện đúng lý do theo danh mục trên trang
+    /// chặn và để tab watcher quyết định cùng lý do. Null = không có
+    /// danh mục nào — khóa JSON được BỎ HOÀN TOÀN khi null
+    /// (WhenWritingNull, cùng mẫu với urlPatterns) để extension cũ không
+    /// thấy khóa lạ (extension cũ vẫn chặn đúng nhờ <see cref="Blocked"/>).
+    /// </summary>
+    [JsonPropertyName("blockedCategories")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, List<string>>? BlockedCategories { get; set; }
 
     [JsonPropertyName("blockedByTime")]
     public List<TimeBlockedEntry> BlockedByTime { get; set; } = new();
