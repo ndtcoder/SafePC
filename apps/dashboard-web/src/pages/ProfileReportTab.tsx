@@ -17,6 +17,7 @@ import {
   ErrorState,
   LoadingState,
   NotConfiguredState,
+  secondaryButtonClassName,
 } from '../components/ui'
 
 type LoadState = 'loading' | 'ready' | 'error'
@@ -111,7 +112,7 @@ export default function ProfileReportTab({ childId, childName }: { childId: stri
       <div>
         <Link
           to={`/bao-cao?child=${childId}`}
-          className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          className={secondaryButtonClassName}
         >
           Xem báo cáo tuần của {childName}
         </Link>
@@ -203,7 +204,7 @@ export default function ProfileReportTab({ childId, childName }: { childId: stri
         <div className="mt-4">
           <Link
             to="/yeu-cau"
-            className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            className={secondaryButtonClassName}
           >
             Tới trang Yêu cầu để duyệt
           </Link>

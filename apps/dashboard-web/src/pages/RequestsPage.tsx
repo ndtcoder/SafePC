@@ -10,12 +10,14 @@ import {
   toVietnameseError,
 } from '../lib/format'
 import {
+  AlertBox,
   Card,
   EmptyState,
   ErrorState,
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  badgeBaseClassName,
   dangerButtonClassName,
   secondaryButtonClassName,
   successButtonClassName,
@@ -208,14 +210,14 @@ export default function RequestsPage() {
       />
 
       {actionMessage && (
-        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+        <AlertBox tone="success" className="mb-4">
           {actionMessage}
-        </div>
+        </AlertBox>
       )}
       {actionError && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+        <AlertBox tone="error" className="mb-4">
           {actionError}
-        </div>
+        </AlertBox>
       )}
 
       {state === 'loading' && <LoadingState label="Đang tải danh sách yêu cầu…" />}
@@ -254,7 +256,7 @@ export default function RequestsPage() {
                   </p>
                 </div>
                 <span
-                  className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[request.status]}`}
+                  className={`${badgeBaseClassName} ${STATUS_BADGE[request.status]}`}
                 >
                   {requestStatusLabel(request.status)}
                 </span>

@@ -59,6 +59,7 @@ import {
   type TopEntry,
 } from '../lib/weekReport'
 import {
+  AlertBox,
   Card,
   EmptyState,
   ErrorState,
@@ -67,6 +68,7 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  primaryButtonClassName,
   secondaryButtonClassName,
 } from '../components/ui'
 
@@ -589,7 +591,7 @@ export default function WeeklyReportPage() {
         >
           <Link
             to="/ho-so"
-            className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
+            className={primaryButtonClassName}
           >
             Tới trang Hồ sơ
           </Link>
@@ -660,10 +662,10 @@ export default function WeeklyReportPage() {
       {weekState === 'ready' && hasWeekData && (
         <div className="space-y-4 sm:space-y-6">
           {dataTruncated && (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" role="status">
+            <AlertBox tone="warning">
               Dữ liệu tuần này có thể chưa đủ — đã chạm giới hạn tải 20.000 hàng, số liệu dưới đây chỉ tính trên
               dữ liệu đã tải được nên tổng giờ, top ứng dụng/website và tỉ lệ có thể thấp hơn thực tế.
-            </p>
+            </AlertBox>
           )}
           <Card title="Tổng quan tuần">
             <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -889,7 +891,7 @@ export default function WeeklyReportPage() {
             <div className="mt-4">
               <Link
                 to="/yeu-cau"
-                className="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                className={secondaryButtonClassName}
               >
                 Tới trang Yêu cầu để duyệt
               </Link>

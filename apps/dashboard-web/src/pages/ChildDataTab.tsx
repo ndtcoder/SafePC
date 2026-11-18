@@ -4,7 +4,9 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { toVietnameseError } from '../lib/format'
 import {
+  AlertBox,
   Card,
+  ErrorState,
   Field,
   LoadingState,
   dangerButtonClassName,
@@ -454,15 +456,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
 
   if (state === 'loading') return <LoadingState />
   if (state === 'error') {
-    return (
-      <div className="rounded-xl border border-red-200 bg-red-50 p-4 sm:p-6" role="alert">
-        <h3 className="font-semibold text-red-800">Không tải được dữ liệu</h3>
-        <p className="mt-1 text-sm text-red-700">{error}</p>
-        <button type="button" onClick={() => void loadCounts()} className={`mt-4 ${primaryButtonClassName}`}>
-          Thử lại
-        </button>
-      </div>
-    )
+    return <ErrorState message={error} onRetry={() => void loadCounts()} />
   }
 
   const nameMatches = matchesChildNameForDelete(typedName, childName)
@@ -482,14 +476,14 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
             tuần) cũng không có trong file này.
           </p>
           {exportMessage && (
-            <p className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800" role="status">
+            <AlertBox tone="success">
               {exportMessage}
-            </p>
+            </AlertBox>
           )}
           {exportError && (
-            <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
+            <AlertBox tone="error">
               {exportError}
-            </p>
+            </AlertBox>
           )}
           <button
             type="button"
@@ -506,10 +500,10 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         <div className="space-y-4">
           {deleteResult ? (
             <>
-              <p className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800" role="status">
+              <AlertBox tone="success">
                 Đã xóa toàn bộ dữ liệu của {childName}. Hồ sơ này không còn nữa; Agent trên các máy của con
                 sẽ ngừng đồng bộ — hãy gỡ Agent khỏi máy hoặc ghép nối lại máy dưới hồ sơ con khác.
-              </p>
+              </AlertBox>
               <div className="overflow-hidden rounded-lg border border-slate-200">
                 <table className="w-full text-sm">
                   <tbody>
@@ -533,7 +527,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
               )}
               <Link
                 to="/ho-so"
-                className="inline-flex min-h-[44px] items-center rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
+                className={primaryButtonClassName}
               >
                 Quay lại danh sách hồ sơ
               </Link>
@@ -573,19 +567,21 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
                 </p>
               )}
               {missingMigration && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="alert">
+                <AlertBox tone="warning">
                   <p className="font-medium">Tính năng xóa cần migration 15 (hàm xóa dữ liệu của con).</p>
                   <p className="mt-1">
                     Hãy áp dụng file{' '}
-                    <code>backend/supabase/migrations/20261118200000_delete_child_data.sql</code> qua
-                    Supabase SQL Editor, rồi tải lại trang.
+                    <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-xs">
+                      backend/supabase/migrations/20261118200000_delete_child_data.sql
+                    </code>{' '}
+                    qua Supabase SQL Editor, rồi tải lại trang.
                   </p>
-                </div>
+                </AlertBox>
               )}
               {deleteError && (
-                <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
+                <AlertBox tone="error">
                   {deleteError}
-                </p>
+                </AlertBox>
               )}
               {confirmingDelete ? (
                 <>

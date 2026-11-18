@@ -18,6 +18,7 @@ import {
   type ActivityRangePreset,
 } from '../lib/activityLog'
 import {
+  AlertBox,
   Card,
   EmptyState,
   ErrorState,
@@ -312,10 +313,10 @@ export default function ActivityLogPage() {
       {configured && metaState === 'ready' && children.length > 0 && (
         <div className="flex flex-col gap-4">
           {/* Ghi chú trung thực về dữ liệu chưa có nguồn — không bịa mục nào. */}
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-800">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-800">
             <p className="font-semibold">Nhật ký này chưa ghi được mọi việc:</p>
             <ul className="mt-1 list-disc space-y-0.5 pl-5">
-              <li>Lịch sử đổi quy tắc (ai đổi rule nào) chưa được ghi lại nên chưa hiện ở đây.</li>
+              <li>Lịch sử đổi quy tắc (ai đổi quy tắc nào) chưa được ghi lại nên chưa hiện ở đây.</li>
               <li>Lệnh khóa/mở chưa ghi lại ai đã gửi.</li>
               <li>Thi hành theo quy tắc chỉ có từ khi máy con cài bản Agent ghi sự kiện thi hành.</li>
             </ul>
@@ -386,10 +387,10 @@ export default function ActivityLogPage() {
           </Card>
 
           {dataTruncated && eventsState === 'ready' && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">
+            <AlertBox tone="warning">
               Có thể còn sự kiện cũ hơn chưa tải hết (đã chạm giới hạn đọc). Thu hẹp khoảng thời gian để
               xem đủ.
-            </div>
+            </AlertBox>
           )}
 
           {eventsState === 'loading' && <LoadingState label="Đang tải nhật ký…" />}

@@ -24,6 +24,7 @@ import {
   validateGrantInput,
 } from '../lib/timeBank'
 import {
+  AlertBox,
   Card,
   chipClassName,
   dangerOutlineButtonClassName,
@@ -32,6 +33,7 @@ import {
   Field,
   inputClassName,
   LoadingState,
+  MigrationMissingState,
   NotConfiguredState,
   primaryButtonClassName,
   secondaryButtonClassName,
@@ -220,19 +222,12 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
 
   if (missingMigration) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 sm:p-6" role="status">
-        <h3 className="font-semibold text-amber-900">Ngân hàng giờ chưa sẵn sàng</h3>
-        <p className="mt-1 text-sm text-amber-800">
-          Tính năng này cần migration 13 (bảng sổ cái thưởng giờ + 2 hàm xử lý). Hãy áp dụng file{' '}
-          <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-xs">
-            20261118180000_time_bank.sql
-          </code>{' '}
-          trong thư mục backend/supabase/migrations/ qua Supabase SQL Editor, rồi tải lại trang.
-        </p>
-        <button type="button" onClick={() => void load()} className={`mt-4 ${secondaryButtonClassName}`}>
-          Tải lại
-        </button>
-      </div>
+      <MigrationMissingState
+        title="Ngân hàng giờ chưa sẵn sàng"
+        detail="migration 13 (bảng sổ cái thưởng giờ + 2 hàm xử lý)"
+        file="20261118180000_time_bank.sql"
+        onRetry={() => void load()}
+      />
     )
   }
 
@@ -312,14 +307,14 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
           </p>
 
           {actionMessage && (
-            <p className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800" role="status">
+            <AlertBox tone="success">
               {actionMessage}
-            </p>
+            </AlertBox>
           )}
           {actionError && (
-            <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
+            <AlertBox tone="error">
               {actionError}
-            </p>
+            </AlertBox>
           )}
 
           <button
@@ -361,7 +356,7 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
                     <span
                       className={
                         status === 'Đang hiệu lực'
-                          ? 'shrink-0 rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-800'
+                          ? 'shrink-0 rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-800'
                           : status === 'Đã thu hồi'
                             ? 'shrink-0 rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600'
                             : 'shrink-0 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800'
@@ -408,9 +403,9 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
           </ul>
         )}
         {historyCapped && (
-          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <AlertBox tone="warning" className="mt-3">
             Chỉ hiện {HISTORY_LIMIT} lần thưởng gần nhất. Các lần cũ hơn vẫn lưu trong database.
-          </p>
+          </AlertBox>
         )}
       </Card>
 

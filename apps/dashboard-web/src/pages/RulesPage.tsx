@@ -144,6 +144,7 @@ import {
 } from '../components/RuleForms'
 import { RuleCard } from '../components/RuleCard'
 import {
+  AlertBox,
   Card,
   EmptyState,
   ErrorState,
@@ -151,12 +152,14 @@ import {
   LoadingState,
   NotConfiguredState,
   PageHeader,
+  checkboxClassName,
   chipClassName,
   dangerButtonClassName,
   dangerOutlineButtonClassName,
   inputClassName,
   primaryButtonClassName,
   secondaryButtonClassName,
+  warningButtonClassName,
 } from '../components/ui'
 
 type LoadState = 'loading' | 'ready' | 'error'
@@ -1413,14 +1416,14 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       />
 
       {actionMessage && (
-        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+        <AlertBox tone="success" className="mb-4">
           {actionMessage}
-        </div>
+        </AlertBox>
       )}
       {actionError && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+        <AlertBox tone="error" className="mb-4">
           {actionError}
-        </div>
+        </AlertBox>
       )}
 
       {state === 'loading' && <LoadingState label="Đang tải danh sách quy tắc…" />}
@@ -2318,7 +2321,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                                     <label className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg px-2 py-2 hover:bg-slate-50">
                                       <input
                                         type="checkbox"
-                                        className="h-5 w-5 shrink-0 accent-indigo-600"
+                                        className={checkboxClassName}
                                         checked={templateSelectedIds.has(rule.id)}
                                         onChange={() => toggleTemplateRule(rule.id)}
                                       />
@@ -2444,7 +2447,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                 </p>
 
                 {activeOverride && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <AlertBox tone="warning">
                     <p>
                       <span className="font-medium">Đang hiệu lực trên máy này: </span>
                       {overrideActionLabel(activeOverride.action)}
@@ -2464,11 +2467,11 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                       type="button"
                       onClick={() => void handleCancelOverride()}
                       disabled={cancellingOverride}
-                      className="mt-2 inline-flex min-h-[44px] items-center rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+                      className={`mt-2 ${warningButtonClassName}`}
                     >
                       {cancellingOverride ? 'Đang gửi…' : 'Huỷ ghi đè này'}
                     </button>
-                  </div>
+                  </AlertBox>
                 )}
 
                 <button
@@ -2554,7 +2557,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                 </p>
 
                 {activeDomainOverride && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <AlertBox tone="warning">
                     <p>
                       <span className="font-medium">Đang hiệu lực trên máy này: </span>
                       {overrideActionLabel(activeDomainOverride.action)}
@@ -2572,11 +2575,11 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                       type="button"
                       onClick={() => void handleCancelOverride()}
                       disabled={cancellingOverride}
-                      className="mt-2 inline-flex min-h-[44px] items-center rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+                      className={`mt-2 ${warningButtonClassName}`}
                     >
                       {cancellingOverride ? 'Đang gửi…' : 'Huỷ ghi đè này'}
                     </button>
-                  </div>
+                  </AlertBox>
                 )}
 
                 <button
