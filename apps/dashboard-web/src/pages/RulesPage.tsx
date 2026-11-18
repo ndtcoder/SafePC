@@ -64,12 +64,12 @@ import {
   validateAppTimeLimitDraft,
   validateBedtimeDraft,
   validateBlockDomainsByTimeDraft,
+  validateBlockDomainsDraft,
   validateDailyLimitDraft,
   validateDomainTimeLimitDraft,
   validateFocusDraft,
   validateForcedBreakDraft,
   validateTimeWindowDraft,
-  validateWebsiteEntriesText,
   websiteConfigToAllowlistByTimeDraft,
   websiteConfigToBlockByTimeDraft,
   websiteConfigToDomainsDraft,
@@ -939,12 +939,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
           websiteTimeKind === 'by_time' ? 'by_time' : 'always',
         )
         if (mode === 'block_domains') {
-          const validationError = validateWebsiteEntriesText(websiteDomainsDraft.domainsText)
+          // Rule hợp lệ khi có domain/đường dẫn HOẶC danh mục đã chọn
+          // (đợt danh mục) — mục gõ tay sai vẫn bị từ chối dù đã chọn
+          // danh mục, để không lặng lẽ bỏ mục sai.
+          const validationError = validateBlockDomainsDraft(websiteDomainsDraft)
           if (validationError) {
             setActionError(validationError)
             return
           }
-          config = buildBlockDomainsConfig(websiteDomainsDraft.domainsText)
+          config = buildBlockDomainsConfig(websiteDomainsDraft.domainsText, websiteDomainsDraft.categories)
         } else if (mode === 'allowlist') {
           // Allowlist chưa thi hành đường dẫn: từ chối mục có dấu / thay vì
           // lưu lặng lẽ rồi không chặn (đợt 4 chỉ thi hành ở block_domains).
