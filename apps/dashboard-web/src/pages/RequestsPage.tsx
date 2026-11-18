@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
-import type { AppRequest, Child } from '../lib/types'
+import type { AppRequest, Child, Device } from '../lib/types'
 import {
   formatDateTimeVi,
   formatRelativeVi,
@@ -9,6 +9,11 @@ import {
   requestTypeLabel,
   toVietnameseError,
 } from '../lib/format'
+import {
+  UNBLOCK_DOMAIN_DURATIONS,
+  buildAllowDomainCommandPayload,
+  clampUnblockMinutes,
+} from '../lib/domainRequest'
 import {
   AlertBox,
   Card,
@@ -18,7 +23,9 @@ import {
   NotConfiguredState,
   PageHeader,
   badgeBaseClassName,
+  chipClassName,
   dangerButtonClassName,
+  inputClassName,
   secondaryButtonClassName,
   successButtonClassName,
 } from '../components/ui'
@@ -37,9 +44,14 @@ export default function RequestsPage() {
   const [error, setError] = useState('')
   const [requests, setRequests] = useState<AppRequest[]>([])
   const [children, setChildren] = useState<Child[]>([])
+  const [devices, setDevices] = useState<Device[]>([])
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [decidingId, setDecidingId] = useState<string | null>(null)
+  // Yêu cầu xin mở trang web đang mở bảng chọn thời lượng duyệt (chỉ một
+  // thẻ mở cùng lúc) + số phút phụ huynh chọn (chuỗi nhập, mặc định 30).
+  const [domainApproveId, setDomainApproveId] = useState<string | null>(null)
+  const [domainApproveMinutes, setDomainApproveMinutes] = useState('30')
 
   const load = useCallback(async () => {
     if (!supabase || !user) {
@@ -49,7 +61,7 @@ export default function RequestsPage() {
     setState('loading')
     setError('')
     try {
-      const [requestsResult, childrenResult] = await Promise.all([
+      const [requestsResult, childrenResult, devicesResult] = await Promise.all([
         supabase
           .from('requests')
           .select('id, family_id, child_id, type, status, reason, decided_by, decided_at, created_at')
@@ -58,11 +70,16 @@ export default function RequestsPage() {
         supabase
           .from('children')
           .select('id, family_id, display_name, birth_year, avatar_url, created_at'),
+        supabase
+          .from('devices')
+          .select('id, family_id, child_id, hostname, os_version, agent_version, last_seen_at, last_extension_seen_at'),
       ])
       if (requestsResult.error) throw requestsResult.error
       if (childrenResult.error) throw childrenResult.error
+      if (devicesResult.error) throw devicesResult.error
       setRequests((requestsResult.data ?? []) as AppRequest[])
       setChildren((childrenResult.data ?? []) as Child[])
+      setDevices((devicesResult.data ?? []) as Device[])
       // Truy vấn RIÊNG, best-effort: cột minutes/device_id chỉ có sau
       // migration 7. Truy vấn lỗi (cột chưa tồn tại) thì yêu cầu vẫn hiện
       // (không có số phút/máy), KHÔNG làm hỏng cả trang — cùng lý do như
@@ -85,6 +102,26 @@ export default function RequestsPage() {
       } catch {
         // Chưa có cột → giữ nguyên yêu cầu không có số phút/máy.
       }
+      // Truy vấn RIÊNG thứ hai, best-effort: cột domain chỉ có sau
+      // migration 18. Tách riêng khỏi truy vấn minutes/device_id để khi
+      // migration 18 chưa áp thì truy vấn này lỗi một mình, không làm mất
+      // số phút/máy của truy vấn trên.
+      try {
+        const domainResult = await supabase
+          .from('requests')
+          .select('id, domain')
+          .order('created_at', { ascending: false })
+          .limit(100)
+        if (!domainResult.error) {
+          const domainById = new Map<string, string | null>()
+          for (const row of (domainResult.data ?? []) as Array<{ id: string; domain: string | null }>) {
+            domainById.set(row.id, row.domain)
+          }
+          setRequests((prev) => prev.map((r) => (domainById.has(r.id) ? { ...r, domain: domainById.get(r.id) ?? null } : r)))
+        }
+      } catch {
+        // Chưa có cột → giữ nguyên yêu cầu không có tên miền.
+      }
       setState('ready')
     } catch (err) {
       setError(toVietnameseError(err))
@@ -101,6 +138,11 @@ export default function RequestsPage() {
     [children],
   )
 
+  const deviceNameById = useMemo(
+    () => new Map(devices.map((d) => [d.id, d.hostname])),
+    [devices],
+  )
+
   // Yêu cầu đang chờ duyệt lên trước, trong từng nhóm sắp theo thời gian mới nhất.
   const sortedRequests = useMemo(() => {
     return [...requests].sort((a, b) => {
@@ -110,7 +152,22 @@ export default function RequestsPage() {
     })
   }, [requests])
 
-  const handleDecide = async (request: AppRequest, status: 'approved' | 'denied') => {
+  // Máy nhận lệnh duyệt: máy đã gửi yêu cầu, nếu không có thì máy của con
+  // thấy gần nhất (cùng mẫu dự phòng của luồng xin thêm giờ).
+  const resolveDeviceId = useCallback(async (request: AppRequest): Promise<string | null> => {
+    if (!supabase) return null
+    if (request.device_id) return request.device_id
+    const { data: childDevices, error: devicesError } = await supabase
+      .from('devices')
+      .select('id, last_seen_at')
+      .eq('child_id', request.child_id)
+      .order('last_seen_at', { ascending: false, nullsFirst: false })
+      .limit(1)
+    if (devicesError) throw devicesError
+    return childDevices?.[0]?.id ?? null
+  }, [])
+
+  const handleDecide = async (request: AppRequest, status: 'approved' | 'denied', approveMinutes?: number) => {
     if (!supabase || !user) return
     setDecidingId(request.id)
     setActionError(null)
@@ -129,17 +186,7 @@ export default function RequestsPage() {
       // sau — gửi lệnh lỗi thì yêu cầu vẫn ở trạng thái chờ để phụ huynh
       // thử lại.
       if (status === 'approved' && request.type === 'extra_time') {
-        let deviceId = request.device_id ?? null
-        if (!deviceId) {
-          const { data: childDevices, error: devicesError } = await supabase
-            .from('devices')
-            .select('id, last_seen_at')
-            .eq('child_id', request.child_id)
-            .order('last_seen_at', { ascending: false, nullsFirst: false })
-            .limit(1)
-          if (devicesError) throw devicesError
-          deviceId = childDevices?.[0]?.id ?? null
-        }
+        const deviceId = await resolveDeviceId(request)
         if (!deviceId) {
           throw new Error('Không tìm thấy thiết bị của con để gửi lệnh mở khóa.')
         }
@@ -153,6 +200,36 @@ export default function RequestsPage() {
           status: 'pending',
         })
         if (insertError) throw insertError
+      }
+      // Duyệt yêu cầu xin mở trang web = gửi MỘT lệnh temporary_override
+      // action 'allow_domain' với đúng hình dạng lệnh ghi đè domain ở
+      // trang Quy tắc (domains + minutes + expires_at): Agent nhận qua
+      // poll 15s, xuất bản tempAllow, extension làm mới trong ~1 phút,
+      // con quay lại rồi mở lại trang thì mở được. Hết thời lượng, quy tắc website
+      // bình thường áp lại. Ghi đè mới nhất thay thế ghi đè đang hiệu lực
+      // trên cùng máy (kể cả ghi đè giờ giấc) — cùng ngữ nghĩa một ghi đè
+      // duy nhất của Agent; thông báo sau khi duyệt nói rõ điều này.
+      let approvedDomain: string | null = null
+      let approvedMinutes = 0
+      if (status === 'approved' && request.type === 'unblock_domain') {
+        const payload = buildAllowDomainCommandPayload(request.domain, approveMinutes ?? 30, Date.now())
+        if (!payload) {
+          throw new Error('Yêu cầu này không có tên miền để mở. Có thể migration 18 chưa được áp dụng.')
+        }
+        const deviceId = await resolveDeviceId(request)
+        if (!deviceId) {
+          throw new Error('Không tìm thấy thiết bị của con để gửi lệnh mở trang web.')
+        }
+        const { error: insertError } = await supabase.from('commands').insert({
+          family_id: request.family_id,
+          device_id: deviceId,
+          type: 'temporary_override',
+          payload,
+          status: 'pending',
+        })
+        if (insertError) throw insertError
+        approvedDomain = payload.domains[0]
+        approvedMinutes = payload.minutes
       }
       // Yêu cầu xin mở ứng dụng: chưa có thông tin app trong yêu cầu nên
       // duyệt chỉ đổi trạng thái (phụ huynh tự mở bằng ghi đè tạm thời ở
@@ -176,8 +253,11 @@ export default function RequestsPage() {
       setActionMessage(
         status === 'approved' && request.type === 'extra_time'
           ? `Đã duyệt: máy sẽ mở khóa trong ${request.minutes ?? 30} phút cho ${childNameById.get(request.child_id) ?? 'con'}.`
-          : `Đã ${status === 'approved' ? 'duyệt' : 'từ chối'} yêu cầu của ${childNameById.get(request.child_id) ?? 'con'}.`,
+          : status === 'approved' && request.type === 'unblock_domain' && approvedDomain
+            ? `Đã duyệt: ${approvedDomain} sẽ được mở trong ${approvedMinutes} phút cho ${childNameById.get(request.child_id) ?? 'con'}. Lệnh tới máy trong ~15 giây, extension làm mới trong ~1 phút — con quay lại rồi mở lại trang thì mở được. Ghi đè mới thay thế ghi đè đang hiệu lực trên máy (nếu có).`
+            : `Đã ${status === 'approved' ? 'duyệt' : 'từ chối'} yêu cầu của ${childNameById.get(request.child_id) ?? 'con'}.`,
       )
+      setDomainApproveId(null)
     } catch (err) {
       setActionError(toVietnameseError(err))
     } finally {
@@ -190,7 +270,7 @@ export default function RequestsPage() {
       <>
         <PageHeader
           title="Yêu cầu"
-          description="Yêu cầu xin thêm giờ và xin mở ứng dụng từ con."
+          description="Yêu cầu xin thêm giờ, xin mở ứng dụng và xin mở trang web từ con."
         />
         <NotConfiguredState />
       </>
@@ -201,7 +281,7 @@ export default function RequestsPage() {
     <>
       <PageHeader
         title="Yêu cầu"
-        description="Yêu cầu xin thêm giờ và xin mở ứng dụng từ con. Yêu cầu đang chờ duyệt hiển thị trước."
+        description="Yêu cầu xin thêm giờ, xin mở ứng dụng và xin mở trang web từ con. Yêu cầu đang chờ duyệt hiển thị trước."
         actions={
           <button type="button" onClick={() => void load()} className={secondaryButtonClassName}>
             Tải lại
@@ -226,7 +306,7 @@ export default function RequestsPage() {
       {state === 'ready' && requests.length === 0 && (
         <EmptyState
           title="Chưa có yêu cầu nào"
-          description="Con chưa gửi yêu cầu xin thêm giờ hay xin mở ứng dụng nào. Khi con gửi yêu cầu từ máy tính (màn hình khóa hoặc tray app), yêu cầu sẽ xuất hiện tại đây để phụ huynh duyệt."
+          description="Con chưa gửi yêu cầu xin thêm giờ, xin mở ứng dụng hay xin mở trang web nào. Khi con gửi yêu cầu từ máy tính (màn hình khóa, tray app hoặc nút trên trang web bị chặn), yêu cầu sẽ xuất hiện tại đây để phụ huynh duyệt."
         />
       )}
 
@@ -242,6 +322,17 @@ export default function RequestsPage() {
                   {request.type === 'extra_time' && request.minutes != null && (
                     <p className="mt-1 text-sm font-medium text-slate-900">
                       Xin thêm {request.minutes} phút
+                    </p>
+                  )}
+                  {request.type === 'unblock_domain' && request.domain && (
+                    <p className="mt-1 text-sm font-medium text-slate-900">
+                      Trang web: {request.domain}
+                    </p>
+                  )}
+                  {request.device_id && deviceNameById.get(request.device_id) && (
+                    <p className="mt-1 text-sm text-slate-700">
+                      <span className="font-medium">Máy: </span>
+                      {deviceNameById.get(request.device_id)}
                     </p>
                   )}
                   <p className="mt-1 text-sm text-slate-700">
@@ -262,23 +353,89 @@ export default function RequestsPage() {
                 </span>
               </div>
               {request.status === 'pending' && (
-                <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => void handleDecide(request, 'approved')}
-                    disabled={decidingId === request.id}
-                    className={successButtonClassName}
-                  >
-                    Duyệt
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDecide(request, 'denied')}
-                    disabled={decidingId === request.id}
-                    className={dangerButtonClassName}
-                  >
-                    Từ chối
-                  </button>
+                <div className="mt-4 border-t border-slate-100 pt-4">
+                  {request.type === 'unblock_domain' && domainApproveId === request.id ? (
+                    <div className="space-y-3">
+                      <p className="text-sm text-slate-700">
+                        Cho phép mở {request.domain ?? 'trang web này'} trong bao lâu? Hết thời gian, quy tắc
+                        website bình thường áp lại. Ghi đè mới thay thế ghi đè đang hiệu lực trên máy (nếu có).
+                      </p>
+                      <div className="flex flex-wrap gap-2" role="group" aria-label="Thời lượng cho phép mở">
+                        {UNBLOCK_DOMAIN_DURATIONS.map((minutes) => (
+                          <button
+                            key={minutes}
+                            type="button"
+                            onClick={() => setDomainApproveMinutes(String(minutes))}
+                            aria-pressed={domainApproveMinutes === String(minutes)}
+                            className={chipClassName(domainApproveMinutes === String(minutes))}
+                          >
+                            {minutes} phút
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label htmlFor={`domain-minutes-${request.id}`} className="text-sm text-slate-700">
+                          Hoặc số phút khác (1–240):
+                        </label>
+                        <span className="w-28 shrink-0">
+                          <input
+                            id={`domain-minutes-${request.id}`}
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={240}
+                            value={domainApproveMinutes}
+                            onChange={(event) => setDomainApproveMinutes(event.target.value)}
+                            className={inputClassName}
+                          />
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleDecide(request, 'approved', clampUnblockMinutes(Number(domainApproveMinutes)))}
+                          disabled={decidingId === request.id}
+                          className={successButtonClassName}
+                        >
+                          Gửi lệnh mở
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDomainApproveId(null)}
+                          disabled={decidingId === request.id}
+                          className={secondaryButtonClassName}
+                        >
+                          Hủy
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (request.type === 'unblock_domain') {
+                            setDomainApproveMinutes('30')
+                            setDomainApproveId(request.id)
+                          } else {
+                            void handleDecide(request, 'approved')
+                          }
+                        }}
+                        disabled={decidingId === request.id}
+                        className={successButtonClassName}
+                      >
+                        Duyệt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDecide(request, 'denied')}
+                        disabled={decidingId === request.id}
+                        className={dangerButtonClassName}
+                      >
+                        Từ chối
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </Card>

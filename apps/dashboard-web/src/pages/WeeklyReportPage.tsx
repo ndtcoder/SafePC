@@ -870,7 +870,7 @@ export default function WeeklyReportPage() {
             </dl>
             <p className="mt-3 text-sm text-slate-600">
               Trong đó: {requestStats.extraTime} yêu cầu xin thêm giờ, {requestStats.unblockApp} yêu cầu xin mở ứng
-              dụng.
+              dụng, {requestStats.unblockDomain} yêu cầu xin mở trang web.
             </p>
             {requests.length > 0 && (
               <ul className="mt-4 space-y-2">

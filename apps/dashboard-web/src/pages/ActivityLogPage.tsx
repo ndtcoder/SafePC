@@ -124,7 +124,34 @@ async function fetchRequestsInRange(
       if (pageRows.length < PAGE_SIZE) break
     }
   }
+  // Gộp tên miền best-effort: cột domain chỉ có sau migration 18. Đọc
+  // riêng theo từng nhóm id để truy vấn chính không lỗi khi migration 18
+  // chưa áp (cùng lý do như truy vấn best-effort ở RequestsPage); lỗi thì
+  // lặng lẽ bỏ qua, yêu cầu vẫn hiện (không có tên miền trong chi tiết).
+  await mergeRequestDomains(client, byId)
   return { rows: [...byId.values()], truncated }
+}
+
+/** Đọc cột domain cho các yêu cầu đã lấy, theo từng nhóm 200 id. Lỗi thì bỏ qua toàn bộ. */
+async function mergeRequestDomains(
+  client: SupabaseClient,
+  byId: Map<string, AppRequest>,
+): Promise<void> {
+  const ids = [...byId.keys()]
+  if (ids.length === 0) return
+  try {
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200)
+      const { data, error } = await client.from('requests').select('id, domain').in('id', chunk)
+      if (error) return
+      for (const row of (data ?? []) as Array<{ id: string; domain: string | null }>) {
+        const existing = byId.get(row.id)
+        if (existing) existing.domain = row.domain
+      }
+    }
+  } catch {
+    // Chưa có cột hoặc lỗi mạng: giữ nguyên yêu cầu không có tên miền.
+  }
 }
 
 /**
