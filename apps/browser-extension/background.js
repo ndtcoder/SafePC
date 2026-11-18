@@ -26,6 +26,15 @@
 // chrome.permissions.contains và ghi kết quả vào chẩn đoán để popup cảnh
 // báo — xem checkHostPermissions.
 //
+// Báo cáo lượt web bị chặn (0.1.7): mỗi lần tab tới trang chặn, background
+// ghi nhận một lượt chặn CHỈ DOMAIN (không path/query/URL) vào hàng đợi
+// riêng, gửi kèm lượt xem thường qua reportUsage với blocked = true và
+// durationSec = 0. Cả hai đường tới trang chặn đều ghi theo domain của
+// rule đã khớp: watcher đánh giá lại URL vừa chuyển, redirect DNR thì tra
+// rule vừa khớp bằng getMatchedRules. Không quy chiếu được (rule
+// chặn-tất-cả của focus/allowlist, getMatchedRules trống) thì bỏ qua —
+// không đoán domain từ URL cũ của tab vì sẽ ghi nhầm domain trang trước.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -44,11 +53,15 @@ const ALARM_TICK = "safepc-tick";
 const STORE_KEYS = {
   usage: "safepc_usage",
   pending: "safepc_pending",
+  pendingBlocked: "safepc_pending_blocked",
   limits: "safepc_limits",
   status: "safepc_status",
   dnr: "safepc_dnr",
 };
 const MAX_PENDING = 1000;
+// Trần hàng đợi lượt chặn: mỗi lượt là một sự kiện rời rạc (không gộp theo
+// domain như usage), dedupe 60 giây/domain đã chặn spam tải lại trang.
+const MAX_PENDING_BLOCKED = 200;
 const MAX_DNR_RULES = 4500;
 // Đoạn xem dài nhất tính trong một lần tick (10 phút): service worker có thể
 // ngủ đông (máy sleep), đoạn dài hơn thế chắc chắn không phải xem thật.
@@ -119,6 +132,18 @@ let currentRules = null;
 let lastSyncAt = null;
 let usage = { date: localDateKey(new Date()), seconds: {} };
 let pending = {};
+// Hàng đợi lượt web bị chặn chưa gửi: [{domain, startedAt}] — rời rạc từng
+// lượt, không gộp theo domain như usage. Lưu bền vững cùng usage để
+// service worker ngủ đông không làm mất lượt chặn chưa gửi.
+let pendingBlocked = [];
+// Map ruleId -> {domain, isRedirect} của các rule chặn đang áp dụng, dựng
+// từ read-back getDynamicRules sau mỗi lần rebuild — dùng để quy chiếu
+// domain khi tab tới trang chặn qua redirect DNR (xem handleBlockedPageShown).
+// Chỉ rule có domain cụ thể mới vào map: rule chặn-tất-cả (focus/allowlist)
+// không có domain nên lượt chặn đó không quy chiếu được và bị bỏ qua.
+let blockingRuleDomains = new Map();
+// Tiền tố URL trang chặn của chính extension, tính lười ở isBlockedPageUrl.
+let blockedPagePrefix = null;
 let activeTabId = null;
 let activeHostname = null;
 let activeSince = 0;
@@ -712,14 +737,27 @@ async function rebuildDynamicRules() {
   // của lần rebuild gần nhất, và kết quả tự kiểm tra quyền host (0.1.6).
   // Chỉ ghi storage + console.warn, không throw, không hiện gì khác cho user.
   let appliedRules = [];
+  let readBackOk = false;
   try {
     appliedRules = await chrome.declarativeNetRequest.getDynamicRules();
     if (!Array.isArray(appliedRules)) appliedRules = [];
+    readBackOk = true;
   } catch (readError) {
     console.warn("[SafePC] Không đọc lại được dynamic rules:", readError);
     if (error === null) error = errorMessage(readError);
   }
   const appliedCount = appliedRules.length;
+  // Map quy chiếu domain cho lượt chặn DNR (0.1.7): dựng từ read-back —
+  // dữ liệu thật đang áp dụng, không phải danh sách vừa dựng (nhóm áp có
+  // thể lỗi một phần). Read-back lỗi thì giữ map cũ (mô tả đúng rule đang
+  // áp dụng hơn là map rỗng): chỉ gán map mới khi read-back thành công.
+  if (readBackOk) {
+    try {
+      blockingRuleDomains = buildBlockingRuleMap(appliedRules, currentRules);
+    } catch (mapError) {
+      console.warn("[SafePC] Không cập nhật được map rule chặn:", mapError);
+    }
+  }
   const blockedDomains = normalizeDomainSet(currentRules ? currentRules.blocked : null);
   const tempBlocked = unexpiredTempDomains(
     currentRules ? currentRules.tempBlock : null,
@@ -836,9 +874,26 @@ async function maybeRefreshRulesForNavigation() {
   }
 }
 
-// Quyết định watcher có phải chặn URL này không. Trả về chuỗi lý do DNR
-// ("blocked" | "tempblock") khi phải chặn, null khi không chặn. Hàm thuần
-// (không chạm chrome.*) để kiểm thử được ngoài trình duyệt.
+// Host của một mẫu URL dạng "host/path" (chuẩn hóa, chữ thường), null
+// khi mẫu không có phần host. Dùng chung cho map quy chiếu DNR và đường
+// watcher để hai đường ghi lượt chặn cùng một đơn vị domain.
+function urlPatternHost(pattern) {
+  if (typeof pattern !== "string") return null;
+  const trimmed = pattern.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) return null;
+  return normalizeDomain(trimmed.slice(0, slash));
+}
+
+// Quyết định watcher có phải chặn URL này không, kèm domain của rule đã
+// khớp. Trả về {reason, ruleDomain} khi phải chặn, null khi không chặn.
+// ruleDomain là ĐƠN VỊ GHI LƯỢT CHẶN: domain của rule đã khớp (mục chặn
+// domain/chặn tạm thời, hoặc host của mẫu URL) — cùng đơn vị với đường
+// quy chiếu DNR (buildBlockingRuleMap), để dedupe 60s chung gộp được
+// một lần chặn dù cả hai đường cùng ghi. ruleDomain có thể null khi
+// mẫu khớp nhưng không tách được host — khi đó bên gọi dùng hostname
+// làm dự phòng. Hàm thuần (không chạm chrome.*) để kiểm thử được ngoài
+// trình duyệt.
 //
 // TẬP CON THI HÀNH — khớp đúng ngữ nghĩa DNR cho tập con này, theo thang
 // ưu tiên đã khóa ở PRIORITY:
@@ -856,7 +911,7 @@ async function maybeRefreshRulesForNavigation() {
 // Guard: chỉ URL http/https có hostname; mọi URL khác (chrome://,
 // chrome-extension://, edge://, about:, file://, URL hỏng) đều bỏ qua.
 // Không bao giờ throw: dữ liệu lạ -> fail-open (null).
-function isTabUrlBlocked(url, rules, now) {
+function evaluateTabUrl(url, rules, now) {
   if (typeof url !== "string" || url.length === 0) return null;
   let parsed;
   try {
@@ -872,7 +927,7 @@ function isTabUrlBlocked(url, rules, now) {
 
   const tempBlocked = unexpiredTempDomains(rules.tempBlock, nowMs);
   for (const domain of tempBlocked) {
-    if (domainMatches(hostname, domain)) return "tempblock";
+    if (domainMatches(hostname, domain)) return { reason: "tempblock", ruleDomain: domain };
   }
 
   const tempAllowed = unexpiredTempDomains(rules.tempAllow, nowMs);
@@ -882,7 +937,7 @@ function isTabUrlBlocked(url, rules, now) {
 
   const blocked = normalizeDomainSet(rules.blocked);
   for (const domain of blocked) {
-    if (domainMatches(hostname, domain)) return "blocked";
+    if (domainMatches(hostname, domain)) return { reason: "blocked", ruleDomain: domain };
   }
 
   const rawPatterns = Array.isArray(rules.urlPatterns) ? rules.urlPatterns : [];
@@ -890,13 +945,28 @@ function isTabUrlBlocked(url, rules, now) {
     const filter = buildUrlPatternRegex(pattern);
     if (!filter) continue;
     try {
-      if (new RegExp(filter).test(url)) return "blocked";
+      if (new RegExp(filter).test(url)) return { reason: "blocked", ruleDomain: urlPatternHost(pattern) };
     } catch {
       // Regex do builder sinh ra không thể hỏng; phòng thủ, bỏ qua mẫu này.
       continue;
     }
   }
   return null;
+}
+
+// Chỉ lý do chặn (hợp đồng cũ của isTabUrlBlocked), dùng cho quyết định
+// chuyển tab của watcher.
+function isTabUrlBlocked(url, rules, now) {
+  const result = evaluateTabUrl(url, rules, now);
+  return result ? result.reason : null;
+}
+
+// Domain của rule đã khớp URL này (đơn vị ghi lượt chặn — xem
+// evaluateTabUrl), null khi URL không thuộc diện chặn hoặc không xác
+// định được rule. Hàm thuần, không bao giờ throw (fail-open: null).
+function matchedBlockRuleDomain(url, rules, now) {
+  const result = evaluateTabUrl(url, rules, now);
+  return result ? result.ruleDomain : null;
 }
 
 // Chống lặp chuyển hướng: không chuyển cùng một tab tới cùng một URL đích
@@ -955,6 +1025,16 @@ async function redirectTabIfBlocked(tabId, candidateUrl) {
         reason +
         ").",
     );
+    // Lượt web bị chặn (0.1.7): ghi theo DOMAIN CỦA RULE đã khớp
+    // (matchedBlockRuleDomain), cùng đơn vị với đường quy chiếu DNR, để
+    // dedupe 60s chung gộp được một lần chặn dù cả hai đường cùng ghi
+    // (watcher chuyển tab xong, handleBlockedPageShown lại quy chiếu qua
+    // DNR). Đánh giá lại ở đây — rule có thể đã đổi trong lúc chờ
+    // tabs.update — nên không xác định được rule thì dùng hostname của
+    // URL vừa chuyển làm dự phòng. Chỉ ghi khi chuyển thành công (tab
+    // đã tới trang chặn).
+    const blockedDomain = matchedBlockRuleDomain(liveUrl, currentRules, new Date()) || hostname;
+    if (blockedDomain) recordBlockedVisit(blockedDomain, Date.now());
   } catch (error) {
     console.warn("[SafePC] Tab watcher: không chuyển được tab #" + tabId + ":", error);
   }
@@ -984,6 +1064,172 @@ async function sweepOpenTabs() {
   for (const tab of tabs) {
     if (!tab || !Number.isInteger(tab.id) || typeof tab.url !== "string") continue;
     await redirectTabIfBlocked(tab.id, tab.url);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Báo cáo lượt web bị chặn (0.1.7): ghi nhận mỗi lần tab tới trang chặn.
+//
+// Hai đường tới trang chặn, CÙNG đơn vị domain: domain của rule đã khớp
+// (đơn vị phụ huynh đã đặt — vd rule "youtube.com" thì ghi "youtube.com"
+// kể cả khi tab đang ở "www.youtube.com"):
+//   (1) Watcher chuyển tab: redirectTabIfBlocked đánh giá lại URL vừa
+//       chuyển bằng matchedBlockRuleDomain để lấy domain của rule đã
+//       khớp; không xác định được rule (rule đổi trong lúc chuyển) thì
+//       dùng hostname của URL làm dự phòng.
+//   (2) Redirect DNR: đích redirect chỉ mang tham số reason, KHÔNG mang
+//       domain, và blocked.js cũng không biết gì thêm. Khi tab tới trang
+//       chặn, handleBlockedPageShown tra rule vừa khớp bằng
+//       declarativeNetRequest.getMatchedRules và lấy domain của rule đó
+//       từ blockingRuleDomains (dựng từ read-back getDynamicRules sau mỗi
+//       lần rebuild). Chỉ xét rule REDIRECT: rule block (tài nguyên phụ)
+//       không bao giờ đưa tab tới trang chặn, xét cả nó sẽ quy chiếu nhầm
+//       từ lượt khớp cũ của trang trước trong cùng tab.
+// Đơn vị này KHÁC với lượt xem thường (ghi hostname đầy đủ, vd
+// "www.youtube.com" — xem addUsage): lượt chặn ghi theo rule vì DNR chỉ
+// biết rule đã khớp, và hai đường chặn phải cùng đơn vị thì dedupe mới
+// gộp được. Khác đơn vị không ảnh hưởng báo cáo: lượt chặn mang
+// durationSec = 0 nên không vào tổng giờ theo domain, và số lượt chặn
+// chỉ đếm tổng chứ không tách theo domain.
+// Không quy chiếu được thì BỎ QUA, không đoán: URL cũ của tab là trang
+// trước (trang giới thiệu), không phải domain bị chặn — ghi nó sẽ ghi
+// nhầm. Trường hợp bỏ qua: rule chặn-tất-cả của focus/allowlist (không
+// có domain cụ thể), getMatchedRules trống/lỗi, service worker vừa khởi
+// động lại chưa rebuild xong. Số đếm vì vậy là cận dưới, trang Báo cáo
+// tuần ghi rõ điều này.
+// Dedupe: cùng domain trong 60 giây chỉ ghi 1 lượt (cả hai đường dùng
+// chung map) — tải lại trang chặn liên tục không thổi phồng số đếm.
+// ---------------------------------------------------------------------------
+
+// Cửa sổ dedupe lượt chặn theo domain (60 giây — cùng cửa sổ với dedupe
+// sự kiện chặn app phía Agent, để số liệu hai phía có cùng ngữ nghĩa).
+const BLOCKED_VISIT_DEDUPE_MS = 60 * 1000;
+// Chỉ xét lượt khớp rule trong 10 giây gần nhất: lượt redirect vừa xảy ra
+// mới là nguyên nhân tab đang ở trang chặn; lượt cũ hơn là của trang trước.
+const BLOCKED_MATCH_WINDOW_MS = 10 * 1000;
+const BLOCKED_VISIT_DEDUPE_CAP = 200;
+const blockedVisitDedupe = new Map();
+
+// Dựng map ruleId -> {domain, isRedirect} từ các rule DNR đang áp dụng
+// (read-back, dữ liệu thật của trình duyệt). Hàm thuần, không throw.
+//   - Rule requestDomains (chặn domain/chặn theo giờ/hết ngân sách/chặn
+//     tạm thời): domain là phần tử đầu của requestDomains — rule khớp
+//     domain + tên miền con, nên lượt chặn ghi theo domain của rule (đơn
+//     vị phụ huynh đã đặt), không phải hostname con cụ thể.
+//   - Rule regexFilter của mẫu URL: tra host bằng cách dựng lại filter của
+//     từng mẫu trong rules.urlPatterns và so chuỗi — không parse ngược
+//     chuỗi regex (dễ sai). Rule chặn-tất-cả ("^https?://") không khớp
+//     mẫu nào nên không vào map (không quy chiếu được).
+//   - Rule redirect SafeSearch/YouTube (regexSubstitution) và rule allow
+//     không vào map: chúng không đưa tab tới trang chặn.
+function buildBlockingRuleMap(appliedRules, rules) {
+  const map = new Map();
+  try {
+    const patternHostByFilter = new Map();
+    const rawPatterns = rules && Array.isArray(rules.urlPatterns) ? rules.urlPatterns : [];
+    for (const pattern of rawPatterns) {
+      if (typeof pattern !== "string") continue;
+      const filter = buildUrlPatternRegex(pattern);
+      if (!filter || patternHostByFilter.has(filter)) continue;
+      const host = urlPatternHost(pattern);
+      if (host) patternHostByFilter.set(filter, host);
+    }
+    const list = Array.isArray(appliedRules) ? appliedRules : [];
+    for (const rule of list) {
+      if (!rule || typeof rule !== "object" || !Number.isInteger(rule.id)) continue;
+      const action = rule.action;
+      const condition = rule.condition;
+      if (!action || typeof action !== "object" || !condition || typeof condition !== "object") continue;
+      if (isSafeSearchRedirectRule(rule)) continue;
+      const isRedirect = action.type === "redirect";
+      if (!isRedirect && action.type !== "block") continue;
+      let domain = null;
+      if (
+        Array.isArray(condition.requestDomains) &&
+        condition.requestDomains.length > 0 &&
+        typeof condition.requestDomains[0] === "string"
+      ) {
+        domain = normalizeDomain(condition.requestDomains[0]);
+      } else if (typeof condition.regexFilter === "string") {
+        domain = patternHostByFilter.get(condition.regexFilter) || null;
+      }
+      if (domain) map.set(rule.id, { domain, isRedirect });
+    }
+  } catch (error) {
+    // Map lỗi thì trả map rỗng (bỏ qua quy chiếu) thay vì ném.
+    console.warn("[SafePC] Không dựng được map rule chặn:", error);
+    return new Map();
+  }
+  return map;
+}
+
+// Ghi nhận một lượt chặn cho domain. Trả về true khi lượt được ghi vào
+// hàng đợi (sẽ gửi kèm lượt xem thường ở lần flush sau, với blocked = true
+// và durationSec = 0). Domain lạ, rỗng, hoặc vừa ghi trong 60 giây thì trả
+// về false và không ghi. Không bao giờ throw. Chỉ domain được lưu —
+// không URL, path, query.
+function recordBlockedVisit(domain, nowMs) {
+  try {
+    const normalized = normalizeDomain(domain);
+    if (!normalized) return false;
+    const last = blockedVisitDedupe.get(normalized);
+    if (last !== undefined && nowMs - last < BLOCKED_VISIT_DEDUPE_MS) return false;
+    blockedVisitDedupe.set(normalized, nowMs);
+    if (blockedVisitDedupe.size > BLOCKED_VISIT_DEDUPE_CAP) {
+      for (const [oldDomain, oldMs] of blockedVisitDedupe) {
+        if (nowMs - oldMs >= BLOCKED_VISIT_DEDUPE_MS) blockedVisitDedupe.delete(oldDomain);
+      }
+    }
+    pendingBlocked.push({ domain: normalized, startedAt: new Date(nowMs).toISOString() });
+    if (pendingBlocked.length > MAX_PENDING_BLOCKED) {
+      pendingBlocked.splice(0, pendingBlocked.length - MAX_PENDING_BLOCKED);
+    }
+    void saveState();
+    return true;
+  } catch (error) {
+    console.warn("[SafePC] Không ghi được lượt chặn:", error);
+    return false;
+  }
+}
+
+function isBlockedPageUrl(url) {
+  if (typeof url !== "string" || url.length === 0) return false;
+  try {
+    if (blockedPagePrefix === null) blockedPagePrefix = chrome.runtime.getURL("blocked.html");
+  } catch {
+    return false;
+  }
+  return url.startsWith(blockedPagePrefix);
+}
+
+// Tab vừa tới trang chặn qua redirect DNR: tra rule redirect vừa khớp
+// trong 10 giây gần nhất và ghi lượt chặn theo domain của rule đó. Không
+// có rule nào khớp (watcher chuyển tab, rule chặn-tất-cả, API trống/lỗi)
+// thì bỏ qua lặng lẽ — không đoán domain. Không bao giờ throw.
+async function handleBlockedPageShown(tabId) {
+  try {
+    if (blockingRuleDomains.size === 0) return;
+    if (
+      !chrome.declarativeNetRequest ||
+      typeof chrome.declarativeNetRequest.getMatchedRules !== "function"
+    ) {
+      return;
+    }
+    const minTimeStamp = Date.now() - BLOCKED_MATCH_WINDOW_MS;
+    const matched = await chrome.declarativeNetRequest.getMatchedRules({ tabId, minTimeStamp });
+    if (!Array.isArray(matched)) return;
+    let best = null;
+    for (const entry of matched) {
+      if (!entry || typeof entry !== "object") continue;
+      if (!Number.isInteger(entry.ruleId) || typeof entry.timeStamp !== "number") continue;
+      if (entry.timeStamp < minTimeStamp) continue;
+      const info = blockingRuleDomains.get(entry.ruleId);
+      if (!info || !info.isRedirect) continue;
+      if (!best || entry.timeStamp > best.timeStamp) best = { timeStamp: entry.timeStamp, domain: info.domain };
+    }
+    if (best) recordBlockedVisit(best.domain, Date.now());
+  } catch (error) {
+    console.warn("[SafePC] Không quy chiếu được domain cho trang chặn:", error);
   }
 }
 
@@ -1048,7 +1294,11 @@ async function syncActiveTab() {
 
 async function saveState() {
   try {
-    await chrome.storage.local.set({ [STORE_KEYS.usage]: usage, [STORE_KEYS.pending]: pending });
+    await chrome.storage.local.set({
+      [STORE_KEYS.usage]: usage,
+      [STORE_KEYS.pending]: pending,
+      [STORE_KEYS.pendingBlocked]: pendingBlocked,
+    });
   } catch (error) {
     console.warn("[SafePC] Không lưu được trạng thái usage:", error);
   }
@@ -1076,11 +1326,34 @@ function isValidPending(value) {
   );
 }
 
+// Hàng đợi lượt chặn đã lưu phải là mảng các {domain, startedAt} hợp lệ;
+// domain phải chuẩn hóa được (chỉ domain, không URL). Dữ liệu lạ thì bỏ
+// toàn bộ hàng đợi (fail-open, không chặn lần ghi sau).
+function isValidPendingBlocked(value) {
+  if (!Array.isArray(value)) return false;
+  return value.every(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      typeof entry.domain === "string" &&
+      normalizeDomain(entry.domain) !== null &&
+      typeof entry.startedAt === "string" &&
+      !Number.isNaN(Date.parse(entry.startedAt)),
+  );
+}
+
 async function loadState() {
   try {
-    const stored = await chrome.storage.local.get([STORE_KEYS.usage, STORE_KEYS.pending]);
+    const stored = await chrome.storage.local.get([
+      STORE_KEYS.usage,
+      STORE_KEYS.pending,
+      STORE_KEYS.pendingBlocked,
+    ]);
     if (isValidUsage(stored[STORE_KEYS.usage])) usage = stored[STORE_KEYS.usage];
     if (isValidPending(stored[STORE_KEYS.pending])) pending = stored[STORE_KEYS.pending];
+    if (isValidPendingBlocked(stored[STORE_KEYS.pendingBlocked])) {
+      pendingBlocked = stored[STORE_KEYS.pendingBlocked];
+    }
     rolloverIfNeeded(new Date());
   } catch (error) {
     console.warn("[SafePC] Không đọc được trạng thái đã lưu:", error);
@@ -1093,12 +1366,21 @@ async function loadState() {
 
 async function flushUsage() {
   const entries = Object.entries(pending);
-  if (entries.length === 0) return;
+  // Chụp hàng đợi lượt chặn (0.1.7): lượt ghi thêm trong lúc đang gửi
+  // nằm sau vị trí đã chụp và được giữ lại, cùng nguyên tắc với usage.
+  const blockedEntries = pendingBlocked.slice();
+  if (entries.length === 0 && blockedEntries.length === 0) return;
   const visits = entries.map(([domain, entry]) => ({
     domain,
     startedAt: entry.startedAt,
     durationSec: entry.seconds,
   }));
+  // Lượt bị chặn đi cùng batch reportUsage, mang blocked = true và
+  // durationSec = 0 (không xem được gì). Không cần message type mới:
+  // NativeHost và Service đều đọc thêm trường blocked tùy chọn.
+  for (const entry of blockedEntries) {
+    visits.push({ domain: entry.domain, startedAt: entry.startedAt, durationSec: 0, blocked: true });
+  }
   // Chụp số giây đã gửi thành số nguyên (không giữ tham chiếu tới entry):
   // entry trong pending có thể được cộng thêm trong lúc đang gửi, và phép
   // trừ sau đó phải trừ đúng số đã gửi, không phải số đã bị cộng thêm.
@@ -1112,6 +1394,8 @@ async function flushUsage() {
       current.seconds -= seconds;
       if (current.seconds <= 0) delete pending[domain];
     }
+    // Xóa đúng số lượt chặn đã gửi: lượt ghi thêm trong lúc gửi còn lại.
+    pendingBlocked.splice(0, blockedEntries.length);
     await saveState();
   }
   // Gửi lỗi: giữ nguyên hàng đợi để chu kỳ sau gửi lại, không hiện lỗi.
@@ -1175,10 +1459,26 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // Tab watcher (0.1.5) — listener RIÊNG với listener đếm usage ở trên: mọi
 // tab (không chỉ tab đang hiển thị), chỉ khi changeInfo.url xuất hiện (bao
 // gồm điều hướng pushState của SPA). Không chạy khi chỉ đổi trạng thái,
-// title hay favicon.
+// title hay favicon. Tab vừa tới trang chặn (0.1.7) thì quy chiếu domain
+// qua rule DNR vừa khớp thay vì đánh giá watcher (trang chặn không thuộc
+// diện chặn, watcher sẽ bỏ qua).
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (typeof changeInfo.url !== "string") return;
+  if (isBlockedPageUrl(changeInfo.url)) {
+    void handleBlockedPageShown(tabId);
+    return;
+  }
   void handleTabUrlChange(tabId, changeInfo.url);
+});
+
+// Trang chặn tải xong (0.1.7): bắt trường hợp tab điều hướng từ một trang
+// chặn sang domain bị chặn khác với cùng lý do — URL không đổi nên
+// listener trên không chạy, nhưng lần tải này vẫn là một lượt chặn mới
+// (dedupe 60 giây/domain chặn trùng với lần ghi từ listener trên).
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  if (!tab || typeof tab.url !== "string" || !isBlockedPageUrl(tab.url)) return;
+  void handleBlockedPageShown(tabId);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

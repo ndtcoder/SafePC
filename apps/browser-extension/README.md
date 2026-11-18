@@ -40,6 +40,14 @@ Dashboard (phụ huynh đặt rule type=website)
 Extension đếm thời gian xem theo domain
   -> NativeHost (reportUsage mỗi phút) -> web_usage.jsonl
   -> PC Agent (đọc mỗi 5 phút) -> RPC safepc_push_web_visits -> bảng web_visits
+
+Lượt web bị chặn (từ 0.1.7) đi cùng kênh reportUsage đó, với `blocked: true`
+và thời lượng 0. Cả hai đường tới trang chặn đều ghi theo domain của rule
+đã khớp (đơn vị phụ huynh đã đặt): watcher đánh giá lại URL vừa chuyển để
+lấy domain rule (dự phòng hostname khi không xác định được rule); redirect
+DNR thì quy chiếu domain qua rule vừa khớp (`getMatchedRules`). Không quy
+chiếu được (rule chặn-tất-cả của focus / allowlist) thì bỏ qua, không đoán
+domain — số lượt chặn là cận dưới.
 ```
 
 Extension **không** nói chuyện trực tiếp với Supabase, không có secret/key
