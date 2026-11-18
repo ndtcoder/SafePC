@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   WEEKDAY_OPTIONS,
+  parseWebsiteEntriesInput,
   type AllowlistByTimeDraft,
   type AppAllowlistByTimeDraft,
   type AppBlockByTimeDraft,
@@ -402,13 +403,23 @@ export function TimeKindPicker({
 
 // ---------------------------------------------------------------------------
 // Quy tắc website (đợt 2). Các form dùng chung DomainsField; kiểm tra hợp
-// lệ ở lib/ruleConfig.ts (parseDomainsInput).
+// lệ ở lib/ruleConfig.ts (parseDomainsInput cho domain thuần,
+// parseWebsiteEntriesInput cho form quy tắc có cả đường dẫn — đợt 4).
 // ---------------------------------------------------------------------------
 
 /**
  * Ô nhập danh sách domain, dùng chung cho mọi form website và thẻ ghi đè
  * website tạm thời. Định dạng: mỗi dòng một domain (dấu phẩy cũng được
  * chấp nhận). Có thể dán cả đường link — hệ thống chỉ lấy phần tên miền.
+ *
+ * `allowUrlPatterns` (đợt 4, CHỈ form "Chặn website"): mục có dấu /
+ * như bing.com/videos được giữ làm quy tắc đường dẫn (chỉ link bắt đầu
+ * bằng phần đó) thay vì bị cắt thành domain, và ô nhập hiển thị tách
+ * riêng hai danh sách đã nhận dạng. Các form website khác (theo giờ,
+ * allowlist, giới hạn thời gian) KHÔNG bật vì Agent chưa thi hành đường
+ * dẫn ở các mode đó — chúng từ chối mục có dấu / lúc lưu. Ghi đè tạm thời
+ * và giờ học tập trung cũng KHÔNG bật: chúng chỉ làm việc với toàn bộ
+ * domain.
  */
 export function DomainsField({
   id,
@@ -416,13 +427,20 @@ export function DomainsField({
   value,
   onChange,
   hint,
+  allowUrlPatterns = false,
 }: {
   id: string
   label: string
   value: string
   onChange: (value: string) => void
   hint?: string
+  allowUrlPatterns?: boolean
 }) {
+  const split = allowUrlPatterns ? parseWebsiteEntriesInput(value) : null
+  const showSplit =
+    split !== null &&
+    split.error === null &&
+    (split.domains.length > 0 || split.urlPatterns.length > 0)
   return (
     <div>
       <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700">
@@ -433,13 +451,25 @@ export function DomainsField({
         rows={4}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={'youtube.com\nfacebook.com'}
+        placeholder={
+          allowUrlPatterns ? 'youtube.com\nbing.com/videos' : 'youtube.com\nfacebook.com'
+        }
         className={inputClassName}
       />
       <p className="mt-1 text-xs text-slate-500">
         {hint ??
-          'Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Có thể dán cả đường link, ví dụ https://www.youtube.com/ — hệ thống chỉ lấy phần tên miền.'}
+          (allowUrlPatterns
+            ? 'Mỗi dòng một mục (phân tách bằng dấu phẩy cũng được). Mục có dấu / như bing.com/videos chỉ áp dụng cho các link bắt đầu bằng phần đó, và phần đường dẫn phân biệt chữ hoa/thường — hãy gõ đúng như đường link thật; mục không có dấu / như youtube.com áp dụng cho cả domain (kể cả tên miền con).'
+            : 'Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Có thể dán cả đường link, ví dụ https://www.youtube.com/ — hệ thống chỉ lấy phần tên miền.')}
       </p>
+      {showSplit && (
+        <div className="mt-2 space-y-1 text-xs text-slate-600">
+          {split.domains.length > 0 && <p>Cả domain: {split.domains.join(', ')}</p>}
+          {split.urlPatterns.length > 0 && (
+            <p>Đường dẫn (chỉ link bắt đầu bằng phần này): {split.urlPatterns.join(', ')}</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -460,6 +490,7 @@ export function BlockDomainsForm({
       <DomainsField
         id="website-domains"
         label="Domain bị chặn"
+        allowUrlPatterns
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
@@ -485,6 +516,7 @@ export function BlockDomainsByTimeForm({
       <DomainsField
         id="website-domains"
         label="Domain bị chặn theo giờ"
+        hint="Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Quy tắc đường dẫn (mục có dấu /, ví dụ bing.com/videos) hiện chỉ dùng được trong quy tắc “Chặn website”."
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
@@ -516,6 +548,7 @@ export function AllowlistForm({
       <DomainsField
         id="website-domains"
         label="Domain được phép"
+        hint="Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Quy tắc đường dẫn (mục có dấu /, ví dụ bing.com/videos) hiện chỉ dùng được trong quy tắc “Chặn website”."
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
@@ -541,6 +574,7 @@ export function AllowlistByTimeForm({
       <DomainsField
         id="website-domains"
         label="Domain được phép theo giờ"
+        hint="Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Quy tắc đường dẫn (mục có dấu /, ví dụ bing.com/videos) hiện chỉ dùng được trong quy tắc “Chặn website”."
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
@@ -571,6 +605,7 @@ export function DomainTimeLimitForm({
       <DomainsField
         id="website-domains"
         label="Domain bị giới hạn thời gian"
+        hint="Mỗi dòng một domain (phân tách bằng dấu phẩy cũng được). Quy tắc đường dẫn (mục có dấu /, ví dụ bing.com/videos) hiện chỉ dùng được trong quy tắc “Chặn website”."
         value={draft.domainsText}
         onChange={(domainsText) => onChange({ ...draft, domainsText })}
       />
