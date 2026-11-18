@@ -18,6 +18,23 @@ export interface Family {
   created_at: string
 }
 
+/**
+ * Lời mời phụ huynh thứ hai (bảng family_invites, migration 14).
+ * Không có trường token_hash: Dashboard không bao giờ SELECT cột hash
+ * khi liệt kê lời mời — token thô chỉ tồn tại trong link lúc tạo.
+ */
+export interface FamilyInvite {
+  id: string
+  family_id: string
+  invited_email: string
+  invited_by: string
+  expires_at: string
+  accepted_at: string | null
+  accepted_by: string | null
+  revoked_at: string | null
+  created_at: string
+}
+
 export interface Child {
   id: string
   family_id: string
