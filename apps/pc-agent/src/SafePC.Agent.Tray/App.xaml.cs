@@ -835,15 +835,23 @@ public partial class App : System.Windows.Application
             return "Chưa lấy được dữ liệu từ Service. Hãy thử lại sau.";
         }
 
+        // Giờ thưởng đang hiệu lực (ngân hàng giờ): chỉ nêu sự thật là phụ
+        // huynh đã thưởng thêm, không khẳng định số phút còn lại hiển thị
+        // chứa nó (số đó có thể bị ràng buộc bởi khung giờ/giờ ngủ). Khi
+        // máy đang khóa thì không hiện — giờ thưởng không mở được khóa.
+        string bonusSuffix = response.BonusMinutes is > 0
+            ? " Phụ huynh đã thưởng thêm " + response.BonusMinutes.Value + " phút vào giới hạn hôm nay."
+            : string.Empty;
+
         return response.Decision switch
         {
             "lock" => "Máy đang bị khóa." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason),
             "warn" => response.MinutesLeft.HasValue
-                ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút trước khi máy khóa." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason)
-                : "Sắp hết thời gian dùng máy." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason),
+                ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút trước khi máy khóa." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason) + bonusSuffix
+                : "Sắp hết thời gian dùng máy." + (string.IsNullOrWhiteSpace(response.Reason) ? string.Empty : " " + response.Reason) + bonusSuffix,
             "allow" => response.MinutesLeft.HasValue
-                ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút."
-                : (string.IsNullOrWhiteSpace(response.Reason) ? "Hôm nay không còn giới hạn thời gian." : response.Reason),
+                ? "Còn lại khoảng " + response.MinutesLeft.Value + " phút." + bonusSuffix
+                : (string.IsNullOrWhiteSpace(response.Reason) ? "Hôm nay không còn giới hạn thời gian." : response.Reason) + bonusSuffix,
             _ => "Chưa có dữ liệu thi hành. Hãy thử lại sau.",
         };
     }
