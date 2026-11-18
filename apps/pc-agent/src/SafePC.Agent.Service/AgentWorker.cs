@@ -966,9 +966,10 @@ public sealed class AgentWorker : BackgroundService
                 }
 
                 // Snapshot trạng thái thi hành + chẩn đoán quyết định: dựng
-                // mỗi lần kiểm tra, gửi lên server ở chu kỳ heartbeat khi
-                // đổi (xem MaybeReportEnforcementAsync). lockedBy/reasons/
-                // ruleIds suy ra từ chính kết quả đánh giá của lần này.
+                // mỗi lần kiểm tra và gửi lên server ngay khi đổi (gọi
+                // MaybeReportEnforcementAsync bên dưới; chu kỳ heartbeat
+                // vẫn gọi lại như dự phòng). lockedBy/reasons/ruleIds suy
+                // ra từ chính kết quả đánh giá của lần này.
                 // Đang chờ khóa có độ trễ: snapshot báo "cảnh báo" thay vì
                 // "đang khóa" — màn hình khóa chưa hiện, Dashboard không nên
                 // báo khóa sớm. DeriveLockedBy trả về null khi decision
@@ -988,6 +989,15 @@ public sealed class AgentWorker : BackgroundService
                     _pendingEnforcementJson = snapshotJson;
                     _pendingEnforcementSignature = snapshotSignature;
                 }
+
+                // Báo snapshot lên server NGAY khi nội dung đổi (đợt sửa
+                // 18/11/2026): trước đây chỉ chu kỳ heartbeat 60 giây mới
+                // gửi, nên sau khi duyệt thêm giờ Dashboard vẫn hiện "Đang
+                // khóa" tới 1 phút dù máy đã mở. Chữ ký đổi mới gửi (xem
+                // MaybeReportEnforcementAsync) nên gọi mỗi lần kiểm tra
+                // 15 giây cũng không gửi thừa; gửi lỗi thì giữ chữ ký cũ
+                // để lần sau thử lại.
+                await MaybeReportEnforcementAsync(ct);
 
                 // Quyết định cuối cùng (đã gồm nghỉ bắt buộc, ghi đè, khóa
                 // có độ trễ) cũng là đáp án cho câu hỏi "thời gian còn lại"
@@ -1804,8 +1814,15 @@ public sealed class AgentWorker : BackgroundService
                 // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1 Tray (xem ghi
                 // chú ở vòng kiểm tra rules): gửi thất bại thì cờ vẫn false
                 // và vòng kiểm tra sau gửi lại từ trạng thái khóa bền vững.
+                // Khóa Immediate (đợt sửa 18/11/2026): phụ huynh bấm "Khóa
+                // ngay" (độ trễ 0) thì máy khóa luôn — Tray phải hiện trạng
+                // thái đã khóa, KHÔNG đếm ngược 60 giây (như lệnh khóa
+                // đồng bộ khi hello). Đếm ngược chỉ dành cho khóa do hết
+                // giờ theo rule (con cần thời gian lưu bài); đường khóa có
+                // độ trễ đã cho thời gian đó qua cửa sổ cảnh báo nên khi
+                // hết trễ cũng khóa Immediate ở vòng kiểm tra rules.
                 int lockSent = await _ipc.SendToTrayAsync(
-                    IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy.")), ct);
+                    IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy.", Immediate: true)), ct);
                 _lockSent = lockSent > 0;
                 return true;
 
@@ -1964,8 +1981,11 @@ public sealed class AgentWorker : BackgroundService
             // Chỉ coi là "đã gửi" khi thật sự ghi tới ≥1 Tray (xem ghi chú
             // ở vòng kiểm tra rules): gửi thất bại thì vòng kiểm tra sau
             // gửi lại từ ghi đè đang hiệu lực.
+            // Khóa tạm thời do phụ huynh bấm: khóa ngay, không đếm ngược
+            // (giống lock_now độ trễ 0 — đếm ngược chỉ dành cho khóa khi
+            // hết thời gian theo quy tắc).
             int lockSent = await _ipc.SendToTrayAsync(
-                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy tạm thời.")), ct);
+                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy tạm thời.", Immediate: true)), ct);
             _lockSent = lockSent > 0;
         }
         else if (!isDomainAction && action == OverrideActions.Unlock)
@@ -2219,11 +2239,12 @@ public sealed class AgentWorker : BackgroundService
     /// <summary>
     /// Gửi snapshot enforcement đang chờ lên server nếu nội dung (trừ thời
     /// điểm) đã đổi so với lần gửi trước. Không chặn 5 phút nữa (đợt sửa
-    /// 17/11/2026): hàm chỉ chạy ở chu kỳ heartbeat 60 giây nên tối đa
-    /// 1 lần gửi/phút và chỉ khi chữ ký đổi — chặn thêm làm Dashboard chậm
-    /// thấy trạng thái thi hành mới. Chỉ gọi sau khi heartbeat thành công
-    /// (máy đang online). Gửi lỗi thì giữ nguyên chữ ký đã gửi để chu kỳ
-    /// sau thử lại với snapshot mới nhất.
+    /// 17/11/2026): gọi từ vòng kiểm tra rules (mỗi 15 giây) và từ chu kỳ
+    /// heartbeat (mỗi 60 giây, sau khi heartbeat thành công) — chữ ký đổi
+    /// mới gửi nên không gửi thừa dù gọi từ hai vòng; hai vòng cùng thấy
+    /// chữ ký mới thì cùng lắm gửi trùng một nội dung giống hệt (RPC ghi
+    /// đè, vô hại). Gửi lỗi thì giữ nguyên chữ ký đã gửi để lần sau thử
+    /// lại với snapshot mới nhất.
     /// </summary>
     private async Task MaybeReportEnforcementAsync(CancellationToken ct)
     {
