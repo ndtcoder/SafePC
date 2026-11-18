@@ -12,6 +12,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function render() {
+  const titleEl = document.getElementById("title");
   const statusEl = document.getElementById("status");
   const listEl = document.getElementById("limits");
   const emptyEl = document.getElementById("empty");
@@ -19,6 +20,21 @@ async function render() {
   const dnrBlockedEl = document.getElementById("dnr-blocked");
   const dnrAppliedEl = document.getElementById("dnr-applied");
   const dnrErrorEl = document.getElementById("dnr-error");
+  const dnrDomainsEl = document.getElementById("dnr-domains");
+  const dnrRulesEl = document.getElementById("dnr-rules");
+
+  // Hiện phiên bản extension cạnh tên (đợt sửa 18/11/2026): đọc từ
+  // manifest lúc chạy, không hardcode. Lỗi thì giữ tiêu đề mặc định.
+  if (titleEl) {
+    try {
+      const version = chrome.runtime.getManifest().version;
+      if (typeof version === "string" && version) {
+        titleEl.textContent = "SafePC " + version;
+      }
+    } catch {
+      // Giữ tiêu đề mặc định "SafePC" trong HTML.
+    }
+  }
 
   let stored;
   try {
@@ -90,6 +106,35 @@ async function render() {
       dnrErrorEl.textContent = "";
       dnrErrorEl.hidden = true;
     }
+  }
+
+  // Chẩn đoán sâu (đợt sửa 18/11/2026): domain nào đang chặn + rule nào
+  // đang áp dụng (id, ưu tiên, mẫu khớp, hành động). Dữ liệu do background.js ghi
+  // kèm mỗi lần rebuild; vắng thì báo "không có", không suy đoán.
+  if (dnrDomainsEl) {
+    const domains = Array.isArray(dnr && dnr.blockedDomains)
+      ? dnr.blockedDomains.filter((domain) => typeof domain === "string" && domain)
+      : [];
+    dnrDomainsEl.textContent = dnrOk
+      ? "Domain đang chặn: " + (domains.length > 0 ? domains.join(", ") : "không có") + "."
+      : "";
+    dnrDomainsEl.hidden = !dnrOk;
+  }
+  if (dnrRulesEl) {
+    const entries = Array.isArray(dnr && dnr.ruleSummary) ? dnr.ruleSummary : [];
+    const parts = [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      if (!Number.isInteger(entry.id) || typeof entry.action !== "string") continue;
+      const pattern =
+        typeof entry.pattern === "string" && entry.pattern ? entry.pattern : "(không có mẫu)";
+      const priority = Number.isInteger(entry.priority) ? " p" + entry.priority : "";
+      parts.push("#" + entry.id + priority + " " + pattern + " -> " + entry.action);
+    }
+    dnrRulesEl.textContent = dnrOk
+      ? "Rule đang áp: " + (parts.length > 0 ? parts.join("; ") : "không có") + "."
+      : "";
+    dnrRulesEl.hidden = !dnrOk;
   }
 
   // Thời gian đã dùng: chỉ tính khi usage thuộc ngày hôm nay (giờ địa phương).

@@ -65,8 +65,8 @@ const SUB_RESOURCE_TYPES = [
 //   - redirect SafeSearch/YouTube 65: cao hơn mọi mức allow (60/55/50) để
 //     tham số an toàn vẫn được thêm cho domain được phép, nhưng thấp hơn
 //     chặn tạm thời (100). Redirect không mở thêm website nào: URL sau
-//     redirect được đánh giá lại, và rule chặn (khớp hậu tố ||domain^,
-//     kể cả host restrict.youtube.com — nó là tên miền con của youtube.com)
+//     redirect được đánh giá lại, và rule chặn (requestDomains khớp cả
+//     tên miền con — kể cả host restrict.youtube.com của youtube.com)
 //     vẫn chặn được nó.
 //   - cho phép tạm thời 57: chọc thủng chặn/chặn theo giờ/allowlist/
 //     allowlist theo giờ/hết ngân sách (mọi mức <= 55 và cặp chặn-tất-cả
@@ -185,6 +185,12 @@ function extractLimits(rules) {
 // Dựng declarativeNetRequest dynamic rules từ domain_rules.json
 // ---------------------------------------------------------------------------
 
+// Khớp domain bằng requestDomains (đợt sửa 18/11/2026): dạng urlFilter
+// "||domain^" trước đây đã cài rule thành công nhưng KHÔNG khớp request nào
+// trên máy thật (tab mới, 2 rule, không lỗi — youtube.com vẫn tải đủ). Theo
+// tài liệu API của Chromium, requestDomains khớp domain và mọi tên miền con
+// của nó, không phụ thuộc cú pháp mẫu chuỗi. Chỉ 3 helper dưới đây đổi;
+// rule chặn-tất-cả và rule redirect SafeSearch/YouTube vẫn dùng regexFilter.
 function redirectRule(id, priority, domain, reason) {
   return {
     id,
@@ -193,7 +199,7 @@ function redirectRule(id, priority, domain, reason) {
       type: "redirect",
       redirect: { url: chrome.runtime.getURL("blocked.html?reason=" + reason) },
     },
-    condition: { urlFilter: "||" + domain + "^", resourceTypes: ["main_frame"] },
+    condition: { requestDomains: [domain], resourceTypes: ["main_frame"] },
   };
 }
 
@@ -202,7 +208,7 @@ function blockRule(id, priority, domain) {
     id,
     priority,
     action: { type: "block" },
-    condition: { urlFilter: "||" + domain + "^", resourceTypes: SUB_RESOURCE_TYPES },
+    condition: { requestDomains: [domain], resourceTypes: SUB_RESOURCE_TYPES },
   };
 }
 
@@ -211,7 +217,7 @@ function allowRule(id, priority, domain) {
     id,
     priority,
     action: { type: "allow" },
-    condition: { urlFilter: "||" + domain + "^" },
+    condition: { requestDomains: [domain] },
   };
 }
 
@@ -499,6 +505,36 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Tóm tắt rule DNR đang áp dụng cho popup chẩn đoán (đợt sửa 18/11/2026):
+// mỗi rule một mục {id, priority, action, pattern}. Bỏ qua mục sai hình
+// dạng, không bao giờ throw — chẩn đoán không được làm hỏng lần rebuild.
+// Pattern là mẫu của rule (urlFilter/regexFilter/requestDomains), không phải URL đã duyệt.
+function buildRuleSummary(rules) {
+  const summary = [];
+  const list = Array.isArray(rules) ? rules : [];
+  for (const rule of list) {
+    if (summary.length >= 10) break;
+    if (!rule || typeof rule !== "object") continue;
+    if (!Number.isInteger(rule.id) || !Number.isInteger(rule.priority)) continue;
+    const condition = rule.condition;
+    const action = rule.action;
+    if (!condition || typeof condition !== "object") continue;
+    if (!action || typeof action !== "object" || typeof action.type !== "string") continue;
+    const urlFilter = typeof condition.urlFilter === "string" ? condition.urlFilter : "";
+    const regexFilter = typeof condition.regexFilter === "string" ? condition.regexFilter : "";
+    const requestDomains = Array.isArray(condition.requestDomains)
+      ? condition.requestDomains.filter((d) => typeof d === "string" && d.length > 0).join(",")
+      : "";
+    summary.push({
+      id: rule.id,
+      priority: rule.priority,
+      action: action.type,
+      pattern: urlFilter || regexFilter || requestDomains,
+    });
+  }
+  return summary;
+}
+
 async function rebuildDynamicRules() {
   const now = new Date();
   let error = null;
@@ -534,29 +570,43 @@ async function rebuildDynamicRules() {
     console.warn("[SafePC] Không rebuild được dynamic rules:", buildError);
   }
 
-  // Chẩn đoán cho popup (đợt sửa 17/11/2026): số rule thực tế trình duyệt
-  // đang áp dụng (đọc lại sau khi cập nhật), số domain đang chặn (hợp các
-  // domain chặn + chặn tạm thời chưa hết hạn, sau chuẩn hóa), lỗi của lần
-  // rebuild gần nhất. Chỉ ghi storage + console.warn, không throw, không
-  // hiện gì khác cho user.
-  let appliedCount = 0;
+  // Chẩn đoán cho popup (đợt sửa 17/11/2026, mở rộng 18/11/2026): số rule
+  // thực tế trình duyệt đang áp dụng (đọc lại sau khi cập nhật), số domain
+  // đang chặn (hợp các domain chặn + chặn tạm thời chưa hết hạn, sau chuẩn
+  // hóa), danh sách domain đang chặn, tóm tắt các rule đang áp dụng, lỗi
+  // của lần rebuild gần nhất. Chỉ ghi storage + console.warn, không throw,
+  // không hiện gì khác cho user.
+  let appliedRules = [];
   try {
-    appliedCount = (await chrome.declarativeNetRequest.getDynamicRules()).length;
+    appliedRules = await chrome.declarativeNetRequest.getDynamicRules();
+    if (!Array.isArray(appliedRules)) appliedRules = [];
   } catch (readError) {
     console.warn("[SafePC] Không đọc lại được dynamic rules:", readError);
     if (error === null) error = errorMessage(readError);
   }
+  const appliedCount = appliedRules.length;
   const blockedDomains = normalizeDomainSet(currentRules ? currentRules.blocked : null);
   const tempBlocked = unexpiredTempDomains(
     currentRules ? currentRules.tempBlock : null,
     now.getTime(),
   );
-  const blockedCount = new Set([...blockedDomains, ...tempBlocked]).size;
+  const blockedUnion = new Set([...blockedDomains, ...tempBlocked]);
+  const blockedCount = blockedUnion.size;
+  const blockedDomainsList = [...blockedUnion].sort().slice(0, 10);
+  let ruleSummary = [];
+  try {
+    ruleSummary = buildRuleSummary(appliedRules);
+  } catch (summaryError) {
+    console.warn("[SafePC] Không tóm tắt được dynamic rules:", summaryError);
+    ruleSummary = [];
+  }
   try {
     await chrome.storage.local.set({
       [STORE_KEYS.dnr]: {
         appliedCount,
         blockedCount,
+        blockedDomains: blockedDomainsList,
+        ruleSummary,
         error,
         updatedAt: now.toISOString(),
       },

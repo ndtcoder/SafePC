@@ -77,10 +77,13 @@
     .note.dnr {
       margin-top: 6px;
     }
+    .note.dnr-detail {
+      overflow-wrap: anywhere;
+    }
   </style>
 </head>
 <body>
-  <p class="title">SafePC</p>
+  <p id="title" class="title">SafePC</p>
   <p id="status" class="status">Đang kiểm tra…</p>
   <p class="section">Thời gian hôm nay (trang bị giới hạn)</p>
   <ul id="limits"></ul>
@@ -89,6 +92,8 @@
   <p id="dnr-blocked" class="note dnr"></p>
   <p id="dnr-applied" class="note dnr" hidden></p>
   <p id="dnr-error" class="note dnr" hidden></p>
+  <p id="dnr-domains" class="note dnr dnr-detail" hidden></p>
+  <p id="dnr-rules" class="note dnr dnr-detail" hidden></p>
   <p class="note">Quy tắc do phụ huynh đặt trên Dashboard SafePC.</p>
   <script src="domainUtils.js"></script>
   <script src="popup.js"></script>
