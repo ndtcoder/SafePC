@@ -34,7 +34,9 @@ namespace SafePC.Agent.Service;
 /// (khóa phiên khi dùng liên tục quá lâu, trạng thái bền vững trong
 /// device_state), và báo sự kiện can thiệp (lệch đồng hồ, Service khởi động
 /// lại) + heartbeat của extension lên server qua RPC migration 5. Ghi đè mở
-/// máy tạm thời (unlock) tạm ngưng cả ba nhóm thi hành này.
+/// máy tạm thời (unlock) chỉ hoãn khóa máy theo giờ giấc (giờ ngủ/khung
+/// giờ/giới hạn ngày/khóa cưỡng chế); thi hành theo app, giờ học tập trung
+/// và nghỉ bắt buộc vẫn chạy trong lúc mở khóa (quyết định ngày 18/11/2026).
 ///
 /// Bản sửa lỗi sau Sprint 2 đợt 3: thêm mode app mới (app_block luôn chặn,
 /// app_allowlist / app_allowlist_by_time chỉ cho phép danh sách app), ghi đè
@@ -830,9 +832,11 @@ public sealed class AgentWorker : BackgroundService
                 bool forcedLock = await _outbox.GetStateAsync(StateKeys.ForcedLock, ct) is not null;
                 RuleDecision decision = _ruleEngine.Evaluate(rules, usedToday, now, foregroundAppName: null, activeOverride, forcedLock: forcedLock);
 
-                // Ghi đè mở máy tạm thời (unlock) nghĩa là "máy được dùng":
-                // bỏ qua cả nghỉ bắt buộc lẫn thi hành theo app/focus trong
-                // lúc ghi đè còn hạn (cùng điều kiện RuleEngine dùng để mở máy).
+                // Ghi đè mở máy tạm thời (unlock) nghĩa là "máy được dùng thêm
+                // giờ": RuleEngine mở máy theo giờ giấc, nhưng nghỉ bắt buộc
+                // và thi hành theo app/focus VẪN chạy trong lúc ghi đè còn
+                // hạn (quyết định ngày 18/11/2026). Biến này chỉ còn dùng
+                // cho lý do hiển thị "thời gian còn lại" bên dưới.
                 bool unlockOverride = activeOverride is not null
                     && activeOverride.ExpiresAt > now
                     && activeOverride.Action == OverrideActions.Unlock;
@@ -842,11 +846,10 @@ public sealed class AgentWorker : BackgroundService
                 // Nghỉ bắt buộc được đánh giá TRƯỚC switch: đang trong giờ
                 // nghỉ thì ép quyết định thành khóa; hết giờ nghỉ thì dọn
                 // trạng thái rồi đánh giá bình thường.
-                bool breakActive = false;
-                if (!unlockOverride)
-                {
-                    breakActive = await EvaluateForcedBreakAsync(parsedAppRules, now, ct);
-                }
+                // Nghỉ bắt buộc luôn được đánh giá, kể cả trong lúc mở khóa
+                // tạm thời (quyết định ngày 18/11/2026): dùng liên tục đủ
+                // lâu thì vẫn khóa tới hết giờ nghỉ.
+                bool breakActive = await EvaluateForcedBreakAsync(parsedAppRules, now, ct);
 
                 if (breakActive)
                 {
@@ -958,12 +961,10 @@ public sealed class AgentWorker : BackgroundService
                 // không có rule app/focus nào và không có ghi đè app thì hàm
                 // tự bỏ qua ngay. Kết quả thi hành (focus có đang hiệu lực,
                 // app nào đang bị chặn) đi vào snapshot enforcement bên dưới.
-                bool focusActive = false;
-                var appBlocks = new List<string>();
-                if (!unlockOverride)
-                {
-                    (focusActive, appBlocks) = await EnforceAppRulesAsync(parsedAppRules, now, activeOverride, ct);
-                }
+                // Thi hành theo app/focus luôn chạy, kể cả trong lúc mở khóa
+                // tạm thời (quyết định ngày 18/11/2026): mở khóa chỉ thêm
+                // giờ dùng máy, app bị chặn vẫn bị đóng.
+                (bool focusActive, List<string> appBlocks) = await EnforceAppRulesAsync(parsedAppRules, now, activeOverride, ct);
 
                 // Snapshot trạng thái thi hành + chẩn đoán quyết định: dựng
                 // mỗi lần kiểm tra và gửi lên server ngay khi đổi (gọi
@@ -1261,7 +1262,9 @@ public sealed class AgentWorker : BackgroundService
     /// qua ngay. Không có báo cáo tươi thì KHÔNG kill (fail-open: không biết
     /// foreground là gì), chỉ ghi log chống spam — nhưng vẫn trả về trạng
     /// thái focus/appBlocks tính theo giờ (không cần foreground) để snapshot
-    /// enforcement phản ánh đúng. Nơi gọi đã loại trường hợp ghi đè unlock.
+    /// enforcement phản ánh đúng. Hàm chạy cả trong lúc ghi đè mở khóa tạm
+    /// thời (quyết định ngày 18/11/2026): unlock chỉ hoãn khóa máy theo giờ
+    /// giấc, không miễn thi hành theo app/focus.
     /// Trả về (focus có đang hiệu lực, exe đang chịu thi hành chặn/allowlist
     /// trong lần này). Ghi đè app (block_app/allow_app) được xét trong
     /// <see cref="EnforceAppRulesForReportAsync"/> và có hiệu lực cả khi
