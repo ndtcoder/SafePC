@@ -193,3 +193,35 @@ export interface AuditLog {
   device_id?: string | null
   details?: Record<string, unknown> | null
 }
+
+// Dòng notification_sends theo migration 12: nhật ký giữ chỗ/gửi email
+// thông báo cho phụ huynh. Chỉ đọc qua policy "family read"; ghi chỉ qua
+// các RPC claim/finish/mark của Edge Function gửi thông báo.
+export interface NotificationSend {
+  id: string
+  family_id: string
+  kind: 'request' | 'tamper' | 'device_offline'
+  event_key: string
+  status: 'sending' | 'sent' | 'skipped' | 'throttled'
+  device_id: string | null
+  action: string | null
+  child_id: string | null
+  claimed_at: string
+  sent_at: string | null
+  resend_id: string | null
+  recipients: string[]
+  created_at: string
+}
+
+// Dòng pairing_codes theo migration 1: mã ghép nối 6 số, chỉ lưu hash.
+// Dashboard KHÔNG bao giờ SELECT cột code_hash (xem ChildDataTab): mã
+// thô chỉ tồn tại lúc tạo, hash không có giá trị xuất dữ liệu.
+export interface PairingCode {
+  id: string
+  family_id: string
+  child_id: string | null
+  attempts: number
+  expires_at: string
+  used_at: string | null
+  created_at: string
+}
