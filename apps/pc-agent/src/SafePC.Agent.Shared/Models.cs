@@ -137,11 +137,14 @@ public sealed class UsageRecord
 }
 
 /// <summary>
-/// Một lượt thăm web đã tổng hợp theo domain, khớp bảng <c>web_visits</c>
+/// Một lượt thăm web đã tổng hợp theo cặp (domain, đường dẫn), khớp bảng <c>web_visits</c>
 /// (migration 1 + cột <c>duration_sec</c> ở migration 4 + cờ <c>blocked</c>
-/// ở migration 10).
-/// Chỉ lưu domain + thời điểm + thời lượng (giây) + cờ bị chặn — KHÔNG lưu
-/// URL, path, query hay tiêu đề trang (docs/03-SECURITY.md mục 3). Lượt bị
+/// ở migration 10 + cột <c>path</c> ở migration 19).
+/// Chỉ lưu domain + đường dẫn + thời điểm + thời lượng (giây) + cờ bị
+/// chặn — KHÔNG lưu URL đầy đủ, query, fragment hay tiêu đề trang
+/// (docs/03-SECURITY.md mục 3). Đường dẫn đã cắt query/fragment, trần
+/// 500 ký tự (xem <see cref="WebVisitPath"/>); lượt xem ghi từ bản cũ
+/// và lượt bị chặn không có đường dẫn (null). Lượt bị
 /// chặn có <see cref="Blocked"/> = true và DurationSec = 0.
 /// family_id/device_id/child_id do server suy ra từ device đã xác thực,
 /// không gửi kèm.
@@ -150,6 +153,11 @@ public sealed class WebVisitRecord
 {
     [JsonPropertyName("domain")]
     public string Domain { get; set; } = string.Empty;
+
+    /// <summary>Đường dẫn đã cắt (bắt đầu bằng '/', tối đa 500 ký tự),
+    /// hoặc null khi lượt thăm không mang đường dẫn.</summary>
+    [JsonPropertyName("path")]
+    public string? Path { get; set; }
 
     [JsonPropertyName("visited_at")]
     public DateTimeOffset VisitedAt { get; set; }
