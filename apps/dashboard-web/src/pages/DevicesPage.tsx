@@ -773,6 +773,19 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                 const enforcementStale =
                   !Number.isNaN(enforcementUpdatedMs) && Date.now() - enforcementUpdatedMs > 5 * 60 * 1000
                 const activeUnlockExpiresAt = getActiveUnlock(overrideCommands, device.id, Date.now())
+                // Ghi đè mở khóa đang hiệu lực (suy ra từ lệnh mới nhất
+                // trong bảng commands — dữ liệu tươi, tải lại ngay sau mỗi
+                // thao tác) thắng trạng thái khóa cũ: devices.status và
+                // snapshot thi hành cập nhật chậm hơn (Agent đẩy khi chữ
+                // ký đổi, từ vòng tick 15 giây hoặc chu kỳ heartbeat 60
+                // giây), nên sau khi duyệt thêm giờ thẻ sẽ hiện đồng thời
+                // "Đang bị khóa"/"Đang khóa" và "Đang mở khóa" nếu không
+                // ưu tiên trạng thái mở khóa ở đây (test máy thật
+                // 18/11/2026). Snapshot "Cho phép" thì không mâu thuẫn
+                // nên vẫn hiển thị như thường.
+                const unlockActive = activeUnlockExpiresAt !== null
+                const enforcementSupersededByUnlock =
+                  unlockActive && enforcementSnapshot !== null && enforcementSnapshot.decision !== 'allow'
                 const unlockMinutes = unlockMinutesByDevice[device.id] ?? 30
                 const lockDelay = lockDelayByDevice[device.id] ?? 0
                 const confirmingDeleteDevice = confirmDeleteDeviceId === device.id
@@ -786,11 +799,17 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-wrap justify-end gap-2">
-                      <span
-                        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[device.status]}`}
-                      >
-                        {deviceStatusLabel(device.status)}
-                      </span>
+                      {unlockActive ? (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
+                          Đang mở khóa
+                        </span>
+                      ) : (
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE[device.status]}`}
+                        >
+                          {deviceStatusLabel(device.status)}
+                        </span>
+                      )}
                       {disconnected && (
                         <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">
                           Mất kết nối
@@ -828,22 +847,36 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                         {enforcementSnapshot ? (
                           <span className="inline-flex flex-col items-end gap-1">
                             <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${ENFORCEMENT_BADGE[enforcementSnapshot.decision]}`}
+                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${enforcementSupersededByUnlock ? 'bg-amber-100 text-amber-800' : ENFORCEMENT_BADGE[enforcementSnapshot.decision]}`}
                             >
-                              {enforcementDecisionLabel(enforcementSnapshot.decision)}
+                              {enforcementSupersededByUnlock
+                                ? 'Đang mở khóa'
+                                : enforcementDecisionLabel(enforcementSnapshot.decision)}
                             </span>
-                            {enforcementSnapshot.reasons.length > 0 && (
+                            {!enforcementSupersededByUnlock && enforcementSnapshot.reasons.length > 0 && (
                               <span className="text-xs text-slate-500">
                                 Theo luật:{' '}
                                 {enforcementSnapshot.reasons.map(enforcementReasonLabel).join(', ')}
                               </span>
                             )}
                             <span className="text-xs text-slate-500">
-                              Cập nhật{' '}
-                              {enforcement?.updatedAt
-                                ? formatRelativeVi(enforcement.updatedAt)
-                                : 'không rõ thời điểm'}
-                              {enforcementStale && (
+                              {enforcementSupersededByUnlock ? (
+                                <>
+                                  Trước khi mở khóa: {enforcementDecisionLabel(enforcementSnapshot.decision)}
+                                  {', cập nhật '}
+                                  {enforcement?.updatedAt
+                                    ? formatRelativeVi(enforcement.updatedAt)
+                                    : 'không rõ thời điểm'}
+                                </>
+                              ) : (
+                                <>
+                                  Cập nhật{' '}
+                                  {enforcement?.updatedAt
+                                    ? formatRelativeVi(enforcement.updatedAt)
+                                    : 'không rõ thời điểm'}
+                                </>
+                              )}
+                              {!enforcementSupersededByUnlock && enforcementStale && (
                                 <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
                                   Dữ liệu cũ
                                 </span>
