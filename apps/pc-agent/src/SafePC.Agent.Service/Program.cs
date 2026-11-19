@@ -22,6 +22,14 @@ if (args.Length > 0 && args[0].Equals("pair", StringComparison.OrdinalIgnoreCase
     return await PairingCli.RunAsync(args[1..]);
 }
 
+// Lệnh kiểm tra mã PIN gỡ cài đặt (Sprint 4), gọi từ bộ gỡ cài đặt trong
+// InitializeUninstall — xem VerifyPinCli. Chạy một lần, không khởi động
+// Service: SafePC.Agent.Service.exe verify-pin <mã 6 số> [--probe]
+if (args.Length > 0 && args[0].Equals("verify-pin", StringComparison.OrdinalIgnoreCase))
+{
+    return await VerifyPinCli.RunAsync(args[1..]);
+}
+
 // Service do SCM khởi động với thư mục làm việc là C:\Windows\System32, nên
 // phải cố định content root về thư mục chứa exe — nếu không, appsettings.json
 // (URL + khóa Supabase) sẽ không được nạp và đồng bộ im lặng không chạy.
