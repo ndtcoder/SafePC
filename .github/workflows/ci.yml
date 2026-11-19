@@ -200,3 +200,4 @@ jobs:
           name: SafePCAgentSetup
           path: apps/pc-agent/installer-output/SafePCAgentSetup-*.exe
           if-no-files-found: error
+          retention-days: 14
