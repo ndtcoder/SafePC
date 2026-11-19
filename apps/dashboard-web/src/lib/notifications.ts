@@ -6,7 +6,7 @@
 // - Yêu cầu còn chờ duyệt (requests status = pending, cả 3 loại
 //   extra_time/unblock_app/unblock_domain; đã duyệt/từ chối thì không
 //   hiện nữa). Tên miền hiện best-effort như trang Nhật ký.
-// - Cảnh báo can thiệp: đúng 4 action TAMPER_ACTIONS trong audit_logs.
+// - Cảnh báo can thiệp: đúng 5 action TAMPER_ACTIONS trong audit_logs.
 // - Máy offline quá 48 giờ: một mục cho mỗi "đợt" offline, khóa đợt gắn
 //   với thời điểm thấy máy lần cuối (cùng công thức khóa của function
 //   email) — máy offline kéo dài không sinh thêm mục mới; máy quay lại

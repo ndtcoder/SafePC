@@ -542,6 +542,8 @@ export function tamperEventLabel(action: string): string {
       return 'Không thấy extension trình duyệt'
     case 'service_stopped':
       return 'Service đã dừng'
+    case 'tray_stopped':
+      return 'Tray SafePC dừng bất thường'
     default:
       return action
   }

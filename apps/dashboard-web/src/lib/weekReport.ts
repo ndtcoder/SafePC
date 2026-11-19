@@ -304,8 +304,8 @@ export function countBlockedVisits(visits: readonly WebVisit[]): number {
   return visits.filter((v) => v.blocked).length
 }
 
-/** Bốn loại sự kiện can thiệp mà RPC safepc_push_tamper_event chấp nhận. */
-export const TAMPER_ACTIONS = ['clock_drift', 'agent_restart', 'extension_missing', 'service_stopped'] as const
+/** Năm loại sự kiện can thiệp mà RPC safepc_push_tamper_event chấp nhận (thêm tray_stopped ở Sprint 4, migration 22). */
+export const TAMPER_ACTIONS = ['clock_drift', 'agent_restart', 'extension_missing', 'service_stopped', 'tray_stopped'] as const
 
 /**
  * Bốn loại sự kiện thi hành mà RPC safepc_push_enforcement_event chấp
@@ -333,7 +333,7 @@ export function isLogForChild(
 
 /**
  * Lọc sự kiện can thiệp thuộc về một con (xem isLogForChild). Chỉ giữ
- * đúng 4 loại can thiệp (TAMPER_ACTIONS): truy vấn audit_logs còn lấy
+ * đúng 5 loại can thiệp (TAMPER_ACTIONS): truy vấn audit_logs còn lấy
  * cả sự kiện thi hành (migration 10) cho mục "Quy tắc đã thi hành", và
  * không lọc action ở đây thì sự kiện thi hành sẽ rò sang thẻ Cảnh báo.
  */
