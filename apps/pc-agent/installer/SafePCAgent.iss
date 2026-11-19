@@ -96,6 +96,18 @@ Filename: "{sys}\sc.exe"; Parameters: "delete SafePCAgent"; Flags: runhidden
 // (var NeedsRestart: Boolean), khai báo không tham số thì ISCC báo
 // "Invalid prototype" (gặp ở CI run #47, 2026-11-16).
 
+// Biến toàn cục cho trang ghép nối (tạo trong InitializeWizard).
+var
+  PairPage: TInputQueryWizardPage;
+  PairSkipCheckBox: TCheckBox;
+  PairStatusLabel: TLabel;
+  // True sau khi ghép nối thành công (hoặc máy đã ghép nối từ trước và
+  // người dùng chọn giữ nguyên): bấm Tiếp theo sẽ đi tiếp mà không
+  // chạy lại PairingCli.
+  PairingDone: Boolean;
+  // Device id đọc được từ output của PairingCli khi thành công.
+  PairingDeviceId: String;
+
 // Kiểm tra process Tray còn chạy không (qua tasklist).
 function IsTrayRunning(): Boolean;
 var
@@ -192,6 +204,246 @@ begin
     '  ]' + #13#10 +
     '}' + #13#10;
   SaveStringToFile(ExpandConstant('{app}\NativeHost\com.safepc.agent.json'), Manifest, False);
+end;
+
+// =====================================================================
+// Ghép nối máy trong trình cài đặt (flow cài đặt cho phụ huynh khác).
+//
+// Trang nhập mã xuất hiện SAU trang Installing (CreateInputQueryPage
+// với AfterID = wpInstalling), ngay trước trang Finished. Lý do chọn
+// vị trí này:
+// - Lệnh ghép nối CHÍNH LÀ file Service đã cài
+//   ({app}\Service\SafePC.Agent.Service.exe pair <mã 6 số>); file này
+//   chỉ tồn tại trên đĩa sau bước chép file. Đặt trang trước khi cài
+//   thì phải giải nén tạm cả thư mục publish self-contained (~90 MB,
+//   hàng trăm file DLL + appsettings.json) — giòn và lãng phí.
+// - Khi trang này hiện, các mục [Run] không có cờ postinstall đã chạy
+//   xong (Service đã được tạo + khởi động; Tray thì chờ tới khi bấm
+//   Finish). PairingCli được thiết kế để chạy trong lúc Service đang
+//   chạy: Service tự nhận token mới trong vòng 1 phút nên không cần
+//   khởi động lại (xem PairingCli.cs).
+// - Nhập sai mã thì NextButtonClick trả về False: wizard ở lại trang
+//   để nhập lại, không phải cài lại từ đầu.
+// - Cài đặt im lặng (/SILENT, /VERYSILENT): không có người nhập mã,
+//   trang bị bỏ qua và máy được cài ở trạng thái chờ ghép nối như
+//   trước (xem NextButtonClick).
+//
+// Mã thoát của PairingCli (xem PairingCli.cs): 0 = thành công,
+// 1 = sai cú pháp (không xảy ra vì mã đã kiểm tra 6 chữ số trước),
+// 2 = máy đã ghép nối rồi, 3 = mã sai/hết hạn/mất mạng/không đủ quyền.
+// =====================================================================
+
+// Mã ghép nối hợp lệ: đúng 6 chữ số.
+function IsSixDigitCode(const Code: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if Length(Code) <> 6 then
+    Exit;
+  for I := 1 to Length(Code) do
+  begin
+    if (Code[I] < '0') or (Code[I] > '9') then
+      Exit;
+  end;
+  Result := True;
+end;
+
+// Trích device id từ output của PairingCli ("Device id: <guid>").
+// Chỉ tìm chuỗi ASCII nên không bị ảnh hưởng nếu console ghi UTF-8.
+function ExtractDeviceIdFromPairOutput(const OutFile: String): String;
+var
+  Lines: TArrayOfString;
+  I: Integer;
+  P: Integer;
+  Marker: String;
+begin
+  Result := '';
+  Marker := 'Device id: ';
+  if LoadStringsFromFile(OutFile, Lines) then
+  begin
+    for I := 0 to GetArrayLength(Lines) - 1 do
+    begin
+      P := Pos(Marker, Lines[I]);
+      if P > 0 then
+      begin
+        Result := Trim(Copy(Lines[I], P + Length(Marker), Length(Lines[I])));
+        Break;
+      end;
+    end;
+  end;
+end;
+
+// Chạy PairingCli với mã đã nhập. Trả về exit code của CLI (0/1/2/3).
+// Output của CLI được chuyển vào file tạm để trích device id khi thành
+// công. Lưu ý: đường dẫn exe và file output đều đặt trong dấu nháy kép
+// vì có thể chứa khoảng trắng.
+function RunPairingCli(const Code: String; Force: Boolean): Integer;
+var
+  ExePath: String;
+  OutFile: String;
+  Params: String;
+  Started: Boolean;
+  ResultCode: Integer;
+begin
+  Result := 3;
+  PairingDeviceId := '';
+  ExePath := ExpandConstant('{app}\Service\SafePC.Agent.Service.exe');
+  OutFile := ExpandConstant('{tmp}\safepc_pair_out.txt');
+  Params := '/C ""' + ExePath + '" pair ' + Code;
+  if Force then
+    Params := Params + ' --force';
+  Params := Params + ' > "' + OutFile + '" 2>&1"';
+  Started := Exec(ExpandConstant('{cmd}'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Started then
+    Exit;
+  Result := ResultCode;
+  if Result = 0 then
+    PairingDeviceId := ExtractDeviceIdFromPairOutput(OutFile);
+  DeleteFile(OutFile);
+end;
+
+procedure ShowPairSuccess(const RePaired: Boolean);
+var
+  Msg: String;
+begin
+  if RePaired then
+    Msg := 'Ghép nối lại thành công! Máy "'
+  else
+    Msg := 'Ghép nối thành công! Máy "';
+  Msg := Msg + ExpandConstant('{computername}') + '" đã được ghép nối với tài khoản phụ huynh và sẽ hiện trên Dashboard (trạng thái Online trong vòng 1 phút).';
+  if PairingDeviceId <> '' then
+    Msg := Msg + #13#10 + 'Device id: ' + PairingDeviceId;
+  PairStatusLabel.Caption := 'Ghép nối thành công.';
+  MsgBox(Msg, mbInformation, MB_OK);
+end;
+
+procedure ShowPairFailure;
+begin
+  PairStatusLabel.Caption := 'Ghép nối thất bại. Mã có thể đã sai, hết hạn (chỉ 5 phút) hoặc máy mất mạng. Lấy mã mới trên Dashboard rồi nhập lại, hoặc tích "Bỏ qua" để cài đặt xong rồi ghép nối sau.';
+  MsgBox('Ghép nối thất bại. Mã có thể đã sai, hết hạn (mã chỉ có hiệu lực 5 phút) hoặc máy mất mạng.' + #13#10 + 'Lấy mã mới trên Dashboard (trang Thiết bị, "Ghép nối máy mới") rồi nhập lại, hoặc tích "Bỏ qua, ghép nối sau" để cài đặt xong rồi ghép nối sau.', mbError, MB_OK);
+end;
+
+// Thử ghép nối với mã trên trang. Trả True nếu wizard được đi tiếp
+// (thành công, đã ghép nối từ trước, hoặc người dùng chọn bỏ qua);
+// trả False nếu phải ở lại trang để nhập lại mã.
+function TryPairOnPage: Boolean;
+var
+  Code: String;
+  ExitCode: Integer;
+begin
+  Result := False;
+  if PairingDone then
+  begin
+    Result := True;
+    Exit;
+  end;
+  Code := Trim(PairPage.Values[0]);
+  if PairSkipCheckBox.Checked then
+  begin
+    PairStatusLabel.Caption := 'Đã bỏ qua ghép nối. Máy sẽ chạy ở trạng thái chờ ghép nối; ghép nối sau bằng lệnh PowerShell.';
+    Result := True;
+    Exit;
+  end;
+  if Code = '' then
+  begin
+    if MsgBox('Chưa nhập mã ghép nối. Máy sẽ được cài đặt nhưng chưa ghép nối với tài khoản phụ huynh. Ghép nối sau bằng lệnh PowerShell hoặc chạy lại bộ cài.' + #13#10 + #13#10 + 'Tiếp tục cài đặt mà không ghép nối?', mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      PairStatusLabel.Caption := 'Đã bỏ qua ghép nối. Máy sẽ chạy ở trạng thái chờ ghép nối; ghép nối sau bằng lệnh PowerShell.';
+      Result := True;
+    end
+    else
+      PairStatusLabel.Caption := 'Chưa nhập mã ghép nối. Nhập mã 6 số rồi bấm Tiếp theo để ghép nối.';
+    Exit;
+  end;
+  if not IsSixDigitCode(Code) then
+  begin
+    PairStatusLabel.Caption := 'Mã ghép nối phải gồm đúng 6 chữ số. Kiểm tra lại mã trên Dashboard rồi nhập lại.';
+    MsgBox('Mã ghép nối phải gồm đúng 6 chữ số.' + #13#10 + 'Kiểm tra lại mã trên Dashboard (trang Thiết bị, "Ghép nối máy mới") rồi nhập lại.', mbError, MB_OK);
+    Exit;
+  end;
+  PairStatusLabel.Caption := 'Đang ghép nối, vui lòng đợi...';
+  ExitCode := RunPairingCli(Code, False);
+  if ExitCode = 0 then
+  begin
+    PairingDone := True;
+    ShowPairSuccess(False);
+    Result := True;
+  end
+  else if ExitCode = 2 then
+  begin
+    if MsgBox('Máy này đã ghép nối rồi. Ghép nối lại với mã mới sẽ thay thiết bị đã ghép nối trước đây (thiết bị cũ vẫn còn trên Dashboard, phụ huynh có thể xóa nếu không dùng nữa).' + #13#10 + #13#10 + 'Ghép nối lại với mã mới?', mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      PairStatusLabel.Caption := 'Đang ghép nối lại, vui lòng đợi...';
+      ExitCode := RunPairingCli(Code, True);
+      if ExitCode = 0 then
+      begin
+        PairingDone := True;
+        ShowPairSuccess(True);
+        Result := True;
+      end
+      else
+        ShowPairFailure;
+    end
+    else
+    begin
+      PairingDone := True;
+      PairStatusLabel.Caption := 'Máy đã ghép nối từ trước, giữ nguyên.';
+      Result := True;
+    end;
+  end
+  else
+    ShowPairFailure;
+end;
+
+procedure InitializeWizard;
+begin
+  PairPage := CreateInputQueryPage(wpInstalling,
+    'Ghép nối máy với SafePC',
+    'Nhập mã ghép nối để máy này hiện trên Dashboard của phụ huynh.',
+    'Lấy mã trên Dashboard: mở trang Thiết bị, bấm "Ghép nối máy mới" rồi tạo mã cho con. Mã 6 số chỉ có hiệu lực 5 phút, nên tạo mã ngay trước khi chạy bộ cài. Để trống ô mã rồi bấm Tiếp theo để bỏ qua và ghép nối sau.');
+  PairPage.Add('Mã ghép nối (6 số):', False);
+
+  PairStatusLabel := TLabel.Create(PairPage);
+  PairStatusLabel.Parent := PairPage.Surface;
+  PairStatusLabel.Left := 0;
+  PairStatusLabel.Top := PairPage.SurfaceHeight - 84;
+  PairStatusLabel.Width := PairPage.SurfaceWidth;
+  PairStatusLabel.Height := 40;
+  PairStatusLabel.AutoSize := False;
+  PairStatusLabel.WordWrap := True;
+  PairStatusLabel.Caption := 'Chưa ghép nối. Nhập mã rồi bấm Tiếp theo, hoặc tích "Bỏ qua" để cài đặt xong rồi ghép nối sau.';
+
+  PairSkipCheckBox := TCheckBox.Create(PairPage);
+  PairSkipCheckBox.Parent := PairPage.Surface;
+  PairSkipCheckBox.Left := 0;
+  PairSkipCheckBox.Top := PairPage.SurfaceHeight - 40;
+  PairSkipCheckBox.Width := PairPage.SurfaceWidth;
+  PairSkipCheckBox.Height := 17;
+  PairSkipCheckBox.Caption := 'Bỏ qua, ghép nối sau (cài đặt xong, máy chưa ghép nối)';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID = PairPage.ID then
+  begin
+    // Cài đặt im lặng (/SILENT, /VERYSILENT): không có người nhập mã.
+    // Không hiện hộp thoại nào, luôn bỏ qua ghép nối để cài đặt hoàn
+    // tất như trước (máy chạy ở trạng thái chờ ghép nối).
+    if WizardSilent() then
+      Result := True
+    else
+      Result := TryPairOnPage();
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  // Trang ghép nối nằm sau trang Installing: không cho quay lại trang
+  // Installing (cài đặt đã xong; quay lại sẽ chạy lại bước cài).
+  if CurPageID = PairPage.ID then
+    WizardForm.BackButton.Enabled := False;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
