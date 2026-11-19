@@ -1117,11 +1117,11 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                       </p>
                     </div>
                     <ol className="list-decimal space-y-1.5 pl-5 text-sm text-slate-700">
-                      <li>Cài PC Agent lên máy Windows của con bằng tài khoản Admin (nếu chưa cài).</li>
                       <li>
-                        Trên máy của con, mở PowerShell bằng quyền Administrator (chuột phải PowerShell → Run as
-                        administrator) rồi chạy lệnh sau:
+                        Chạy bộ cài PC Agent trên máy Windows của con bằng tài khoản Admin (nếu chưa cài), rồi nhập
+                        mã 6 số trên vào trang ghép nối hiện sau bước chép file.
                       </li>
+                      <li>Hoặc ghép nối sau bằng PowerShell (quyền Administrator) với lệnh dưới đây — chỉ dùng để debug:</li>
                     </ol>
                     <pre className="overflow-x-auto rounded-lg bg-slate-900 p-3 font-mono text-sm text-slate-100">
                       {`& 'C:\\Program Files\\SafePC Agent\\Service\\SafePC.Agent.Service.exe' pair ${pairing.code}`}
