@@ -72,6 +72,14 @@ public static class AgentConstants
     /// <summary>Tên Windows Service (dùng khi đăng ký bằng sc.exe trong installer).</summary>
     public const string ServiceName = "SafePCAgent";
 
+    /// <summary>
+    /// Tên file cache hash mã PIN thoát (Sprint 4): Service đồng bộ hash từ
+    /// heartbeat xuống file này (mã hóa DPAPI + khóa ACL SYSTEM + Admins) để
+    /// lệnh <c>verify-pin</c> của bộ gỡ cài đặt kiểm tra được mã PIN ngay cả
+    /// khi mất mạng. Nằm cùng thư mục dữ liệu %ProgramData%\SafePC.
+    /// </summary>
+    public const string ExitPinHashCacheFileName = "exit_pin_hash.dat";
+
     /// <summary>Ngưỡng cảnh báo trước khi hết giờ: còn 15/5/1 phút (docs/01-PRD.md mục 2.3).</summary>
     public static readonly int[] WarningThresholdMinutes = { 15, 5, 1 };
 }
@@ -99,6 +107,19 @@ public static class StateKeys
 
     /// <summary>Lần cuối đã báo heartbeat của extension lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/5 phút.</summary>
     public const string ExtensionHeartbeatLastReported = "extension_heartbeat_last_reported";
+
+    /// <summary>Lần cuối đã gửi sự kiện can thiệp extension_missing lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ.</summary>
+    public const string TamperExtensionMissingLastSent = "tamper_extension_missing_last_sent";
+
+    /// <summary>Lần cuối đã gửi sự kiện can thiệp tray_stopped lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ.</summary>
+    public const string TamperTrayStoppedLastSent = "tamper_tray_stopped_last_sent";
+
+    /// <summary>
+    /// Thời điểm hết "ân hạn thoát Tray có phép" (ISO-8601 UTC): sau khi phụ
+    /// huynh nhập đúng mã PIN để thoát Tray, watchdog KHÔNG khởi động lại
+    /// Tray trong 30 phút (để phụ huynh bảo trì máy). Vắng mặt = không ân hạn.
+    /// </summary>
+    public const string TrayExitAuthorizedUntil = "tray_exit_authorized_until";
 
     /// <summary>Số lần nhập sai mã PIN thoát liên tiếp (đặt lại 0 khi nhập đúng). Lưu bền vững để khởi động lại Tray không xóa được số lần sai.</summary>
     public const string PinFailCount = "pin_fail_count";

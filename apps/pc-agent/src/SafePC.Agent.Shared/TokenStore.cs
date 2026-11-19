@@ -81,6 +81,11 @@ public sealed class TokenStore
             try
             {
                 File.WriteAllBytes(_filePath, cipher);
+                // Sprint 4: khóa ACL file chỉ còn SYSTEM + Administrators
+                // (trước đây file mang ACL mặc định, Standard User đọc được
+                // và giải mã được vì DPAPI LocalMachine cho mọi user trên
+                // máy giải mã). Best-effort, thất bại thì file vẫn dùng được.
+                AclHelper.RestrictFileToSystemAndAdmins(_filePath);
             }
             finally
             {
@@ -110,6 +115,11 @@ public sealed class TokenStore
             byte[] plain = ProtectedData.Unprotect(cipher, Entropy, DataProtectionScope.LocalMachine);
             try
             {
+                // Sprint 4: file tạo từ bản cũ mang ACL mặc định (Standard
+                // User đọc được) — khóa lại khi đọc thành công, best-effort.
+                // Hàm tự bỏ qua khi ACL đã đúng nên lần đọc sau không tốn
+                // thêm gì ngoài một lần đọc DACL.
+                AclHelper.RestrictFileToSystemAndAdmins(_filePath);
                 return Encoding.UTF8.GetString(plain);
             }
             finally
