@@ -62,7 +62,7 @@ Sau đó mở `installer/SafePCAgent.iss` bằng **Inno Setup 6** và Build đ�
 2. Installer đăng ký Service `SafePCAgent` (tự chạy khi khởi động, quyền SYSTEM), bật recovery tự khởi động lại sau 60 giây nếu Service chết, và đăng ký Tray App tự chạy khi đăng nhập.
 3. Kiểm tra: mở `services.msc` thấy "SafePC Agent" đang chạy; tray icon SafePC hiện ở khay hệ thống.
 4. Dữ liệu local nằm ở `%ProgramData%\SafePC` (Service) và `%LocalAppData%\SafePC\logs` (Tray).
-5. **Pairing chưa làm (TODO Sprint 1):** hiện Service chưa có luồng nhập mã pairing 6 số; heartbeat/poll sẽ chờ cho tới khi có device token. Cấu hình URL Supabase trong `appsettings.json` của Service (bản publish) — không ghi secret/key vào file này.
+5. **Pairing bằng mã 6 số đã làm:** Service có lệnh `SafePC.Agent.Service.exe pair <mã 6 số> [--force]` (đổi mã lấy device token qua RPC, lưu token bằng DPAPI xuống `%ProgramData%\SafePC`); từ 19/11/2026 bộ cài có trang nhập mã ghép nối (chạy lệnh này trong trình cài, nhập sai được nhập lại, có "Bỏ qua, ghép nối sau"). Cấu hình URL Supabase trong `appsettings.json` của Service (bản publish) — không ghi secret/key vào file này.
 
 ## Chống can thiệp & watchdog (ghi chú)
 
@@ -79,7 +79,7 @@ Mọi chỗ skeleton đều có ghi `TODO` trong code. Tóm tắt:
 | Hạng mục | Trạng thái |
 |---|---|
 | Gọi Supabase thật (heartbeat, poll, rules, batch) | TODO Sprint 1 — `SupabaseApiClient` chỉ trả về rỗng |
-| Pairing bằng mã 6 số | TODO Sprint 1 |
+| Pairing bằng mã 6 số | Đã làm — lệnh `pair` + trang nhập mã trong bộ cài (19/11/2026) |
 | Thi hành rules thật (chặn app, `LockWorkStation` sau đếm ngược 60s) | TODO Sprint 2 |
 | Gửi yêu cầu xin thêm giờ lên bảng `requests`, nhận quyết định | TODO Sprint 2 |
 | Rule theo app / website, daily_limit theo thứ | TODO Sprint 1–2 |
