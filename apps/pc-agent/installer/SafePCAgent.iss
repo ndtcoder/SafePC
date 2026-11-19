@@ -536,7 +536,10 @@ var
 begin
   Result := False;
   Attempts := 0;
-  Form := CreateCustomForm();
+  Form := CreateCustomForm;
+  { LƯU Ý: gọi KHÔNG có dấu () — ISCC báo "Invalid number of parameters"
+    ở CreateCustomForm() (CI run #307). Hàm dựng sẵn này đăng ký không
+    có () trong prototype nên Pascal Script bắt gọi không (). }
   try
     Form.Caption := 'Nhập mã PIN để gỡ SafePC Agent';
     Form.ClientWidth := 420;
