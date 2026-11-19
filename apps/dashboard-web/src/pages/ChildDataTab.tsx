@@ -483,9 +483,10 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
       <Card title={`Xuất dữ liệu của ${childName}`}>
         <div className="space-y-4">
           <p className="text-sm text-slate-700">
-            Tải toàn bộ dữ liệu của {childName} thành một file JSON: hồ sơ, thiết bị, quy tắc, yêu cầu,
-            lệnh, lịch sử dùng app, lịch sử web, nhật ký kiểm tra, lịch sử thưởng giờ, thông báo đã gửi và
-            mã ghép nối. File chỉ chứa dữ liệu của đúng con này trong gia đình của bạn.
+            Tải toàn bộ dữ liệu còn lưu của {childName} thành một file JSON: hồ sơ, thiết bị, quy tắc,
+            yêu cầu, lệnh, lịch sử dùng app, lịch sử web, nhật ký kiểm tra, lịch sử thưởng giờ, thông
+            báo đã gửi và mã ghép nối. Lịch sử dùng app và lịch sử web chỉ giữ 90 ngày gần nhất. File
+            chỉ chứa dữ liệu của đúng con này trong gia đình của bạn.
           </p>
           <p className="text-sm text-slate-600">
             File không chứa hash token của máy, hash mã PIN hay hash mã ghép nối — đó là thông tin xác thực,

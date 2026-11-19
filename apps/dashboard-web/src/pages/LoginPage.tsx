@@ -410,6 +410,11 @@ export default function LoginPage() {
               </button>
             </p>
           )}
+          <p>
+            <Link to="/huong-dan-cai-dat" className={textLinkClassName}>
+              Hướng dẫn cài đặt
+            </Link>
+          </p>
         </div>
     </AuthShell>
   )

@@ -971,7 +971,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                     <p className="mb-2 text-sm font-medium text-slate-700">Mã PIN thoát Tray</p>
                     <p className="text-sm text-slate-600">
                       {device.exit_pin_hash
-                        ? 'Đã đặt mã PIN. Muốn thoát Tray trên máy này phải nhập đúng mã PIN. Mỗi mã chỉ dùng được một lần: nhập đúng và thoát xong, mã tự gỡ và cần đặt mã mới.'
+                        ? 'Đã đặt mã PIN. Muốn thoát Tray trên máy này phải nhập đúng mã PIN. Mỗi mã chỉ dùng được một lần: nhập đúng và thoát xong, mã tự gỡ và cần đặt mã mới. Gỡ cài đặt không làm mất mã PIN.'
                         : 'Chưa đặt mã PIN. Khi chưa có PIN, không ai thoát được Tray trên máy này.'}
                     </p>
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -1028,7 +1028,9 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                     </div>
                     <p className="mt-2 text-xs text-slate-500">
                       Mã PIN chỉ được lưu dạng băm, không lưu PIN thô. Đừng dùng chung với mật khẩu
-                      đăng nhập.
+                      đăng nhập. Mã PIN này cũng là mã gỡ cài đặt: gỡ SafePC khỏi máy (Control
+                      Panel / bộ cài) cũng yêu cầu nhập đúng mã PIN này. Gỡ cài đặt không làm mất
+                      mã PIN. Chưa đặt mã PIN thì gỡ bằng quyền Admin như trước.
                     </p>
                   </div>
                   <div className="mt-4 border-t border-slate-100 pt-4">
