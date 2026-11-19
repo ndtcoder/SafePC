@@ -40,13 +40,16 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [x] Đồng bộ trạng thái thi hành cho máy mới ghép nối (migration 21, 19/11): máy mới nhận khóa cưỡng chế + tối đa 1 ghi đè đang hiệu lực (mở khóa / ghi đè khóa / allow_domain / block_domain / block_app / allow_app / tổng ngân hàng giờ) từ bảng `commands`, chèn khóa trước ghi đè sau, lệnh sao chép mang `created_at` gốc; kiểm chứng PGlite trên SQL thật: 42/42 pass (34 kịch bản). Chưa áp migration 21, chưa kiểm chứng trên máy thật.
 - [ ] Kiểm chứng v0.1.183 + extension 0.1.3 trên máy thật: rule bing.com/videos (chặn /videos, mở được /abc); Khóa ngay độ trễ 0 không đếm ngược; thẻ thiết bị hết xung đột khóa/mở; giao diện Quy tắc mới trên điện thoại thật.
 
-### Sprint 4 — Cứng hóa + Beta gia đình ⏳
-- [ ] Tamper resistance: PIN gỡ cài đặt, watchdog, cảnh báo offline.
-- [ ] Security checklist (docs/03) chạy đầy đủ, sửa lỗi Critical/High.
-- [ ] QA: test trên 2 máy Windows khác nhau, test Standard User, test mất mạng, test khởi động lại.
-- [ ] Tài liệu hướng dẫn cài đặt + Privacy Policy tiếng Việt.
-- [ ] Beta: anh Tiến dùng thật 1-2 tuần, ghi lại lỗi/cải tiến.
-- [ ] Kiểm thử RLS truy cập chéo gia đình (2 tài khoản).
+### Sprint 4 — Cứng hóa + Beta gia đình ✅ code (chờ anh kiểm chứng trên máy thật)
+- [x] Tamper resistance: PIN gỡ cài đặt, watchdog, cảnh báo offline. — Đã triển khai 19/11/2026 (code, CI chờ chạy sau khi push, chưa kiểm chứng trên máy thật):
+  - **PIN gỡ cài đặt** dùng chung mã PIN thoát Tray (không làm PIN riêng): bộ gỡ hỏi mã bằng form che ký tự (tối đa 3 lần nhập), kiểm tra bằng `Service.exe verify-pin <mã>` (exit code 0/2/3/5/6); chưa đặt PIN thì gỡ bằng quyền Admin như trước (fail-open có chủ đích); gỡ im lặng khi đã đặt PIN thì bị chặn. Hash PIN đồng bộ từ heartbeat xuống cache DPAPI `exit_pin_hash.dat` (khóa ACL SYSTEM + Admins) để kiểm tra được khi mất mạng.
+  - **Watchdog Tray** phía Service: snapshot phiên IPC mỗi 60s, Tray im lặng >5 phút thì khởi động lại trong phiên user (WTSQueryUserToken + CreateProcessAsUser), backoff 0/1/2/5/10 phút, tối đa 5 lần/giờ rồi báo phụ huynh bằng sự kiện can thiệp mới `tray_stopped` (migration 22); ân hạn 30 phút sau khi thoát Tray bằng mã PIN. Service đã có SCM recovery restart 60s (giữ nguyên).
+  - **Cảnh báo offline**: ĐÃ CÓ từ trước — email máy offline >48h + mục Thông báo trên Dashboard (phụ thuộc migration 12 + deploy Edge Function, xem MEMORY.md); Sprint 4 chỉ bổ sung mảnh thiếu là cảnh báo `extension_missing` (đẩy khi trình duyệt chạy foreground 15 phút mà extension im lặng) và `tray_stopped`. `service_stopped` không đẩy được từ Agent (Service chết thì không báo được) — được bao bởi cảnh báo offline.
+- [x] Security checklist (docs/03) chạy đầy đủ, sửa lỗi Critical/High. — Đã chạy 19/11/2026, xem docs/03 §"Kết quả rà soát Sprint 4". Đã sửa: token/DB/hash-cache khóa ACL chỉ SYSTEM + Admins (High — `device_token.dat` đọc được bởi Standard User); sửa các câu sai trong docs (host_permissions, TTL ghép nối 10 phút → 5 phút, PIN "SHA-256 skeleton" → PBKDF2 thật); migration 23 (review độc lập MINOR-5: cron dọn hàng app_usage cũ hơn 90 ngày để server đúng với Chính sách riêng tư §4 — PGlite 15/15, chờ anh áp). Rủi ro còn lại đã ghi rõ (pipe IPC ACL, quét mã ghép nối, chưa ký số, chưa có tự cập nhật).
+- [ ] QA: test trên 2 máy Windows khác nhau, test Standard User, test mất mạng, test khởi động lại. — **Chờ anh Tiến** (kịch bản kiểm chứng xem docs/03 §"Kịch bản kiểm chứng trên máy thật (Sprint 4)").
+- [x] Tài liệu hướng dẫn cài đặt + Privacy Policy tiếng Việt. — docs/08-HUONG-DAN-CAI-DAT.md + docs/09-PRIVACY-POLICY.md, kèm 2 trang công khai trên Dashboard (/huong-dan-cai-dat, /chinh-sach-rieng-tu).
+- [ ] Beta: anh Tiến dùng thật 1-2 tuần, ghi lại lỗi/cải tiến. — **Chờ anh Tiến**.
+- [ ] Kiểm thử RLS truy cập chéo gia đình (2 tài khoản). — **Chờ anh Tiến**.
 
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
@@ -67,7 +70,7 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [ ] Extension lên cửa hàng Chrome/Edge (ID thật, tự cập nhật).
 - [ ] Ký số bộ cài (hoặc hướng dẫn vượt cảnh báo SmartScreen cho tới khi có chứng chỉ).
 - [ ] Agent tự cập nhật kèm kiểm tra hash.
-- [ ] Trang hướng dẫn + chính sách riêng tư tiếng Việt trước khi mời gia đình ngoài.
+- [x] Trang hướng dẫn + chính sách riêng tư tiếng Việt trước khi mời gia đình ngoài. — Đã triển khai 19/11/2026 (docs/08-HUONG-DAN-CAI-DAT.md, docs/09-PRIVACY-POLICY.md + 2 trang công khai /huong-dan-cai-dat, /chinh-sach-rieng-tu trên Dashboard).
 - [ ] Quyết định còn mở: ai vận hành, domain, tài khoản cửa hàng extension, chứng chỉ ký số.
 
 **Báo cáo tuần:**
