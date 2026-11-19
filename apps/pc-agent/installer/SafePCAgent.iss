@@ -10,8 +10,9 @@
 ; - CHƯA có code signing: installer và file .exe chưa được ký số. Theo roadmap,
 ;   ký số (EV/Code Signing) sẽ mua sau khi có pháp nhân/budget; trước mắt chỉ
 ;   kiểm tra hash + tải qua HTTPS. Windows SmartScreen có thể cảnh báo.
-; - TODO Sprint 4: gỡ cài đặt yêu cầu mã PIN phụ huynh (hiện gỡ bình thường
-;   bằng quyền Admin, vì Standard User không gỡ được app cài All Users).
+; - Gỡ cài đặt yêu cầu mã PIN phụ huynh (Sprint 4, xem InitializeUninstall ở
+;   cuối [Code]): mã PIN thoát Tray của máy, kiểm tra bằng lệnh
+;   Service.exe verify-pin. Chưa đặt mã PIN thì gỡ bằng quyền Admin như trước.
 
 #ifndef AppVersion
 #define AppVersion "0.1.0"
@@ -79,7 +80,8 @@ Filename: "{app}\Tray\SafePC.Agent.Tray.exe"; Description: "Khởi động SafeP
 ; process cũ giữ khóa file khi cài đè (lỗi gặp trên máy thật ngày 2026-11-16).
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM SafePC.Agent.Tray.exe"; Flags: runhidden
 ; Dừng và xóa Service khi gỡ cài đặt. net stop chờ dừng hẳn (sc.exe stop thì
-; không). TODO Sprint 4: yêu cầu mã PIN trước.
+; không). Mã PIN được kiểm tra TRƯỚC bước này (InitializeUninstall ở cuối
+; [Code]) nên tới đây gỡ đã được phép.
 Filename: "{sys}\net.exe"; Parameters: "stop SafePCAgent /y"; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "delete SafePCAgent"; Flags: runhidden
 
@@ -452,4 +454,248 @@ begin
   begin
     WriteNativeHostManifest();
   end;
+end;
+
+// =====================================================================
+// Mã PIN gỡ cài đặt (Sprint 4).
+//
+// Gỡ SafePC khỏi máy phải nhập đúng mã PIN phụ huynh — chính là mã PIN
+// thoát Tray của máy đó (cột devices.exit_pin_hash, đặt trên Dashboard),
+// không phải một mã riêng (một mã để phụ huynh nhớ; xem VerifyPinCli.cs).
+// Bộ gỡ hỏi mã bằng form nhập có che ký tự (PasswordChar), tối đa 3 lần
+// nhập trong một lần gỡ; kiểm tra bằng lệnh
+//   {app}\Service\SafePC.Agent.Service.exe verify-pin <mã>
+// (PBKDF2 trong Service.exe — Pascal Script không làm được PBKDF2).
+// Mã thoát của verify-pin (xem VerifyPinCli.cs):
+//   0 = được gỡ (đúng mã; hoặc máy chưa ghép nối; hoặc chưa đặt mã PIN —
+//       mã PIN là lớp tự nguyện, chưa đặt thì gỡ bằng quyền Admin như trước)
+//   3 = sai mã | 5 = không kiểm tra được (mất mạng + không cache) |
+//   6 = khóa nhập sau 5 lần sai (30 phút).
+// Mã riêng của bộ gỡ (không phải mã của verify-pin):
+//   7 = không tìm thấy file Service.exe (bản cài có thể đã hỏng).
+//
+// Gỡ im lặng (/SILENT, /VERYSILENT): không có người nhập mã. Nếu máy đã
+// đặt mã PIN thì gỡ im lặng BỊ CHẶN (InitializeUninstall trả False, không
+// hiện hộp thoại nào — MsgBox trong gỡ im lặng sẽ treo bộ gỡ). Muốn gỡ im
+// lặng thì gỡ mã PIN trên Dashboard trước (đợi ~1 phút để Agent đồng bộ),
+// rồi gỡ im lặng; hoặc gỡ có giao diện và nhập mã PIN.
+//
+// Giới hạn đã biết (nói thẳng):
+// - Mã PIN đi trên dòng lệnh của verify-pin nên process khác trên máy có
+//   thể thấy nó trong Task Manager trong ~1 giây lúc kiểm tra (cùng mẫu
+//   với mã ghép nối ở trang PairingCli). Lệnh không ghi mã PIN ra log/file.
+// - PIN sai 3 lần trong form thì hủy gỡ; khóa nhập 30 phút do verify-pin
+//   đếm bền vững (5 lần sai liên tiếp, kể cả qua các lần gỡ khác nhau).
+// - Mã PIN chỉ bảo vệ đường gỡ được hỗ trợ (Control Panel / unins000.exe).
+//   Tài khoản Admin vẫn xóa tay được file + service (sc delete) — mã PIN
+//   là rào chắn chống gỡ vô tình/bị con gỡ khi có quyền Admin, không phải
+//   khóa DRM chống lại admin quyết tâm (xem docs/08-HUONG-DAN-CAI-DAT.md).
+// =====================================================================
+
+// Chạy verify-pin với tham số cho trước, trả về mã thoát (0/2/3/5/6/7).
+// Mặc định 5 (không kiểm tra được — fail-closed) khi không chạy được lệnh;
+// 7 = không tìm thấy file Service.exe (bản cài có thể đã hỏng) — mã riêng
+// để bộ gỡ báo đúng sự thật thay vì gộp vào "mất mạng" như mã 5.
+function RunVerifyPinCli(const Args: String): Integer;
+var
+  ExePath: String;
+  OutFile: String;
+  Params: String;
+  Started: Boolean;
+  ResultCode: Integer;
+begin
+  Result := 5;
+  ExePath := ExpandConstant('{app}\Service\SafePC.Agent.Service.exe');
+  if not FileExists(ExePath) then
+  begin
+    Result := 7;
+    Exit;
+  end;
+  OutFile := ExpandConstant('{tmp}\safepc_verify_pin_out.txt');
+  Params := '/C ""' + ExePath + '" verify-pin ' + Args + ' > "' + OutFile + '" 2>&1"';
+  Started := Exec(ExpandConstant('{cmd}'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  DeleteFile(OutFile);
+  if not Started then
+    Exit;
+  Result := ResultCode;
+end;
+
+// Hỏi mã PIN bằng form nhập có che ký tự, tối đa 3 lần nhập. Trả True khi
+// mã đúng (được gỡ), False khi hủy/khóa/không kiểm tra được/sai 3 lần.
+function PromptUninstallPin: Boolean;
+var
+  Form: TForm;
+  PromptLabel: TLabel;
+  StatusLabel: TLabel;
+  PinEdit: TEdit;
+  OkButton: TButton;
+  CancelButton: TButton;
+  Attempts: Integer;
+  Pin: String;
+  ExitCode: Integer;
+begin
+  Result := False;
+  Attempts := 0;
+  Form := CreateCustomForm();
+  try
+    Form.Caption := 'Nhập mã PIN để gỡ SafePC Agent';
+    Form.ClientWidth := 420;
+    Form.ClientHeight := 190;
+
+    PromptLabel := TLabel.Create(Form);
+    PromptLabel.Parent := Form;
+    PromptLabel.Left := 16;
+    PromptLabel.Top := 16;
+    PromptLabel.Width := 388;
+    PromptLabel.Height := 40;
+    PromptLabel.AutoSize := False;
+    PromptLabel.WordWrap := True;
+    PromptLabel.Caption := 'Gỡ SafePC Agent khỏi máy này cần mã PIN phụ huynh (mã PIN thoát Tray của máy, đặt trên Dashboard). Nhập mã rồi bấm OK.';
+
+    PinEdit := TEdit.Create(Form);
+    PinEdit.Parent := Form;
+    PinEdit.Left := 16;
+    PinEdit.Top := 64;
+    PinEdit.Width := 200;
+    PinEdit.Height := 23;
+    PinEdit.PasswordChar := '*';
+    PinEdit.MaxLength := 6;
+
+    StatusLabel := TLabel.Create(Form);
+    StatusLabel.Parent := Form;
+    StatusLabel.Left := 16;
+    StatusLabel.Top := 96;
+    StatusLabel.Width := 388;
+    StatusLabel.Height := 32;
+    StatusLabel.AutoSize := False;
+    StatusLabel.WordWrap := True;
+    StatusLabel.Caption := '';
+
+    OkButton := TButton.Create(Form);
+    OkButton.Parent := Form;
+    OkButton.Left := 232;
+    OkButton.Top := 140;
+    OkButton.Width := 80;
+    OkButton.Height := 26;
+    OkButton.Caption := 'OK';
+    OkButton.ModalResult := mrOk;
+    OkButton.Default := True;
+
+    CancelButton := TButton.Create(Form);
+    CancelButton.Parent := Form;
+    CancelButton.Left := 320;
+    CancelButton.Top := 140;
+    CancelButton.Width := 80;
+    CancelButton.Height := 26;
+    CancelButton.Caption := 'Hủy';
+    CancelButton.ModalResult := mrCancel;
+    CancelButton.Cancel := True;
+
+    while Attempts < 3 do
+    begin
+      if Form.ShowModal() <> mrOk then
+        Exit;
+      Pin := Trim(PinEdit.Text);
+      if not IsSixDigitCode(Pin) then
+      begin
+        StatusLabel.Caption := 'Mã PIN phải gồm đúng 6 chữ số. Kiểm tra lại mã trên Dashboard rồi nhập lại.';
+        PinEdit.Text := '';
+        Continue;
+      end;
+      Attempts := Attempts + 1;
+      ExitCode := RunVerifyPinCli(Pin);
+      if ExitCode = 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+      if ExitCode = 6 then
+      begin
+        MsgBox('Nhập sai mã PIN quá 5 lần liên tiếp. Nhập mã PIN đã bị khóa 30 phút — thử gỡ lại sau.', mbError, MB_OK);
+        Exit;
+      end;
+      if ExitCode = 5 then
+      begin
+        MsgBox('Không kiểm tra được mã PIN (máy mất mạng và không có bản lưu mã trên máy). Kiểm tra mạng rồi thử gỡ lại.', mbError, MB_OK);
+        Exit;
+      end;
+      if ExitCode = 7 then
+      begin
+        MsgBox('Không tìm thấy file Service của SafePC trên máy (bản cài có thể đã hỏng). Cài đè bản mới nhất rồi gỡ lại.', mbError, MB_OK);
+        Exit;
+      end;
+      if ExitCode <> 3 then
+      begin
+        // Mã lạ (ví dụ mã thoát crash của CLR khi Service.exe hỏng nặng):
+        // fail-closed nhưng báo đúng là lỗi không xác định, không đổ cho
+        // "sai mã PIN" và không tiêu lượt thử của form.
+        MsgBox('Không kiểm tra được mã PIN gỡ cài đặt (lỗi không xác định). Thử gỡ lại sau.', mbError, MB_OK);
+        Exit;
+      end;
+      PinEdit.Text := '';
+      if Attempts >= 3 then
+      begin
+        MsgBox('Nhập sai mã PIN 3 lần. Đã hủy gỡ cài đặt.', mbError, MB_OK);
+        Exit;
+      end;
+      StatusLabel.Caption := 'Sai mã PIN. Còn ' + IntToStr(3 - Attempts) + ' lần thử trong lần gỡ này.';
+    end;
+  finally
+    Form.Free();
+  end;
+end;
+
+// Chạy trước khi gỡ bắt đầu (sau khi người dùng xác nhận gỡ): trả False
+// để hủy gỡ, True để gỡ tiếp. Không hiện hộp thoại nào khi gỡ im lặng.
+function InitializeUninstall(): Boolean;
+var
+  ProbeCode: Integer;
+begin
+  Result := False;
+  ProbeCode := RunVerifyPinCli('--probe');
+  if ProbeCode = 0 then
+  begin
+    // Máy chưa ghép nối, hoặc phụ huynh chưa đặt mã PIN: gỡ bằng quyền
+    // Admin như trước Sprint 4, không hỏi mã.
+    Result := True;
+    Exit;
+  end;
+  if ProbeCode = 5 then
+  begin
+    // Không xác định được có mã PIN không (mất mạng + không cache):
+    // fail-closed, chặn gỡ.
+    if not UninstallSilent() then
+      MsgBox('Không kiểm tra được mã PIN gỡ cài đặt (máy mất mạng và không có bản lưu mã trên máy). Kiểm tra mạng rồi thử gỡ lại.', mbError, MB_OK);
+    Exit;
+  end;
+  if ProbeCode = 6 then
+  begin
+    // Đang khóa nhập sau 5 lần sai liên tiếp (30 phút): báo đúng lý do,
+    // không gộp vào "lỗi không xác định" như trước.
+    if not UninstallSilent() then
+      MsgBox('Nhập sai mã PIN quá 5 lần nên đang khóa nhập 30 phút. Vui lòng thử gỡ lại sau khi hết khóa.', mbError, MB_OK);
+    Exit;
+  end;
+  if ProbeCode = 7 then
+  begin
+    // Không tìm thấy file Service.exe: bản cài có thể đã hỏng.
+    if not UninstallSilent() then
+      MsgBox('Không tìm thấy file Service của SafePC trên máy (bản cài có thể đã hỏng). Cài đè bản mới nhất rồi gỡ lại.', mbError, MB_OK);
+    Exit;
+  end;
+  if ProbeCode <> 2 then
+  begin
+    // Mã lạ, không nằm trong hợp đồng của verify-pin: fail-closed.
+    if not UninstallSilent() then
+      MsgBox('Không kiểm tra được mã PIN gỡ cài đặt (lỗi không xác định). Thử gỡ lại sau.', mbError, MB_OK);
+    Exit;
+  end;
+  // Máy đã đặt mã PIN.
+  if UninstallSilent() then
+  begin
+    // Gỡ im lặng không có người nhập mã: chặn. Muốn gỡ im lặng thì gỡ mã
+    // PIN trên Dashboard trước (đợi ~1 phút để Agent đồng bộ), rồi gỡ im lặng.
+    Exit;
+  end;
+  Result := PromptUninstallPin();
 end;
