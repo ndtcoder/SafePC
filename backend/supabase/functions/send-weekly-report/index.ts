@@ -461,7 +461,7 @@ export function countBlockedVisits(visits: readonly VisitRow[]): number {
   return visits.filter((v) => v.blocked).length;
 }
 
-export const TAMPER_ACTIONS = ["clock_drift", "agent_restart", "extension_missing", "service_stopped"] as const;
+export const TAMPER_ACTIONS = ["clock_drift", "agent_restart", "extension_missing", "service_stopped", "tray_stopped"] as const;
 export const ENFORCEMENT_ACTIONS = ["lock_started", "break_started", "app_blocked", "warning_shown"] as const;
 
 export function isLogForChild(
@@ -681,6 +681,8 @@ export function tamperEventLabel(action: string): string {
       return "Không thấy extension trình duyệt";
     case "service_stopped":
       return "Service đã dừng";
+    case "tray_stopped":
+      return "Tray SafePC dừng bất thường";
     default:
       return action;
   }
