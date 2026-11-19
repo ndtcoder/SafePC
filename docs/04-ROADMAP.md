@@ -63,7 +63,7 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 
 **Flow cài đặt cho phụ huynh khác (không cần biết code):**
 - [ ] Bản triển khai dùng chung cho mọi gia đình (1 Supabase + 1 web, tách dữ liệu bằng RLS).
-- [ ] Bộ cài có giao diện nhập mã ghép nối (bỏ bước PowerShell).
+- [x] Bộ cài có giao diện nhập mã ghép nối (không còn bước PowerShell — lệnh PowerShell vẫn dùng được để debug). — Đã triển khai 19/11/2026 (SafePCAgent.iss, trang sau wpInstalling + chạy PairingCli + nhập lại + bỏ qua; CI chờ chạy sau khi push, chưa kiểm chứng trên máy thật).
 - [ ] Extension lên cửa hàng Chrome/Edge (ID thật, tự cập nhật).
 - [ ] Ký số bộ cài (hoặc hướng dẫn vượt cảnh báo SmartScreen cho tới khi có chứng chỉ).
 - [ ] Agent tự cập nhật kèm kiểm tra hash.

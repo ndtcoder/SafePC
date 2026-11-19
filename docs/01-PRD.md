@@ -34,7 +34,7 @@ Một gia đình: 1-2 phụ huynh, 1-3 con, 1-3 máy PC (MVP: 1 phụ huynh, 1 c
 ### 2.1. Tài khoản & liên kết thiết bị
 - [x] Đăng ký/đăng nhập phụ huynh bằng email + mật khẩu (Supabase Auth), xác minh email. — Đã triển khai; tài khoản phụ huynh đầu tiên đã đăng ký và đăng nhập thành công trên bản live (16/11/2026). Site URL/redirect đã cấu hình đúng (`https://safe-pc.vercel.app`).
 - [x] Tạo hồ sơ con (tên, ngày sinh/độ tuổi, avatar). — Đã triển khai (tên + hồ sơ con trên Dashboard; avatar chưa có UI).
-- [x] Ghép nối máy con bằng mã pairing 6 số, hết hạn sau 5 phút, dùng 1 lần. — Đã triển khai và kiểm chứng trên máy thật (16–17/11/2026). Hạn rút từ 10 xuống 5 phút theo yêu cầu test 17/11/2026. QR chưa làm; mã nhập bằng lệnh PowerShell (sẽ thay bằng giao diện ghép nối trong bộ cài — xem roadmap). Máy mới ghép nối nhận trạng thái thi hành của con lúc redeem: khóa cưỡng chế + tối đa 1 ghi đè đang hiệu lực (migration 17 ngân hàng giờ + migration 21; kiểm chứng PGlite 42/42 pass, 34 kịch bản, chưa áp migration 21, chưa kiểm chứng trên máy thật).
+- [x] Ghép nối máy con bằng mã pairing 6 số, hết hạn sau 5 phút, dùng 1 lần. — Đã triển khai và kiểm chứng trên máy thật (16–17/11/2026). Hạn rút từ 10 xuống 5 phút theo yêu cầu test 17/11/2026. QR chưa làm; mã nhập ngay trong bộ cài (trang ghép nối sau bước chép file — xem §2.9), lệnh PowerShell vẫn giữ để debug. Máy mới ghép nối nhận trạng thái thi hành của con lúc redeem: khóa cưỡng chế + tối đa 1 ghi đè đang hiệu lực (migration 17 ngân hàng giờ + migration 21; kiểm chứng PGlite 42/42 pass, 34 kịch bản, chưa áp migration 21, chưa kiểm chứng trên máy thật).
 - [x] Agent lưu device token an toàn (DPAPI LocalMachine), không lưu mật khẩu phụ huynh trên máy con. — Đã triển khai; token thô không bao giờ rời máy, server chỉ lưu hash SHA-256.
 
 ### 2.2. Theo dõi thời gian sử dụng (Usage Tracking)
@@ -127,7 +127,7 @@ Ranh giới giữ nguyên (quyết định 17/11/2026): không chụp màn hình
 Luồng mục tiêu, từ góc nhìn phụ huynh mới:
 
 1. Vào website, đăng ký, tạo gia đình và hồ sơ con.
-2. Bấm Thêm máy, tải 1 file cài đặt, chạy, nhập mã 6 số hiện trên web. Không còn bước PowerShell. Máy hiện Online là xong.
+2. Bấm Thêm máy, tải 1 file cài đặt, chạy, nhập mã 6 số hiện trên web vào trang ghép nối của bộ cài. Không còn bước PowerShell (lệnh PowerShell vẫn dùng được để debug). Máy hiện Online là xong.
 3. Bấm link cài extension trên Dashboard, 1 click từ cửa hàng của Chrome/Edge, tự nối với agent.
 4. Chọn mẫu quy tắc Ngày học hoặc Cuối tuần, dùng ngay.
 5. Sau này: tải app Android từ Play Store, đăng nhập cùng tài khoản, khóa/mở và duyệt yêu cầu.
@@ -135,7 +135,7 @@ Luồng mục tiêu, từ góc nhìn phụ huynh mới:
 Việc cần làm để đạt luồng này:
 
 - [ ] Một bản triển khai dùng chung cho mọi gia đình (1 Supabase + 1 web), dữ liệu tách nhau bằng RLS. Người vận hành giữ khóa quản trị.
-- [ ] Bộ cài có giao diện nhập mã ghép nối, thay cho lệnh PowerShell hiện tại.
+- [x] Bộ cài có giao diện nhập mã ghép nối, thay cho lệnh PowerShell hiện tại. — Đã triển khai 19/11/2026 (SafePCAgent.iss: trang CreateInputQueryPage sau wpInstalling, chạy PairingCli, nhập sai được nhập lại, có "Bỏ qua, ghép nối sau"; CI chờ chạy sau khi push, chưa kiểm chứng trên máy thật).
 - [ ] Extension đăng lên cửa hàng Chrome/Edge (Chrome phí đăng ký 5 USD một lần, Edge miễn phí) để có ID thật và tự cập nhật.
 - [ ] Ký số bộ cài. Chưa có chứng chỉ thì Windows hiện cảnh báo SmartScreen, cần hướng dẫn phụ huynh bấm "vẫn chạy". Chứng chỉ ký số có phí, để sau cũng được.
 - [ ] Agent tự cập nhật khi có bản mới, có kiểm tra hash.
