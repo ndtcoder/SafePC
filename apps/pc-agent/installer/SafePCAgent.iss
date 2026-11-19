@@ -536,14 +536,14 @@ var
 begin
   Result := False;
   Attempts := 0;
-  Form := CreateCustomForm;
-  { LƯU Ý: gọi KHÔNG có dấu () — ISCC báo "Invalid number of parameters"
-    ở CreateCustomForm() (CI run #307). Hàm dựng sẵn này đăng ký không
-    có () trong prototype nên Pascal Script bắt gọi không (). }
+  { Từ Inno Setup 6.6.0, CreateCustomForm BẮT BUỘC 4 tham số
+    (ClientWidth, ClientHeight, KeepSizeX, KeepSizeY) và trả về TSetupForm;
+    dạng không tham số cũ đã bị bỏ nên ISCC báo "Invalid number of
+    parameters" cả khi gọi có () lẫn không () (CI run #307/#308). CI cài
+    bản mới nhất qua choco nên luôn dùng dạng 4 tham số. }
+  Form := CreateCustomForm(420, 190, False, False);
   try
     Form.Caption := 'Nhập mã PIN để gỡ SafePC Agent';
-    Form.ClientWidth := 420;
-    Form.ClientHeight := 190;
 
     PromptLabel := TLabel.Create(Form);
     PromptLabel.Parent := Form;
