@@ -161,7 +161,7 @@ export const TAMPER_THROTTLE_MS = 6 * 3600 * 1000;
 /** Mỗi con tối đa 1 email yêu cầu mỗi giờ (chống spam nút "xin thêm giờ"). */
 export const REQUEST_THROTTLE_MS = 3600 * 1000;
 
-export const TAMPER_ACTIONS = ["clock_drift", "agent_restart", "extension_missing", "service_stopped"] as const;
+export const TAMPER_ACTIONS = ["clock_drift", "agent_restart", "extension_missing", "service_stopped", "tray_stopped"] as const;
 export type TamperAction = (typeof TAMPER_ACTIONS)[number];
 
 export function tamperActionLabel(action: string): string {
@@ -174,6 +174,8 @@ export function tamperActionLabel(action: string): string {
       return "Không thấy extension trình duyệt";
     case "service_stopped":
       return "Service SafePC đã dừng";
+    case "tray_stopped":
+      return "Tray SafePC dừng bất thường";
     default:
       return action;
   }
