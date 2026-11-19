@@ -17,9 +17,9 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - [x] Session: JWT ngắn hạn, refresh token rotation (Supabase Auth mặc định). — Đã triển khai theo mặc định Supabase.
 - [x] RLS trên mọi bảng: `family_id` là ranh giới. — Đã bật trên 12 bảng (migration 1). Kiểm thử truy cập chéo gia đình (2 tài khoản) chưa chạy — xem `RLS_TESTING.md`.
 - [x] Device token: chuỗi ngẫu nhiên 256-bit, chỉ gửi 1 lần lúc pairing, lưu hash (SHA-256) ở DB, lưu bản gốc bằng DPAPI trên máy con. Thu hồi được từ Dashboard ("Xóa máy"). — Đã triển khai và kiểm chứng.
-- [x] Pairing code: 6 số, hết hạn 10 phút, dùng 1 lần. — Đã triển khai. Giới hạn 5 lần thử chưa triển khai (RPC đổi mã chưa đếm số lần thử sai).
+- [x] Pairing code: 6 số, hết hạn 5 phút, dùng 1 lần. — Đã triển khai (TTL 5 phút đã sửa trong code, không còn chuỗi "10 phút" nào trong Agent). Cột `attempts` đã có và RPC kiểm tra `attempts < 5`, nhưng mã sai không khớp hàng nào nên không đếm được — giới hạn theo hash không chặn được quét ngẫu nhiên toàn bộ không gian 6 số; giảm nhẹ hiện có: TTL 5 phút, dùng một lần, mọi lỗi đều trả `invalid_code` giống nhau (không có oracle). Rủi ro còn lại mức LOW, ghi rõ ở mục "Kết quả rà soát Sprint 4" bên dưới — không làm migration riêng cho rate limit mã ghép nối trong Sprint 4 (migration 23 hiện tại là dọn app_usage, xem dưới).
 - Agent gọi server qua RPC SECURITY DEFINER (`safepc_*`, migration 3), xác thực bằng cặp (device_id, SHA-256 của device token); PostgREST xác thực bằng khóa publishable (AnonKey) trong `appsettings.json` của Service — khóa này được thiết kế để lộ ra phía client. Khóa quản trị (bypass RLS) không bao giờ vào Agent, Dashboard hay repo.
-- [ ] Mã PIN gỡ Agent: 6 số, do phụ huynh đặt riêng, lưu hash bcrypt/argon2, nhập sai 5 lần khóa 30 phút. — Chưa triển khai (Sprint 4). Mã PIN thoát Tray đang làm (đợt tiếp theo, hash PBKDF2 + giới hạn số lần thử tại chỗ).
+- [x] Mã PIN gỡ Agent: 6 số, dùng chung mã PIN thoát Tray (không làm PIN riêng), lưu hash PBKDF2-SHA256 100.000 vòng, nhập sai 5 lần liên tiếp khóa 30 phút (đếm bền vững qua các lần gỡ). — Đã triển khai ở Sprint 4 (19/11/2026, chưa kiểm chứng trên máy thật): bộ gỡ hỏi mã bằng form che ký tự (tối đa 3 lần nhập/lần gỡ), kiểm tra bằng `Service.exe verify-pin <mã>` (exit code 0 = được gỡ, 3 = sai mã, 5 = không kiểm tra được, 6 = khóa nhập); kiểm tra gỡ CHỈ xác minh, KHÔNG tiêu thụ mã (khác thoát Tray dùng một lần). Chưa đặt PIN thì gỡ bằng quyền Admin như trước (fail-open có chủ đích); gỡ im lặng khi đã đặt PIN thì bị chặn (fail-closed). Hash đồng bộ từ heartbeat xuống cache DPAPI `exit_pin_hash.dat` (khóa ACL SYSTEM + Admins) để kiểm tra được khi mất mạng. Giới hạn: mã PIN đi trên dòng lệnh verify-pin nên process khác có thể thấy trong ~1 giây (cùng mức lộ như mã ghép nối); mã PIN chỉ bảo vệ đường gỡ được hỗ trợ — tài khoản Admin vẫn xóa tay được file + service.
 - [ ] Mọi hành động quan trọng ghi audit log: đổi quy tắc, khóa/mở, duyệt yêu cầu, thêm/xóa máy, đăng nhập lạ. — Mới có audit cho sự kiện can thiệp + heartbeat extension; lệnh từ xa chưa ghi audit (TODO).
 
 ## 3. Dữ liệu nhạy cảm — xử lý cụ thể
@@ -31,7 +31,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 | Tên app / đường dẫn exe | Hash đường dẫn, chỉ lưu tên hiển thị + hash. Tránh lộ username Windows. |
 | Domain web | Lưu domain (vd: youtube.com) + đường dẫn (vd: /watch, đã cắt bỏ query/fragment, trần 500 ký tự) + thời lượng xem (giây), tự xóa sau 90 ngày (migration 19). Extension chỉ gửi domain + đường dẫn + thời lượng qua NativeHost; không gửi URL đầy đủ, không đọc nội dung trang. Lượt web bị chặn chỉ lưu domain, không có đường dẫn. |
 | Tiêu đề cửa sổ | MVP: KHÔNG thu thập. Chỉ lấy tên process. Nếu giai đoạn 3 cần, phải có opt-in + lọc từ khóa tại chỗ, không gửi nguyên văn lên server. |
-| Ảnh chụp màn hình | Mặc định TẮT. Nếu bật: mã hóa, tự xóa sau 7 ngày, con thấy rõ khi nào bị chụp. |
+| Ảnh chụp màn hình | KHÔNG thu thập — đã LOẠI KHỎI KẾ HOẠCH ngày 17/11/2026 (xem §5). Không có code chụp màn hình nào trong Agent. |
 | IP | Chỉ lưu hash IP cho audit, không lưu IP thô quá 30 ngày. |
 | Heartbeat extension | File `extension_heartbeat.txt` chỉ chứa timestamp UTC lúc extension liên hệ gần nhất — không domain, không URL, không secret. |
 | Sao lưu | Backup DB mã hóa, kiểm tra khôi phục 1 lần/tháng. |
@@ -43,20 +43,20 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - [ ] Không XSS (React escape mặc định, không dùng dangerouslySetInnerHTML với dữ liệu user).
 - [ ] CSRF: Supabase dùng Bearer token, không dùng cookie auth cho API cross-site nếu không có SameSite + CSRF token.
 - [ ] IDOR: Mọi API kiểm tra family_id + RLS, test truy cập chéo gia đình.
-- [ ] Không lộ secret trong code/client: dùng biến môi trường, quét secret bằng Gitleaks trong CI.
+- [x] Không lộ secret trong code/client: dùng biến môi trường, quét secret bằng lệnh grep trong CI. — Quét bằng lệnh grep trong ci.yml (case-sensitive) trên mỗi push; rà soát Sprint 4 trên toàn bộ file đổi trong đợt = 0 kết quả.
 - [ ] Rate limiting cho login/pairing/API nhạy cảm (Supabase + Edge Function).
-- [ ] Headers bảo mật: CSP, HSTS, X-Content-Type-Options, Referrer-Policy (cấu hình trên Vercel).
+- [x] Headers bảo mật: CSP, HSTS, X-Content-Type-Options, Referrer-Policy (cấu hình trên Vercel). — Đã triển khai Sprint 4 (19/11/2026): `apps/dashboard-web/vercel.json` thêm HSTS, X-Content-Type-Options nosniff, X-Frame-Options DENY, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy tắt camera/mic/geolocation, CSP chỉ cho phép self + Supabase (connect) + data: (img/font). Chưa kiểm chứng header thật trên bản live (cần sau khi deploy).
 - [ ] Dependency scan: Dependabot + `npm audit` / `dotnet list package --vulnerable` trong CI, không release khi có Critical chưa vá.
 
 **PC Agent (OWASP Mobile/Desktop tương đương):**
-- [ ] Không lưu secret dạng plaintext trong file/registry. Dùng DPAPI + Credential Manager.
+- [x] Không lưu secret dạng plaintext trong file/registry. Dùng DPAPI + Credential Manager. — Device token lưu bằng DPAPI (LocalMachine); Sprint 4 sửa lỗi High: file token mang ACL mặc định nên Standard User đọc được (DPAPI LocalMachine giải mã được bởi mọi user trên máy) — nay khóa ACL chỉ SYSTEM + Administrators cho `device_token.dat`, `exit_pin_hash.dat` và `agent.db` (sau khi ghi và sau khi đọc thành công, best-effort). Đã kiểm chứng build 0 lỗi 0 warning; kiểm chứng ACL thật trên máy Windows nằm trong kịch bản QA Sprint 4.
 - [ ] Cập nhật Agent có chữ ký số + kiểm tra hash trước khi cài. MVP: kiểm tra hash + HTTPS; ký số EV/Code Signing mua sau khi có pháp nhân/budget (ghi rõ trong roadmap).
 - [ ] IPC giữa Service và Tray App: Named Pipe có ACL, chỉ session của con + SYSTEM được kết nối, xác thực message.
 - [ ] Không chạy lệnh từ server mà không xác thực chữ ký/nguồn. Commands chỉ nhận từ Supabase qua TLS + device token.
 - [ ] Log local không chứa token/mật khẩu. Log tự xoay vòng, tối đa 10MB.
 
 **Extension (Sprint 2 đợt 2, đã triển khai):**
-- Quyền tối thiểu: chỉ `declarativeNetRequest`, `tabs` (lấy hostname + đường dẫn của tab đang hiển thị để đếm giờ và ghi lịch sử web, bỏ query/fragment và URL ngay), `alarms`, `storage`, `nativeMessaging`. Không `host_permissions` (DNR không cần), không `declarativeNetRequestFeedback`, không `webRequest`, không `cookies`. Không gửi full URL lên server.
+- Quyền tối thiểu: chỉ `declarativeNetRequest`, `tabs` (lấy hostname + đường dẫn của tab đang hiển thị để đếm giờ và ghi lịch sử web, bỏ query/fragment và URL ngay), `alarms`, `storage`, `nativeMessaging`. **Có `host_permissions` `http://*/*` + `https://*/*` — BẮT BUỘC (DNR `redirect` bị trình duyệt bỏ qua lặng lẽ nếu thiếu host permission khớp URL; gốc rễ vụ tse.edu.vn/p, sửa ở extension 0.1.4 — câu cũ "Không host_permissions (DNR không cần)" là SAI, đã sửa).** Không `declarativeNetRequestFeedback`, không `webRequest`, không `cookies`. Không gửi full URL lên server.
 - Ranh giới NativeHost: host stdio (`com.safepc.agent`) chỉ đọc/ghi trong `%ProgramData%\SafePC\shared\`, không bao giờ chạm tới file token hay database của Service, không gọi mạng, không chạy lệnh. Input xấu không làm crash host (log stderr, trả ack false). Manifest `allowed_origins` hiện là ID extension placeholder — ID thật lấy từ store publishing (xem `apps/browser-extension/README.md`).
 - ACL file chia sẻ: thư mục `shared/` có SYSTEM toàn quyền + Users chỉ đọc (kế thừa), cộng quyền tạo file chỉ ở mức thư mục để NativeHost ghi `web_usage.jsonl`; bản thân `domain_rules.json` có ACL riêng ở cấp file (SYSTEM + Administrators toàn quyền, Users chỉ đọc, không kế thừa) nên tài khoản Standard không sửa/xóa được quy tắc. Đặt ACL là best-effort, thất bại thì log cảnh báo.
 - Thu thập tối thiểu: extension chỉ thu thập domain + đường dẫn (đã bỏ query/fragment) + thời lượng xem, tự xóa sau 90 ngày; không tiêu đề trang, không nội dung, không phím gõ, không mic/camera. Khi chưa nối được NativeHost thì fail-open và báo rõ trạng thái chưa kết nối.
@@ -65,7 +65,7 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 **Thi hành theo app / nghỉ bắt buộc / cảnh báo can thiệp (Sprint 2 đợt 3, đã triển khai):**
 - An toàn khi đóng app: chỉ đóng tiến trình cùng tên exe (chuẩn hóa chung, bỏ `.exe`, không phân biệt hoa thường) trong đúng session đã báo cáo foreground; không bao giờ chạm session 0; denylist chặn tiến trình hệ thống (`explorer`, `taskmgr`, `dwm`, `csrss`, `winlogon`, `services`, `lsass`, ...) và chính exe của SafePC (tự bảo vệ); mỗi tiến trình bắt lỗi riêng (best-effort), chỉ đóng đúng tiến trình đó, không đóng cây tiến trình con. Không có báo cáo foreground tươi (≤ 90s) thì không đóng gì (fail-open). Log chỉ ghi tên exe + lý do, không tiêu đề cửa sổ, không đường dẫn.
 - Nghỉ bắt buộc là khóa phiên, nói thành thật: Service khóa phiên làm việc của con trong thời gian nghỉ (`LockWorkStation` sau đếm ngược 60s, nhắc lại mỗi 15s); biện pháp này chỉ ngăn dùng máy này, không thể ép con nghỉ ngơi và không khóa được máy khác.
-- RPC cảnh báo can thiệp (migration 5): `safepc_push_tamper_event` xác thực bằng `safepc_auth_device` (cặp device_id + hash token), chỉ nhận 4 loại sự kiện, `family_id`/`child_id`/`device_id` suy ra từ device đã xác thực (không tin client), `details` cắt tối đa 2KB và fallback `{}` khi JSON hỏng; `safepc_report_extension_heartbeat` chỉ cập nhật đúng cột `last_extension_seen_at`, kẹp giờ tương lai về giờ server. Cả hai đều `SECURITY DEFINER` với `search_path` cố định, GRANT cho `anon`/`authenticated`/`service_role` như các RPC khác. Agent chỉ tự đẩy `clock_drift` và `agent_restart` (tối đa 1 lần/giờ mỗi loại); `service_stopped` và `extension_missing` không do Agent đẩy.
+- RPC cảnh báo can thiệp (migration 5, mở rộng migration 22): `safepc_push_tamper_event` xác thực bằng `safepc_auth_device` (cặp device_id + hash token), chỉ nhận 5 loại sự kiện (`clock_drift`, `agent_restart`, `extension_missing`, `service_stopped`, `tray_stopped` — loại cuối thêm ở Sprint 4), `family_id`/`child_id`/`device_id` suy ra từ device đã xác thực (không tin client), `details` cắt tối đa 2KB và fallback `{}` khi JSON hỏng; `safepc_report_extension_heartbeat` chỉ cập nhật đúng cột `last_extension_seen_at`, kẹp giờ tương lai về giờ server. Cả hai đều `SECURITY DEFINER` với `search_path` cố định, GRANT cho `anon`/`authenticated`/`service_role` như các RPC khác. Agent tự đẩy `clock_drift`, `agent_restart` (tối đa 1 lần/giờ mỗi loại), `extension_missing` (Sprint 4: chỉ khi từng thấy extension sống + trình duyệt chạy foreground trong 15 phút qua, chống spam 1 lần/giờ) và `tray_stopped` (Sprint 4: watchdog Tray thất bại 5 lần/giờ); `service_stopped` không do Agent đẩy (Service chết thì không báo được) — được bao bởi cảnh báo offline >48h.
 - File heartbeat extension: NativeHost ghi đè timestamp UTC vào `shared\extension_heartbeat.txt` mỗi lần extension liên hệ; file chỉ chứa timestamp, không secret, Service đọc với `FileShare.ReadWrite` và không bao giờ tin timestamp tương lai (RPC kẹp về giờ server). Ghi heartbeat lỗi không làm lỗi message của extension.
 
 **Giao lệnh theo phiên (đợt 17/11/2026, đã triển khai):**
@@ -78,6 +78,62 @@ Dữ liệu này là dữ liệu nhạy cảm về trẻ em. Mặc định phả
 - Snapshot thi hành (migration 6) thu thập tối thiểu: chỉ quyết định, id rule, tên exe đang bị chặn và cờ focus/domain — không tiêu đề cửa sổ, không URL/path/query, không nội dung, không tên con. RPC `safepc_report_enforcement` xác thực bằng `safepc_auth_device`, chỉ cập nhật đúng 2 cột của đúng device đã xác thực, từ chối payload null/quá 4KB, `SECURITY DEFINER` với `search_path` cố định, GRANT như các RPC khác. Log chẩn đoán quyết định không ghi token/hash.
 - Cứng hóa Tray không thêm bề mặt tấn công: global handler chỉ ghi log (stack của exception, không secret), khóa dự phòng gọi `LockWorkStation` của chính phiên, menu vẫn là cửa sổ WPF thật (không ContextMenu, không vòng lặp WinForms mới), mutex single-instance và cửa sổ neo không đổi.
 - Chống kẹt IPC không đổi ranh giới tin cậy: idle timeout 120s hai bên chỉ đóng kết nối chết và giải phóng pipe instance; watchdog chỉ ghi log, không dispose hay tạo lại listener; ACL pipe và giới hạn 8 instance không đổi; không quyết định nối/rớt bằng cờ `IsConnected`.
+
+## Kết quả rà soát Sprint 4 (19/11/2026 — chạy từng mục checklist §4, chỉ sửa lỗi Critical/High)
+
+**Đã đạt (không cần sửa):**
+- SQL injection: mọi câu lệnh OutboxStore đều parameterized; RPC dùng tham số; Dashboard dùng Supabase client (không nối chuỗi SQL). Không đổi.
+- XSS: Dashboard không dùng `dangerouslySetInnerHTML` với dữ liệu user (grep: chỉ 1 comment nhắc tới). Không đổi.
+- CSRF: Supabase dùng Bearer token, không dùng cookie auth cho API cross-site. Không đổi.
+- Không chạy lệnh từ server mà không xác thực: commands chỉ nhận từ Supabase qua TLS + device token; không có cơ chế chạy lệnh tùy ý từ server. Không đổi.
+- Log local: không chứa token/mật khẩu (grep các file đổi: không ghi mã PIN/token vào log; mã PIN chỉ đi trên dòng lệnh verify-pin trong ~1 giây, không ghi ra file). Xoay vòng 10MB. Không đổi.
+- Thu thập tối thiểu: lịch sử web chỉ domain + path (bỏ query/fragment, giữ 90 ngày, migration 19); mẫu dùng ứng dụng giữ 90 ngày trên server (migration 23) và 7 ngày local; không tiêu đề cửa sổ (`GetWindowText` không được gọi); không chụp màn hình (đã loại khỏi kế hoạch). Không đổi.
+
+**Đã sửa trong Sprint 4:**
+- **High — file token đọc được bởi Standard User**: `device_token.dat` mang ACL mặc định, DPAPI LocalMachine giải mã được bởi mọi user trên máy → con đọc được token. Đã sửa: `AclHelper.RestrictFileToSystemAndAdmins` khóa ACL chỉ SYSTEM + Administrators cho `device_token.dat` (sau ghi + sau đọc), `exit_pin_hash.dat`, `agent.db`.
+- **High (docs sai, gây hiểu lầm khi vận hành)**:
+  - Pairing TTL "10 phút" trong SECURITY.md → **5 phút** (đúng code hiện tại).
+  - Extension "Không host_permissions (DNR không cần)" → **bắt buộc có** `http://*/*` + `https://*/*` (gốc rễ vụ tse.edu.vn/p).
+  - Hàng ảnh chụp màn hình "Mặc định TẮT. Nếu bật: ..." → **KHÔNG thu thập — đã loại khỏi kế hoạch 17/11/2026**.
+  - README Agent "Skeleton PIN dùng SHA-256 + salt; Sprint 4 thay bằng Argon2/bcrypt" → **PIN thật đã là PBKDF2-SHA256 100.000 vòng** từ trước; "Gỡ cài đặt yêu cầu mã PIN: TODO Sprint 4" → **đã triển khai**.
+  - RPC can thiệp "chỉ nhận 4 loại" → **5 loại** (thêm `tray_stopped`, migration 22); Agent nay cũng đẩy `extension_missing` và `tray_stopped`.
+- **Headers bảo mật**: thêm vào `vercel.json` (xem tick ở §4). Chưa kiểm chứng trên bản live.
+- **Chính sách riêng tư hứa mức lưu trữ server không thực hiện (review độc lập MINOR-5)**: hàng app_usage thô được giữ vô thời hạn trên server trong khi docs/09 §4 hứa 90 ngày. Đã sửa: migration 23 — lịch cron `safepc-app-usage-cleanup` xóa hàng `started_at` cũ hơn 90 ngày mỗi ngày 03:00 UTC (mẫu migration 19); báo cáo tuần chỉ cần 8 tuần nên không vỡ gì; kiểm chứng PGlite 15/15. Cần anh áp migration 23.
+
+**Không sửa trong đợt này (ghi rõ lý do + mức rủi ro còn lại):**
+- **Pipe IPC ACL (LOW)**: Named Pipe hiện SYSTEM Full + BuiltinUsers ReadWrite — con nối được pipe. Rủi ro thực tế thấp (giả báo cáo foreground trong phiên của mình; vét PIN qua IPC đã bị khóa 5 lần/5 phút); xác thực message không khả thi vì secret chung sẽ nằm trong file con đọc được. Không thiết kế lại ACL (nguy cơ vỡ Tray đa phiên, không test được trên Linux). Ghi là rủi ro còn lại.
+- **Quét mã ghép nối ngẫu nhiên (LOW)**: TTL 5 phút + dùng một lần + lỗi `invalid_code` giống nhau cho mọi trường hợp (không có oracle) là giảm nhẹ hiện có; giới hạn theo hash không chặn được quét toàn bộ không gian 6 số. Không làm migration riêng cho rate limit trong Sprint 4.
+- **Chưa ký số bộ cài (Medium, cần tiền)**: installer và file .exe chưa được ký số; SmartScreen có thể cảnh báo. Hướng dẫn cài đặt (docs/08) ghi rõ cách vượt cảnh báo + chỉ tải từ nguồn chính thức. Cần chứng chỉ ký số khi có pháp nhân/budget.
+- **Chưa có Agent tự cập nhật kèm kiểm tra hash**: cập nhật vẫn bằng tay (tải bộ cài mới). Để đợt riêng.
+- **IDOR / RLS chéo gia đình**: RLS đã bật trên mọi bảng; kiểm thử truy cập chéo 2 tài khoản là việc của anh Tiến trên máy thật (chưa chạy) — xem `RLS_TESTING.md`.
+- **Rate limiting login/pairing/API**: dựa vào mặc định Supabase; chưa rà soát cấu hình. Để đợt riêng.
+- **Dependency scan / Dependabot**: chưa đưa vào CI. Kết quả rà soát Sprint 4 (19/11/2026): `dotnet list package --vulnerable` = 0 package có lỗ hổng ở cả 4 project; `npm audit` không chạy được từ VM làm việc (registry chặn với lỗi policy_denied) — cần chạy lại trên máy có mạng thường trước khi kết luận phía npm.
+
+## Kịch bản kiểm chứng trên máy thật (Sprint 4 — dành cho anh Tiến)
+
+Chạy sau khi CI xanh + cài bản mới nhất (v0.1.N) + extension mới + áp migration 22 + deploy lại Edge Function send-parent-notifications.
+
+**A. PIN gỡ cài đặt**
+1. Đặt mã PIN trên Dashboard (trang Thiết bị → máy → Lưu mã PIN), đợi ~1 phút.
+2. Mở Settings → Apps → SafePC Agent → Uninstall → nhập **sai** mã 3 lần → gỡ bị hủy, app còn nguyên.
+3. Gỡ lại, nhập **đúng** mã → gỡ thành công.
+4. Chưa đặt PIN: gỡ bằng quyền Admin bình thường, không hỏi mã.
+5. Gỡ im lặng khi đã đặt PIN: chạy `unins000.exe /SILENT` → phải bị chặn (app còn nguyên). Gỡ mã PIN trên Dashboard, đợi ~1 phút, gỡ im lặng lại → gỡ được.
+6. Mất mạng: tắt mạng, gỡ → nhập đúng mã PIN (dùng cache) vẫn gỡ được; nhập sai mã thì bị chặn.
+
+**B. Watchdog Tray**
+1. Tắt Tray bằng mã PIN đúng (chuột phải icon → Thoát, nhập mã PIN) → Tray **không** mở lại trong 30 phút (ân hạn sau thoát PIN — đúng thiết kế, không phải lỗi). Sau ~30 phút Tray tự mở lại. Muốn thử đường watchdog 5 phút thì dùng B.2 (kill bằng Task Manager, không qua PIN).
+2. Kill process Tray bằng Task Manager → Tray tự mở lại trong ~5 phút.
+3. Cảnh báo chỉ xảy ra khi Tray **không mở lại được** sau 5 lần thử trong 1 giờ (ví dụ file Tray exe bị hỏng hoặc crash ngay khi khởi động — chỉ thử trên máy test bằng cách đổi tên tạm file Tray exe rồi kill Tray): khi đó Dashboard/Nhật ký có cảnh báo "Tray SafePC dừng bất thường" (cần migration 22 + Edge Function đã deploy để nhận email). Kill 6 lần mà lần nào Tray cũng mở lại được thì **không** có cảnh báo (đúng thiết kế — mỗi lần Tray hello lại thành công thì đếm về 0).
+4. Khởi động lại máy → Service tự chạy (SCM recovery), Tray tự chạy khi đăng nhập.
+
+**C. Cảnh báo extension_missing**
+1. Tắt extension trong Edge (không đóng trình duyệt), dùng trình duyệt 15 phút → Dashboard/Nhật ký có cảnh báo "Không thấy extension trình duyệt" (chỉ 1 lần/giờ, không spam).
+2. Đóng trình duyệt hẳn → không có cảnh báo (đúng: trình duyệt đóng thì extension im lặng là bình thường).
+
+**D. ACL file (kiểm tra nhanh)**
+1. Đăng nhập tài khoản Standard của con, mở PowerShell: `Get-Content $env:ProgramData\SafePC\device_token.dat` → phải bị từ chối truy cập.
+2. Kiểm tra `exit_pin_hash.dat` và `agent.db` tương tự.
 
 ## 5. Quyền riêng tư & tuân thủ
 

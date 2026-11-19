@@ -167,11 +167,75 @@ Hợp đồng secret (Edge Function Secrets, do phụ huynh đặt tay, không b
 
 Giới hạn khi chưa có domain đã xác minh: gửi từ `onboarding@resend.dev` thì Resend chỉ giao tới đúng email đăng ký tài khoản Resend (email khác bị lỗi 403) — đủ cho một gia đình. Domain `ndt.ap.vn` đã mua chiều 18/11/2026 nhưng chưa thêm vào Resend và chưa xác minh DNS; sau khi xác minh, đổi người gửi chỉ cần đổi secret `RESEND_FROM` rồi deploy lại, không sửa code. **Trạng thái: code của cả hai function đã giao và qua CI, nhưng CHƯA kiểm chứng đầu-cuối** (chưa chạy thật trên Deno, chưa gửi thật, Auth Admin API chưa từng thử ở project này, lịch cron chưa thấy chạy). Các bước tay nằm ở `docs/06-EMAIL-SETUP.md` (5 bước) và `docs/07-NOTIFICATIONS-SETUP.md` (4 bước).
 
+### 4.12. PIN gỡ cài đặt, watchdog Tray và cứng hóa file (Sprint 4, 19/11/2026)
+
+**PIN gỡ cài đặt — dùng chung mã PIN thoát Tray** (`devices.exit_pin_hash`, đặt
+trên Dashboard, băm PBKDF2-SHA256 100.000 vòng tại trình duyệt). Bộ gỡ hỏi mã
+bằng form nhập che ký tự (tối đa 3 lần nhập trong một lần gỡ), kiểm tra bằng
+lệnh `Service.exe verify-pin <mã>` (`VerifyPinCli.cs`): exit 0 = được gỡ (đúng
+mã; hoặc máy chưa ghép nối; hoặc chưa đặt mã PIN — mã PIN là lớp tự nguyện,
+chưa đặt thì gỡ bằng quyền Admin như trước), 1 = sai cú pháp, 2 = chỉ
+`--probe` (đã đặt mã PIN, cần hỏi mã), 3 = sai mã, 5 = không kiểm tra được
+(mất mạng + không cache), 6 = khóa nhập (sai 5 lần liên tiếp → khóa 30 phút,
+trạng thái đếm bền vững trong `uninstall_pin_attempts.json` — chỉ số đếm +
+mốc khóa, không chứa PIN/hash). Kiểm tra gỡ CHỈ xác minh, KHÔNG tiêu thụ mã
+(khác thoát Tray dùng một lần — gỡ bị hủy giữa chừng thì mã còn nguyên).
+Gỡ im lặng khi đã đặt mã PIN thì bị chặn (fail-closed, không hộp thoại —
+MsgBox trong gỡ im lặng sẽ treo bộ gỡ); muốn gỡ im lặng thì gỡ mã PIN trên
+Dashboard trước (đợi ~1 phút để Agent đồng bộ), rồi gỡ im lặng. Giới hạn:
+mã PIN đi trên dòng lệnh verify-pin nên process khác có thể thấy trong ~1
+giây (cùng mức lộ như mã ghép nối); mã PIN chỉ bảo vệ đường gỡ được hỗ trợ —
+tài khoản Admin vẫn xóa tay được file + service.
+
+**Cache hash PIN** (`exit_pin_hash.dat`): Service đồng bộ hash từ heartbeat
+xuống `%ProgramData%\SafePC\exit_pin_hash.dat` (DPAPI + khóa ACL SYSTEM +
+Admins) mỗi phút; hash null thì xóa file (tránh cache cũ đòi mã đã gỡ).
+`verify-pin` đọc hash từ server trước (mới nhất), fallback sang cache khi
+mất mạng; mất mạng + không cache → exit 5 (chặn gỡ).
+
+**Khóa ACL file nhạy cảm** (`AclHelper.cs`): `device_token.dat` trước đây
+mang ACL mặc định nên Standard User đọc được (DPAPI LocalMachine giải mã
+được bởi mọi user trên máy) — nay khóa ACL chỉ SYSTEM + Administrators cho
+`device_token.dat` (sau ghi + sau đọc thành công), `exit_pin_hash.dat`,
+`agent.db`. Best-effort, thất bại thì log cảnh báo. Tray không chạm tới các
+file này (chỉ qua IPC) nên không ảnh hưởng luồng chạy.
+
+**Watchdog Tray** (phía Service, `TrayWatchdog.cs` + `TrayLauncher.cs`):
+Service đã có SCM recovery restart 60s (giữ nguyên, chỉ ghi tài liệu).
+Tray thì không có gì khởi động lại — thêm watchdog phía Service: vòng lặp
+`AgentWorker` mỗi 60s chụp snapshot phiên từ IPC (`LastHelloAt` theo
+session), phiên im lặng >5 phút thì khởi động lại Tray trong phiên user
+(WTSQueryUserToken + DuplicateTokenEx + CreateProcessAsUser, desktop
+`winsta0\default`); backoff 0/1/2/5/10 phút, tối đa 5 lần/giờ rồi báo phụ
+huynh bằng sự kiện can thiệp mới `tray_stopped` (migration 22, tối đa 1
+lần/giờ); ân hạn 30 phút sau khi thoát Tray bằng mã PIN. Phiên bị quên
+(không còn user) được bỏ qua cho tới khi có hello MỚI HƠN mốc lúc quên.
+Chính sách thuần trong `TrayWatchdog.cs` (không Win32/mạng/DB) đã kiểm chứng
+bằng harness console 16/16 PASS (harness lưu tại
+`workspace/goals/safepc-parental-control-app/hidden_files/tray-watchdog-test/`,
+link đúng file `TrayWatchdog.cs` thật; chạy lại: `dotnet run`).
+Giới hạn đã biết: ân hạn thoát PIN là toàn cục (một mốc
+`TrayExitAuthorizedUntil` cho mọi phiên) — phụ huynh thoát Tray bằng PIN ở
+phiên admin để bảo trì cũng miễn watchdog cho phiên của con trong 30 phút;
+follow-up: ân hạn theo từng session id.
+
+**Cảnh báo `extension_missing` + `tray_stopped`**: email offline >48h + mục
+Thông báo Dashboard ĐÃ CÓ từ trước (xem §4.11; phụ thuộc migration 12 +
+deploy Edge Function). Sprint 4 bổ sung hai mảnh thiếu: Agent đẩy
+`extension_missing` khi từng thấy extension sống + trình duyệt chạy
+foreground trong 15 phút qua (trình duyệt đóng thì extension im lặng là
+bình thường) + chống spam 1 lần/giờ; và `tray_stopped` khi watchdog thất
+bại. `service_stopped` KHÔNG thể đẩy từ Agent (Service chết thì không báo
+được) — được bao bởi cảnh báo offline. Migration 22 thêm `tray_stopped`
+vào allowlist của `safepc_push_tamper_event` (copy y hệt migration 5, chỉ
+thêm loại); Edge Function send-parent-notifications + Dashboard
+(TAMPER_ACTIONS, nhãn) + email báo cáo tuần đã cập nhật cùng đợt.
+
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 
 - Agent Service chạy quyền SYSTEM, Recovery: restart sau 1 phút nếu bị dừng (bộ cài đặt `sc.exe failure` restart 3 lần, mỗi lần sau 60 giây).
-- Tray App KHÔNG có watchdog khởi động lại Service — không có code nào làm việc đó; Service tự khởi động lại nhờ Recovery của Windows ở trên.
-- Gỡ cài đặt hiện chỉ cần quyền Admin (Standard User không gỡ được phần mềm cài All Users); yêu cầu mã PIN khi gỡ là việc Sprint 4 (TODO trong bộ cài), chưa triển khai. Dừng Service cũng cần quyền Admin. Rules local nằm trong `%ProgramData%\SafePC` với ACL hạn chế, Standard User không sửa được. Mã PIN thoát Tray (khác mã PIN gỡ) thì đã có: thoát Tray cần PIN phụ huynh, sai 5 lần khóa 5 phút.
+- Tray App KHÔNG có watchdog khởi động lại Service — không có code nào làm việc đó; Service tự khởi động lại nhờ Recovery của Windows ở trên. Ngược lại, **Service có watchdog khởi động lại Tray** (xem §4.12): Tray im lặng >5 phút thì khởi động lại trong phiên user, tối đa 5 lần/giờ rồi báo phụ huynh (`tray_stopped`).
+- Gỡ cài đặt yêu cầu **mã PIN phụ huynh** (dùng chung mã PIN thoát Tray, xem §4.12): bộ gỡ hỏi mã bằng form che ký tự, kiểm tra bằng `Service.exe verify-pin`; chưa đặt PIN thì gỡ bằng quyền Admin như trước; gỡ im lặng khi đã đặt PIN thì bị chặn. Dừng Service cũng cần quyền Admin. Rules local nằm trong `%ProgramData%\SafePC` với ACL hạn chế, Standard User không sửa được. Mã PIN thoát Tray đã có: thoát Tray cần PIN phụ huynh, sai 5 lần khóa 5 phút, dùng một lần.
 - Con dùng Standard User: không có quyền dừng Service SYSTEM, không gỡ app cài All Users nếu không có Admin.
 - Cảnh báo offline bất thường: email khi máy quá 48 giờ không tín hiệu (xem §4.11); Dashboard báo máy offline khi heartbeat quá 10 phút. Không có cảnh báo *offline* nào ở ngưỡng 15 phút — ngưỡng 15 phút chỉ dùng cho trạng thái extension "Không thấy gần đây" trên trang Hôm nay.
 - **Giới hạn thành thật:** Nếu con có Admin / boot Safe Mode / cài lại Windows thì mọi biện pháp phần mềm đều có thể bị vượt qua. Tài liệu hướng dẫn phụ huynh sẽ ghi rõ: giữ quyền Admin, bật BitLocker + Secure Boot, đặt BIOS password nếu cần.
