@@ -37,6 +37,7 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [x] Áp migration 8 (gỡ PIN đã dùng khỏi server) + migration 9 (tên rule + bảng rule_templates) lên Supabase (đã áp sáng 18/11; lệnh gỡ PIN chờ từ tối qua đã hoàn tất trên server).
 - [x] Kiểm chứng v0.1.167 trên máy thật (sáng 18/11): đăng nhập lại khi đang khóa thì khóa ngay không đếm ngược ✅; duyệt giờ mở ngay ✅ nhưng thẻ thiết bị xung đột khóa/mở; Khóa ngay độ trễ 0 vẫn đếm ngược — 2 lỗi đã sửa ở v0.1.183.
 - [x] Kiểm chứng chặn domain đầu-cuối với extension 0.1.2 (sáng 18/11): chặn được (YouTube hiện "You're offline"), popup hiện đúng version + domain + rule đang áp; trang chặn SafePC chưa hiện thay vỏ trang đệm. Chặn app / mẫu Chỉ cho phép Edge cũng đã kiểm chứng (Chrome bị đóng 2 lần + hộp cảnh báo).
+- [x] Đồng bộ trạng thái thi hành cho máy mới ghép nối (migration 21, 19/11): máy mới nhận khóa cưỡng chế + tối đa 1 ghi đè đang hiệu lực (mở khóa / ghi đè khóa / allow_domain / block_domain / block_app / allow_app / tổng ngân hàng giờ) từ bảng `commands`, chèn khóa trước ghi đè sau, lệnh sao chép mang `created_at` gốc; kiểm chứng PGlite trên SQL thật: 42/42 pass (34 kịch bản). Chưa áp migration 21, chưa kiểm chứng trên máy thật.
 - [ ] Kiểm chứng v0.1.183 + extension 0.1.3 trên máy thật: rule bing.com/videos (chặn /videos, mở được /abc); Khóa ngay độ trễ 0 không đếm ngược; thẻ thiết bị hết xung đột khóa/mở; giao diện Quy tắc mới trên điện thoại thật.
 
 ### Sprint 4 — Cứng hóa + Beta gia đình ⏳

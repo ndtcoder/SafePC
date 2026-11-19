@@ -34,7 +34,7 @@ Một gia đình: 1-2 phụ huynh, 1-3 con, 1-3 máy PC (MVP: 1 phụ huynh, 1 c
 ### 2.1. Tài khoản & liên kết thiết bị
 - [x] Đăng ký/đăng nhập phụ huynh bằng email + mật khẩu (Supabase Auth), xác minh email. — Đã triển khai; tài khoản phụ huynh đầu tiên đã đăng ký và đăng nhập thành công trên bản live (16/11/2026). Site URL/redirect đã cấu hình đúng (`https://safe-pc.vercel.app`).
 - [x] Tạo hồ sơ con (tên, ngày sinh/độ tuổi, avatar). — Đã triển khai (tên + hồ sơ con trên Dashboard; avatar chưa có UI).
-- [x] Ghép nối máy con bằng mã pairing 6 số, hết hạn sau 5 phút, dùng 1 lần. — Đã triển khai và kiểm chứng trên máy thật (16–17/11/2026). Hạn rút từ 10 xuống 5 phút theo yêu cầu test 17/11/2026. QR chưa làm; mã nhập bằng lệnh PowerShell (sẽ thay bằng giao diện ghép nối trong bộ cài — xem roadmap).
+- [x] Ghép nối máy con bằng mã pairing 6 số, hết hạn sau 5 phút, dùng 1 lần. — Đã triển khai và kiểm chứng trên máy thật (16–17/11/2026). Hạn rút từ 10 xuống 5 phút theo yêu cầu test 17/11/2026. QR chưa làm; mã nhập bằng lệnh PowerShell (sẽ thay bằng giao diện ghép nối trong bộ cài — xem roadmap). Máy mới ghép nối nhận trạng thái thi hành của con lúc redeem: khóa cưỡng chế + tối đa 1 ghi đè đang hiệu lực (migration 17 ngân hàng giờ + migration 21; kiểm chứng PGlite 42/42 pass, 34 kịch bản, chưa áp migration 21, chưa kiểm chứng trên máy thật).
 - [x] Agent lưu device token an toàn (DPAPI LocalMachine), không lưu mật khẩu phụ huynh trên máy con. — Đã triển khai; token thô không bao giờ rời máy, server chỉ lưu hash SHA-256.
 
 ### 2.2. Theo dõi thời gian sử dụng (Usage Tracking)
