@@ -35,7 +35,7 @@ Theo `docs/01-PRD.md` mục 5 và `docs/03-SECURITY.md`:
 - **Device token** lưu bằng DPAPI (`DataProtectionScope.LocalMachine`), chỉ lưu hash ở DB. Không hardcode URL/key, không ghi token vào log.
 - **IPC Named Pipe có ACL:** chỉ SYSTEM và nhóm Users được kết nối (xem `IpcPipeServer.cs`).
 - **Log local** xoay vòng, tối đa 10MB/file, không chứa token/mật khẩu.
-- **Mã PIN** (thoát Tray / gỡ Agent) khác mật khẩu đăng nhập và khác device token. Skeleton PIN dùng SHA-256 + salt; Sprint 4 thay bằng Argon2/bcrypt theo docs/03.
+- **Mã PIN** (thoát Tray / gỡ Agent) khác mật khẩu đăng nhập và khác device token. Mã PIN thật đã là PBKDF2-SHA256 100.000 vòng (`PinHash.cs`, định dạng `v1$100000$<salt>$<hash>`); mã PIN thoát Tray dùng một lần (nhập đúng → gỡ khỏi server qua RPC migration 8), mã PIN gỡ cài đặt dùng chung mã này nhưng kiểm tra CHỈ xác minh, KHÔNG tiêu thụ (`Service.exe verify-pin`, xem `VerifyPinCli.cs`).
 
 ## Build trên Windows
 
@@ -68,7 +68,7 @@ Sau đó mở `installer/SafePCAgent.iss` bằng **Inno Setup 6** và Build đ�
 
 - Service chạy quyền SYSTEM + recovery restart sau 60 giây (cấu hình bằng `sc.exe failure` trong installer). Standard User không dừng được Service SYSTEM, không gỡ được app cài All Users nếu không có Admin.
 - Tray App tự kết nối lại IPC sau 5 giây nếu mất kết nối tới Service.
-- Gỡ cài đặt yêu cầu mã PIN: **TODO Sprint 4** (hiện gỡ bình thường bằng quyền Admin).
+- Gỡ cài đặt yêu cầu mã PIN phụ huynh (Sprint 4): bộ gỡ hỏi mã bằng form che ký tự (tối đa 3 lần nhập), kiểm tra bằng `Service.exe verify-pin`; chưa đặt mã PIN thì gỡ bằng quyền Admin như trước; gỡ im lặng khi đã đặt mã PIN thì bị chặn (gỡ mã PIN trên Dashboard trước rồi gỡ im lặng).
 - **Giới hạn thành thật** (docs/02 mục 5): nếu con có quyền Admin / boot Safe Mode / cài lại Windows thì mọi biện pháp phần mềm đều có thể bị vượt qua. Phụ huynh giữ quyền Admin, bật BitLocker + Secure Boot.
 - **Chưa có code signing:** installer và file .exe chưa được ký số (theo roadmap, mua chứng chỉ sau). Windows SmartScreen có thể cảnh báo khi cài.
 
@@ -83,7 +83,7 @@ Mọi chỗ skeleton đều có ghi `TODO` trong code. Tóm tắt:
 | Thi hành rules thật (chặn app, `LockWorkStation` sau đếm ngược 60s) | TODO Sprint 2 |
 | Gửi yêu cầu xin thêm giờ lên bảng `requests`, nhận quyết định | TODO Sprint 2 |
 | Rule theo app / website, daily_limit theo thứ | TODO Sprint 1–2 |
-| PIN thật (Argon2/bcrypt, khóa sau 5 lần sai), PIN khi gỡ cài đặt | TODO Sprint 4 |
+| PIN thật (PBKDF2, khóa sau 5 lần sai), PIN khi gỡ cài đặt | Đã triển khai (Sprint 4: `verify-pin` + form PIN trong bộ gỡ; chưa kiểm chứng trên máy thật) |
 | Icon Tray riêng, đếm ngược cảnh báo trực tiếp | TODO Sprint 1 |
 | Code signing | Sau khi có pháp nhân/budget |
 
