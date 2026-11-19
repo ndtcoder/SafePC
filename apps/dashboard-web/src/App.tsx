@@ -5,6 +5,8 @@ import { useAuth } from './context/AuthContext'
 import { Spinner } from './components/ui'
 import LoginPage from './pages/LoginPage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
+import InstallGuidePage from './pages/InstallGuidePage'
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
 import TodayPage from './pages/TodayPage'
 import DevicesPage from './pages/DevicesPage'
 import RulesPage from './pages/RulesPage'
@@ -45,6 +47,10 @@ export default function App() {
   return (
     <Routes>
       <Route path="/dang-nhap" element={<LoginPage />} />
+      {/* Hướng dẫn cài đặt + chính sách riêng tư nằm ngoài RequireAuth:
+          phụ huynh mới đọc được trước khi đăng nhập. */}
+      <Route path="/huong-dan-cai-dat" element={<InstallGuidePage />} />
+      <Route path="/chinh-sach-rieng-tu" element={<PrivacyPolicyPage />} />
       {/* Trang chấp nhận lời mời nằm ngoài RequireAuth: người được mời có
           thể chưa đăng nhập, thậm chí chưa có tài khoản. */}
       <Route path="/moi/:token" element={<AcceptInvitePage />} />
