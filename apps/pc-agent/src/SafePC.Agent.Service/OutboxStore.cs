@@ -33,6 +33,7 @@ public sealed record UsageSummary(string AppName, string? ExePathHash, long Samp
 public sealed class OutboxStore
 {
     private readonly string _connectionString;
+    private readonly string _dbFilePath;
 
     public OutboxStore(string dbFilePath)
     {
@@ -44,6 +45,7 @@ public sealed class OutboxStore
             Directory.CreateDirectory(directory);
         }
 
+        _dbFilePath = dbFilePath;
         _connectionString = new SqliteConnectionStringBuilder { DataSource = dbFilePath }.ToString();
     }
 
@@ -105,6 +107,14 @@ public sealed class OutboxStore
         await EnsureOverrideDomainsColumnAsync(connection, ct);
         await EnsureOverrideAppsColumnAsync(connection, ct);
         await EnsureOverrideCommandCreatedAtColumnAsync(connection, ct);
+
+        // Sprint 4: khóa ACL file DB chỉ còn SYSTEM + Administrators. DB
+        // chứa hàng đợi offline, cache rules, trạng thái bền (mốc chống
+        // lệnh cũ, đếm lần sai PIN...) — trước đây file mang ACL mặc định,
+        // Standard User đọc được. Không process nào ở quyền user chạm tới
+        // file này (Tray chỉ nói chuyện qua IPC), nên khóa không ảnh hưởng
+        // luồng chạy. Best-effort, thất bại thì DB vẫn dùng được.
+        AclHelper.RestrictFileToSystemAndAdmins(_dbFilePath);
     }
 
     /// <summary>Thêm cột <c>domains_json</c> vào bảng <c>active_override</c> nếu chưa có.</summary>

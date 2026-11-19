@@ -84,10 +84,62 @@ public sealed class IpcPipeServer : BackgroundService
         public string? UserName { get; set; }
         public bool IsAdmin { get; set; }
         public bool HasHello { get; set; }
+
+        /// <summary>Thời điểm hello gần nhất của phiên này (Sprint 4: watchdog Tray dùng để biết phiên nào đã mất Tray).</summary>
+        public DateTimeOffset LastHelloAt { get; set; }
     }
 
     private readonly System.Collections.Generic.HashSet<WriterEntry> _clientWriters = new();
     private readonly object _writersLock = new();
+
+    /// <summary>
+    /// Lần hello gần nhất theo phiên (Sprint 4): giữ lại cả khi Tray đã ngắt
+    /// kết nối, để watchdog biết phiên nào TỪNG có Tray rồi mất. Chỉ ghi
+    /// dưới <see cref="_writersLock"/> (nhánh hello), đọc khi chụp snapshot
+    /// dưới cùng khóa đó. Session id có thể tái sử dụng sau khi khởi động
+    /// lại máy — Service khởi động lại cùng lúc nên dict cũng mất theo.
+    /// </summary>
+    private readonly Dictionary<int, DateTimeOffset> _lastHelloBySession = new();
+
+    /// <summary>
+    /// Chụp trạng thái hello của mọi phiên từng có Tray: vòng lặp watchdog
+    /// của AgentWorker dùng để phát hiện Tray tắt bất thường. Trả về rỗng
+    /// khi chưa phiên nào hello (VD: vừa khởi động Service).
+    /// </summary>
+    public IReadOnlyList<TraySessionSnapshot> GetTraySessionSnapshot()
+    {
+        lock (_writersLock)
+        {
+            var connected = new HashSet<int>();
+            foreach (WriterEntry entry in _clientWriters)
+            {
+                if (entry.HasHello && entry.SessionId.HasValue)
+                {
+                    connected.Add(entry.SessionId.Value);
+                }
+            }
+
+            var snapshot = new List<TraySessionSnapshot>();
+            foreach (KeyValuePair<int, DateTimeOffset> pair in _lastHelloBySession)
+            {
+                string? userName = null;
+                bool isAdmin = false;
+                foreach (WriterEntry entry in _clientWriters)
+                {
+                    if (entry.SessionId == pair.Key)
+                    {
+                        userName = entry.UserName;
+                        isAdmin = entry.IsAdmin;
+                        break;
+                    }
+                }
+
+                snapshot.Add(new TraySessionSnapshot(pair.Key, userName, isAdmin, pair.Value, connected.Contains(pair.Key)));
+            }
+
+            return snapshot;
+        }
+    }
 
     // Đếm vòng accept + thời điểm vòng accept gần nhất (ticks UTC, truy cập
     // qua Interlocked vì watchdog chạy trên thread khác).
@@ -751,6 +803,10 @@ public sealed class IpcPipeServer : BackgroundService
                         entry.UserName = hello.UserName;
                         entry.IsAdmin = hello.IsAdmin;
                         entry.HasHello = true;
+                        entry.LastHelloAt = DateTimeOffset.UtcNow;
+                        // Sprint 4: ghi lại để watchdog biết phiên này từng
+                        // có Tray, kể cả sau khi Tray ngắt kết nối.
+                        _lastHelloBySession[hello.SessionId] = entry.LastHelloAt;
                     }
 
                     _log.Info("IPC: Tray phiên #" + hello.SessionId + " (" + hello.UserName + ") đã giới thiệu, admin=" + hello.IsAdmin
@@ -943,6 +999,25 @@ public sealed class IpcPipeServer : BackgroundService
                 }
 
                 await ReplyAsync(verified: true, lockedOut: false, remainingAttempts: MaxPinAttempts, pinConfigured: true);
+
+                // Sprint 4: thoát Tray bằng mã PIN là thoát CÓ PHÉP — đặt ân
+                // hạn 30 phút để watchdog không khởi động lại Tray ngay trong
+                // lúc phụ huynh bảo trì máy. Ghi bền vững để Service khởi
+                // động lại giữa chừng vẫn nhớ. Best-effort: ghi lỗi thì chỉ
+                // mất ân hạn (watchdog có thể khởi động lại Tray sớm hơn),
+                // không bao giờ chặn câu trả lời "được phép thoát".
+                try
+                {
+                    await _outbox.SetStateAsync(
+                        StateKeys.TrayExitAuthorizedUntil,
+                        DateTimeOffset.UtcNow.Add(TrayWatchdog.PinExitGrace).ToString("o", CultureInfo.InvariantCulture),
+                        ct);
+                }
+                catch (Exception ex)
+                {
+                    _log.Warning("IPC: không ghi được ân hạn thoát Tray (watchdog có thể khởi động lại Tray sớm): " + ex.Message);
+                }
+
                 return;
             }
 

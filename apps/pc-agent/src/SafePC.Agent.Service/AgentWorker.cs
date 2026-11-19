@@ -11,13 +11,16 @@ namespace SafePC.Agent.Service;
 
 /// <summary>
 /// Worker chính của Windows Service (chạy quyền SYSTEM).
-/// Bốn vòng lặp nền, độc lập với nhau — một vòng lặp lỗi không làm chết các vòng khác:
+/// Năm vòng lặp nền, độc lập với nhau — một vòng lặp lỗi không làm chết các vòng khác:
 /// 1. Heartbeat 60s lên server + đồng bộ rules về cache + kiểm tra lệch đồng hồ.
 /// 2. Poll commands 15s từ server, thi hành lệnh, ack kết quả về server.
 /// 3. Flush usage 5 phút: tổng hợp mẫu foreground theo app, gửi lên server;
 ///    đồng thời đọc file web_usage.jsonl do NativeHost ghi và đẩy lên server.
 /// 4. Kiểm tra rules 15s từ cache local (offline-first): hết giờ thì báo Tray
 ///    hiện cảnh báo/màn hình khóa qua IPC (Tray đếm ngược 60s rồi khóa phiên).
+/// 5. Watchdog Tray 60s (Sprint 4): phát hiện Tray tắt bất thường rồi khởi
+///    động lại trong phiên của user; báo phụ huynh khi khởi động lại thất
+///    bại nhiều lần.
 ///
 /// Sau mỗi lần đồng bộ rules, khi ghi đè thay đổi (áp dụng/hết hạn/hủy), và
 /// lúc khởi động (nếu cache không rỗng), Worker xuất bản lại file
@@ -113,6 +116,29 @@ public sealed class AgentWorker : BackgroundService
     // phút) và khi extension vắng mặt (tối đa 1 lần/giờ) — chỉ trong bộ nhớ.
     private DateTimeOffset _lastStaleForegroundLogAt;
     private DateTimeOffset _lastExtensionStaleLogAt;
+
+    // Sprint 4 — watchdog Tray: chính sách khởi động lại (thuần, xem
+    // TrayWatchdog) + lần cuối thấy một trình duyệt chạy foreground (để
+    // kết luận extension "mất" chỉ khi trình duyệt đang chạy mà extension
+    // im lặng — trình duyệt đóng thì extension im lặng là bình thường).
+    // OnForegroundReportReceived chạy trên thread pipe, vòng heartbeat đọc
+    // — mọi truy cập qua khóa này.
+    private readonly TrayWatchdog _trayWatchdog = new();
+    private readonly object _browserGate = new();
+    private DateTimeOffset _lastBrowserForegroundAt;
+    private string? _lastBrowserExe;
+
+    /// <summary>
+    /// Tên exe trình duyệt đã biết (khớp danh sách KNOWN_BROWSERS trên
+    /// Dashboard + msedge.exe — Edge là trình duyệt chính của SafePC, không
+    /// nằm trong danh sách "chặn" của mẫu Chỉ cho phép Edge nhưng vẫn dùng
+    /// extension). So khớp sau khi chuẩn hóa bằng ExeNames (bỏ .exe, không
+    /// phân biệt hoa thường).
+    /// </summary>
+    private static readonly HashSet<string> KnownBrowserExeNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "msedge", "chrome", "firefox", "brave", "opera", "vivaldi", "arc", "chromium", "whale", "coccoc", "comet",
+    };
 
     // Chống spam log khi từ chối đóng một exe trong denylist (VD: Explorer
     // đang ở foreground trong giờ tập trung): tối đa 1 lần/15 phút mỗi exe.
@@ -277,8 +303,12 @@ public sealed class AgentWorker : BackgroundService
         Task polling = CommandPollLoopAsync(stoppingToken);
         Task flushing = UsageFlushLoopAsync(stoppingToken);
         Task ruleCheck = RuleCheckLoopAsync(stoppingToken);
+        // Sprint 4 — watchdog Tray: phát hiện Tray tắt bất thường rồi khởi
+        // động lại trong phiên của user (xem TrayWatchdogLoopAsync). Vòng
+        // này độc lập như các vòng khác: lỗi thì chỉ log, không chết Service.
+        Task trayWatchdog = TrayWatchdogLoopAsync(stoppingToken);
 
-        await Task.WhenAll(heartbeat, polling, flushing, ruleCheck);
+        await Task.WhenAll(heartbeat, polling, flushing, ruleCheck, trayWatchdog);
         _log.Info("SafePC Agent Service dừng.");
     }
 
@@ -352,6 +382,13 @@ public sealed class AgentWorker : BackgroundService
                         }
                     }
 
+                    // Sprint 4: đồng bộ hash mã PIN xuống cache local để lệnh
+                    // verify-pin của bộ gỡ cài đặt kiểm tra được mã ngay cả
+                    // khi mất mạng (xem VerifyPinCli). Hash null thì xóa
+                    // cache (phụ huynh đã gỡ mã) — cache cũ mà còn thì bộ gỡ
+                    // sẽ đòi mã cũ đã gỡ, sai. Best-effort, lỗi thì log.
+                    SyncPinHashCache(_queryState.ExitPinHash);
+
                     // Kiểm tra extension còn sống (chỉ sau khi heartbeat
                     // thành công — máy offline thì không kết luận gì về
                     // extension): đọc file heartbeat NativeHost ghi, báo lên
@@ -378,6 +415,89 @@ public sealed class AgentWorker : BackgroundService
             {
                 break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Vòng lặp watchdog Tray (Sprint 4, mỗi 60 giây): hỏi IpcPipeServer
+    /// snapshot các phiên từng có Tray, để TrayWatchdog quyết định phiên nào
+    /// cần khởi động lại / báo phụ huynh, rồi thực hiện từng việc. Mọi lỗi
+    /// đều chỉ log — vòng này không bao giờ làm chết Service, và một lần
+    /// khởi động thất bại chỉ khiến watchdog backoff rồi thử lại.
+    ///
+    /// Không khởi động lại Tray khi: phiên đang nối IPC, phiên mới hello
+    /// gần đây, phụ huynh vừa thoát Tray bằng mã PIN (ân hạn 30 phút),
+    /// phiên không còn user đăng nhập (launcher báo, watchdog quên phiên).
+    /// Đường dẫn Tray exe suy từ thư mục Service ({app}\Service →
+    /// {app}\Tray); file không tồn tại thì launcher trả lỗi, watchdog
+    /// backoff rồi báo phụ huynh sau 5 lần thử.
+    /// </summary>
+    private async Task TrayWatchdogLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                bool graceActive = await IsPinExitGraceActiveAsync(ct);
+                IReadOnlyList<TraySessionSnapshot> snapshot = _ipc.GetTraySessionSnapshot();
+                IReadOnlyList<TrayWatchdogAction> actions = _trayWatchdog.Evaluate(snapshot, DateTimeOffset.UtcNow, graceActive);
+                foreach (TrayWatchdogAction action in actions)
+                {
+                    if (action.Kind == TrayWatchdogActionKind.Relaunch)
+                    {
+                        string trayExePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Tray", "SafePC.Agent.Tray.exe"));
+                        bool launched = TrayLauncher.TryLaunchInSession(action.SessionId, trayExePath, _log, out string reason, out bool noUser);
+                        if (!launched)
+                        {
+                            _log.Warning("Watchdog Tray: " + action.Reason + " Khởi động lại thất bại: " + reason);
+                        }
+
+                        _trayWatchdog.RecordLaunchResult(action.SessionId, launched, noUser, DateTimeOffset.UtcNow);
+                    }
+                    else
+                    {
+                        _log.Warning("Watchdog Tray: " + action.Reason);
+                        // Cờ "đã báo trong giờ này" đã được Evaluate đặt khi
+                        // tạo việc Alert, nên lần quét sau trong cùng giờ
+                        // không báo trùng; sang giờ mới Evaluate cho báo lại.
+                        await PushThrottledTamperEventAsync(
+                            StateKeys.TamperTrayStoppedLastSent,
+                            "tray_stopped",
+                            JsonSerializer.SerializeToElement(new { session_id = action.SessionId }),
+                            ct);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Watchdog Tray lỗi.", ex);
+            }
+
+            if (!await WaitAsync(TimeSpan.FromSeconds(60), ct))
+            {
+                break;
+            }
+        }
+    }
+
+    /// <summary>True khi đang trong ân hạn 30 phút sau khi phụ huynh thoát Tray bằng mã PIN (xem IpcPipeServer).</summary>
+    private async Task<bool> IsPinExitGraceActiveAsync(CancellationToken ct)
+    {
+        try
+        {
+            string? untilText = await _outbox.GetStateAsync(StateKeys.TrayExitAuthorizedUntil, ct);
+            return untilText is not null
+                && DateTimeOffset.TryParse(untilText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset until)
+                && until > DateTimeOffset.UtcNow;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Đọc ân hạn thoát Tray lỗi (coi như không ân hạn): " + ex.Message);
+            return false;
         }
     }
 
@@ -1549,6 +1669,106 @@ public sealed class AgentWorker : BackgroundService
             _lastExtensionStaleLogAt = now;
             _log.Warning("Không thấy dấu hiệu extension trình duyệt trong hơn 15 phút (file extension_heartbeat.txt thiếu hoặc đã cũ).");
         }
+
+        // Sprint 4: extension TỪNG sống mà giờ mất dấu thì báo phụ huynh —
+        // trước đây loại extension_missing không ai đẩy nên pipeline thông
+        // báo (email + Dashboard) có sẵn mà không có dữ liệu. Chỉ đẩy khi
+        // trình duyệt vừa chạy foreground (xem MaybePushExtensionMissingAsync).
+        if (stale)
+        {
+            await MaybePushExtensionMissingAsync(seenAt, ct);
+        }
+    }
+
+    /// <summary>
+    /// Đồng bộ hash mã PIN thoát xuống cache local cho lệnh verify-pin của
+    /// bộ gỡ cài đặt (Sprint 4): hash khác null thì ghi file (DPAPI + khóa
+    /// ACL SYSTEM + Admins qua TokenStore); hash null (phụ huynh đã gỡ mã)
+    /// thì xóa file cache. Đồng bộ (không await) vì TokenStore đồng bộ;
+    /// best-effort: lỗi thì log, không chặn heartbeat.
+    /// </summary>
+    private void SyncPinHashCache(string? exitPinHash)
+    {
+        try
+        {
+            string cachePath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "SafePC",
+                AgentConstants.ExitPinHashCacheFileName);
+            if (string.IsNullOrEmpty(exitPinHash))
+            {
+                if (File.Exists(cachePath))
+                {
+                    File.Delete(cachePath);
+                    _log.Info("Đã xóa cache hash mã PIN (phụ huynh đã gỡ mã PIN).");
+                }
+
+                return;
+            }
+
+            var cache = new TokenStore(cachePath);
+            string? existing = cache.TryLoadToken();
+            if (!string.Equals(existing, exitPinHash, StringComparison.Ordinal))
+            {
+                cache.SaveToken(exitPinHash);
+                _log.Info("Đã đồng bộ hash mã PIN xuống cache local cho bộ gỡ cài đặt.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Đồng bộ cache hash mã PIN lỗi (bộ gỡ cài đặt sẽ dùng server thay cho cache): " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Đẩy sự kiện can thiệp extension_missing khi extension TỪNG sống mà
+    /// giờ mất dấu (Sprint 4). Ba cửa chặn để không báo sai:
+    /// - Chưa từng báo extension sống lần nào (máy chưa từng cài/mở trình
+    ///   duyệt có extension): không kết luận "mất".
+    /// - Trình duyệt không chạy foreground trong 15 phút qua: extension im
+    ///   lặng là bình thường (trình duyệt đóng), không kết luận "mất".
+    /// - Chống spam 1 lần/giờ (hàm PushThrottledTamperEventAsync); email
+    ///   chống spam riêng 1 lần/6h mỗi máy.
+    /// Chỉ chạy sau heartbeat thành công (máy đang online) nên máy offline
+    /// không bị kết luận sai về extension.
+    /// </summary>
+    private async Task MaybePushExtensionMissingAsync(DateTimeOffset? seenAt, CancellationToken ct)
+    {
+        try
+        {
+            string? everReported = await _outbox.GetStateAsync(StateKeys.ExtensionHeartbeatLastReported, ct);
+            if (everReported is null)
+            {
+                return;
+            }
+
+            DateTimeOffset lastBrowser;
+            string? lastBrowserExe;
+            lock (_browserGate)
+            {
+                lastBrowser = _lastBrowserForegroundAt;
+                lastBrowserExe = _lastBrowserExe;
+            }
+
+            if (DateTimeOffset.UtcNow - lastBrowser > TimeSpan.FromMinutes(15))
+            {
+                return;
+            }
+
+            await PushThrottledTamperEventAsync(
+                StateKeys.TamperExtensionMissingLastSent,
+                "extension_missing",
+                JsonSerializer.SerializeToElement(new
+                {
+                    last_seen = seenAt?.ToString("o", CultureInfo.InvariantCulture),
+                    browser = lastBrowserExe ?? "unknown",
+                }),
+                ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đẩy sự kiện extension_missing lỗi.", ex);
+        }
     }
 
     /// <summary>Đọc timestamp UTC trong file extension_heartbeat.txt. Null khi file thiếu, đọc lỗi hoặc timestamp hỏng.</summary>
@@ -1749,7 +1969,37 @@ public sealed class AgentWorker : BackgroundService
     /// </summary>
     private void OnForegroundReportReceived(ForegroundReport report)
     {
+        // Sprint 4: ghi nhận trình duyệt chạy foreground để kết luận
+        // extension "mất" chỉ khi trình duyệt đang chạy mà extension im lặng
+        // (xem MaybePushExtensionMissingAsync). Không chặn xử lý báo cáo.
+        TrackBrowserForeground(report);
         _ = EnforceAppRulesOnReportAsync(report);
+    }
+
+    /// <summary>
+    /// Ghi nhận lần cuối một trình duyệt đã biết chạy foreground (Sprint 4).
+    /// Chỉ cập nhật khi exe (đã chuẩn hóa) nằm trong danh sách trình duyệt.
+    /// </summary>
+    private void TrackBrowserForeground(ForegroundReport report)
+    {
+        try
+        {
+            string? exe = ExeNames.Normalize(report.Payload.ExeName);
+            if (exe is null || !KnownBrowserExeNames.Contains(exe))
+            {
+                return;
+            }
+
+            lock (_browserGate)
+            {
+                _lastBrowserForegroundAt = DateTimeOffset.UtcNow;
+                _lastBrowserExe = exe;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Ghi nhận trình duyệt foreground lỗi: " + ex.Message);
+        }
     }
 
     /// <summary>
