@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using SafePC.Agent.Shared;
@@ -25,11 +26,15 @@ namespace SafePC.Agent.NativeHost;
 ///   chỉ ghi vào dòng JSONL khi true; dòng cũ không có blocked thì Service
 ///   coi là false — cả hai chiều đều tương thích ngược. path (tùy chọn,
 ///   extension 0.1.10) chỉ ghi khi đã cắt sạch; visit bị chặn thì bỏ path.
+///   windows_sid/username (Sprint 5): SID + tên tài khoản Windows đang chạy
+///   host — Service suy ra hồ sơ con qua ánh xạ (migration 24); hai trường
+///   này CHỈ ghi khi lấy được (không bao giờ ghi null — Service coi SID
+///   không phải chuỗi là dòng hỏng).
 /// - {"type":"requestUnblock","domain"} (extension 0.1.9) -&gt; ghi thêm một
-///   dòng {"domain","requestedAt"} vào domain_requests.jsonl để Service đọc
-///   trong chu kỳ poll lệnh, trả {"type":"ack","ok":true|false}. Chỉ tên
-///   miền, cùng luật kiểm tra domain như visit (không '/', '?', '#',
-///   khoảng trắng, ký tự điều khiển).
+///   dòng {"domain","requestedAt","windows_sid"?,"username"?} vào
+///   domain_requests.jsonl để Service đọc trong chu kỳ poll lệnh, trả
+///   {"type":"ack","ok":true|false}. Chỉ tên miền, cùng luật kiểm tra
+///   domain như visit (không '/', '?', '#', khoảng trắng, ký tự điều khiển).
 /// Mỗi message getRules/reportUsage (kể cả message lỗi) còn ghi đè timestamp
 /// UTC hiện tại vào extension_heartbeat.txt — dấu hiệu extension còn sống để
 /// Service đọc và báo lên server (Sprint 2 đợt 3). Ghi heartbeat không bao
@@ -79,6 +84,132 @@ internal static class NativeHostApp
 
     /// <summary>File heartbeat của extension: chỉ chứa timestamp UTC ISO lúc extension liên hệ gần nhất. Service đọc để báo lên server.</summary>
     private static readonly string HeartbeatFilePath = Path.Combine(SharedDirectory, "extension_heartbeat.txt");
+
+    /// <summary>
+    /// Định danh tài khoản Windows đang chạy host (Sprint 5): NativeHost chạy
+    /// dưới quyền user mở trình duyệt nên tự biết mình là ai — username +
+    /// SID gắn vào mỗi dòng web_usage.jsonl / domain_requests.jsonl để
+    /// Service suy ra hồ sơ con qua ánh xạ (migration 24). SID lấy bằng
+    /// P/Invoke (GetTokenInformation + ConvertSidToStringSid) vì NativeHost
+    /// là net8.0 thuần, không dùng WindowsIdentity (chỉ có sẵn trên
+    /// net8.0-windows); username lấy từ Environment.UserName (BCL). Lấy
+    /// MỘT lần khi process khởi động (định danh không đổi trong đời
+    /// process); lỗi (kể cả chạy trên Linux lúc test) thì null — Service
+    /// coi dòng không có SID là dòng cũ (fallback con mặc định). Không bao
+    /// giờ log SID/username ra stderr (chỉ ghi vào file JSONL nội bộ).
+    /// </summary>
+    private static readonly (string? UserName, string? Sid) CurrentUser = GetCurrentUser();
+
+    private static (string? UserName, string? Sid) GetCurrentUser()
+    {
+        string? userName;
+        try
+        {
+            userName = Environment.UserName;
+            if (string.IsNullOrWhiteSpace(userName))
+            {
+                userName = null;
+            }
+        }
+        catch (Exception)
+        {
+            userName = null;
+        }
+
+        return (userName, GetCurrentUserSid());
+    }
+
+    private static string? GetCurrentUserSid()
+    {
+        IntPtr token = IntPtr.Zero;
+        IntPtr buffer = IntPtr.Zero;
+        try
+        {
+            if (!OpenProcessToken(GetCurrentProcess(), TokenQuery, out token) || token == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            // Lần 1 đo kích thước TOKEN_USER, lần 2 đọc thật.
+            _ = GetTokenInformation(token, TokenUserClass, IntPtr.Zero, 0, out uint needed);
+            if (needed == 0)
+            {
+                return null;
+            }
+
+            buffer = Marshal.AllocHGlobal((int)needed);
+            if (!GetTokenInformation(token, TokenUserClass, buffer, needed, out _))
+            {
+                return null;
+            }
+
+            // TOKEN_USER = { SID_AND_ATTRIBUTES User }: trường đầu tiên là
+            // con trỏ SID.
+            IntPtr sid = Marshal.ReadIntPtr(buffer);
+            if (sid == IntPtr.Zero || !ConvertSidToStringSid(sid, out IntPtr sidStringPtr) || sidStringPtr == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            try
+            {
+                return Marshal.PtrToStringUni(sidStringPtr);
+            }
+            finally
+            {
+                _ = LocalFree(sidStringPtr);
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            return null;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            if (token != IntPtr.Zero)
+            {
+                _ = CloseHandle(token);
+            }
+        }
+    }
+
+    private const uint TokenQuery = 0x0008;
+    private const int TokenUserClass = 1;
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(IntPtr tokenHandle, int tokenInformationClass, IntPtr tokenInformation, uint tokenInformationLength, out uint returnLength);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr stringSid);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr handle);
 
     public static int Run()
     {
@@ -410,32 +541,47 @@ internal static class NativeHostApp
 
         if (blocked)
         {
-            return JsonSerializer.Serialize(new
-            {
-                domain,
-                startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
-                durationSec,
-                blocked = true,
-            });
+            return SerializeVisitLine(domain, startedAt, durationSec, blocked: true, path: null);
         }
 
-        if (path is not null)
+        return SerializeVisitLine(domain, startedAt, durationSec, blocked: false, path);
+    }
+
+    /// <summary>
+    /// Tuần tự hóa một dòng web_usage.jsonl. Sprint 5: gắn thêm SID +
+    /// username của tài khoản đang chạy host (để Service suy ra hồ sơ con)
+    /// — CHỈ khi lấy được: trường null sẽ bị Service coi là dòng hỏng
+    /// (SID không phải chuỗi), nên thà bỏ trường còn hơn ghi null.
+    /// Dictionary giữ đúng thứ tự chèn khi tuần tự hóa.
+    /// </summary>
+    private static string SerializeVisitLine(string domain, DateTimeOffset startedAt, int durationSec, bool blocked, string? path)
+    {
+        var line = new Dictionary<string, object>
         {
-            return JsonSerializer.Serialize(new
-            {
-                domain,
-                startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
-                durationSec,
-                path,
-            });
+            ["domain"] = domain,
+            ["startedAt"] = startedAt.ToString("o", CultureInfo.InvariantCulture),
+            ["durationSec"] = durationSec,
+        };
+        if (blocked)
+        {
+            line["blocked"] = true;
+        }
+        else if (path is not null)
+        {
+            line["path"] = path;
         }
 
-        return JsonSerializer.Serialize(new
+        if (CurrentUser.Sid is not null)
         {
-            domain,
-            startedAt = startedAt.ToString("o", CultureInfo.InvariantCulture),
-            durationSec,
-        });
+            line["windows_sid"] = CurrentUser.Sid;
+        }
+
+        if (CurrentUser.UserName is not null)
+        {
+            line["username"] = CurrentUser.UserName;
+        }
+
+        return JsonSerializer.Serialize(line);
     }
 
     /// <summary>
@@ -475,10 +621,12 @@ internal static class NativeHostApp
 
     /// <summary>
     /// Kiểm tra và định dạng một message requestUnblock thành dòng JSONL
-    /// {"domain","requestedAt"}. Trả về null khi domain thiếu/không hợp lệ:
-    /// 1-253 ký tự sau khi trim + chữ thường, không chứa '/', '?', '#',
-    /// khoảng trắng hay ký tự điều khiển (cùng luật với visit — không bao
-    /// giờ là URL đầy đủ). requestedAt là giờ UTC lúc host nhận message.
+    /// {"domain","requestedAt","windows_sid"?,"username"?}. Trả về null khi
+    /// domain thiếu/không hợp lệ: 1-253 ký tự sau khi trim + chữ thường,
+    /// không chứa '/', '?', '#', khoảng trắng hay ký tự điều khiển (cùng
+    /// luật với visit — không bao giờ là URL đầy đủ). requestedAt là giờ UTC
+    /// lúc host nhận message. windows_sid/username (Sprint 5) chỉ ghi khi
+    /// lấy được tài khoản đang chạy host.
     /// </summary>
     private static string? TryFormatDomainRequestLine(JsonElement root)
     {
@@ -495,11 +643,25 @@ internal static class NativeHostApp
             return null;
         }
 
-        return JsonSerializer.Serialize(new
+        var line = new Dictionary<string, object>
         {
-            domain,
-            requestedAt = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture),
-        });
+            ["domain"] = domain,
+            ["requestedAt"] = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+        };
+        // Sprint 5: gắn SID + username như dòng web_usage (chỉ khi lấy
+        // được — không bao giờ ghi null, Service coi SID không phải chuỗi
+        // là dòng hỏng).
+        if (CurrentUser.Sid is not null)
+        {
+            line["windows_sid"] = CurrentUser.Sid;
+        }
+
+        if (CurrentUser.UserName is not null)
+        {
+            line["username"] = CurrentUser.UserName;
+        }
+
+        return JsonSerializer.Serialize(line);
     }
 
     private static bool ContainsForbiddenDomainChar(string domain)
