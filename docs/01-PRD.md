@@ -61,7 +61,7 @@ Quy tắc lưu trong bảng `rules` (cột `config` JSONB). Mọi giờ giấc t
 | `time_window` | `{"windowsByWeekday": {"1": [{"start": "07:00", "end": "21:00"}]}}` | Chỉ được dùng máy trong các khung giờ liệt kê. Ngoài mọi khung giờ thì khóa. **Ngày vắng mặt hoặc mảng rỗng = không được dùng máy ngày đó.** Mỗi khoảng phải có `start < end` (không qua đêm). Nhiều rule thì hợp (union) các khung giờ. |
 | `bedtime` | `{"bedtimeByWeekday": {"1": {"start": "21:00", "end": "07:00"}}}` | Khung giờ cấm theo thứ. Khoảng qua đêm (`end <= start`) khóa từ `start` hôm nay tới `end` hôm sau (vd: bedtime Thứ 2 21:00–07:00 khóa tới 07:00 Thứ 3). Ngày vắng mặt = không khóa. Agent vẫn chấp nhận hình dạng cũ `{"start", "end"}` (mọi ngày). |
 
-**Ghi đè tạm thời** (không phải rule — là lệnh trong bảng `commands`, loại `temporary_override`, payload gồm `action`, `minutes`, `expires_at` ISO 8601). Lệnh mới nhất trên cùng một máy thay thế lệnh trước đó; hết hạn thì tự vô hiệu, kể cả khi Service khởi động lại (Agent lưu ghi đè vào SQLite local và kiểm tra hết hạn ở mỗi lần đánh giá rules):
+**Ghi đè tạm thời** (không phải rule — là lệnh trong bảng `commands`, loại `temporary_override`, payload gồm `action`, `minutes`, `expires_at` ISO 8601). Lệnh mới nhất trên cùng một máy thay thế lệnh trước đó (từ Sprint 5: phạm vi thay thế là cùng một máy + cùng một con, xem §2.11); hết hạn thì tự vô hiệu, kể cả khi Service khởi động lại (Agent lưu ghi đè vào SQLite local và kiểm tra hết hạn ở mỗi lần đánh giá rules):
 
 | Hành động (`action`) | Tác dụng |
 |---|---|
@@ -163,6 +163,32 @@ Hình thức đã chốt: trang Báo cáo ngay trên Dashboard với biểu đ�
 
 Dữ liệu cho cả hai hình thức nằm trong các bảng `app_usage`, `web_visits`, `audit_logs`, `requests`, `commands`.
 
+### 2.11. Quản lý riêng biệt nhiều con trên một máy — phương án 2: một phiên active (đã phê duyệt 20/11/2026)
+
+**Trạng thái: đã phê duyệt hướng đi ngày 20/11/2026, CHƯA bắt đầu code (Sprint 5, xem `04-ROADMAP.md`).**
+
+**Vấn đề.** Một máy có thể có nhiều tài khoản con (ví dụ máy dùng chung của Diệu Linh và Đức Dũng). Hiện tại một thiết bị chỉ ghép nối với một hồ sơ con (token thiết bị duy nhất, rules lấy theo `device_id`), nên mọi con dùng chung máy phải dùng chung luật, giờ giấc và báo cáo của hồ sơ được ghép nối.
+
+**Ngữ nghĩa đã chốt (phương án 2 — một phiên active).**
+
+- Chỉ phiên console đang hoạt động mới bị thi hành luật. Phiên nền không bị thi hành cho tới khi quay lại console; giờ dùng máy chỉ tính cho phiên console. Tray ở phiên nền hiện trạng thái tạm dừng.
+- Giết app ĐÃ theo phiên từ trước (`KillProcessesInSession` lọc theo `SessionId` của phiên báo cáo) — Sprint 5 không đổi đường giết app; app ở phiên nền không bị giết nhầm khi thi hành luật ở phiên active.
+- Một file `domain_rules.json` dùng chung cho cả máy, mang luật của con đang active; Service ghi lại file mỗi khi đổi phiên console. Trình duyệt ở phiên nền chịu luật của con đang ngồi — chấp nhận được vì không ai tương tác với phiên nền.
+- Lệnh (khóa/mở/ghi đè) gắn theo từng con: bảng `commands` cần thêm `child_id`. Lệnh cho con chưa active thì hoãn lại và áp dụng ngay khi con đó lên console; Dashboard hiện "sẽ áp dụng khi con đăng nhập" thay vì báo đã thi hành.
+- Mô hình dữ liệu: bảng ánh xạ mới thiết bị ↔ hồ sơ con ↔ tài khoản Windows, lưu theo SID cho bền — Tray gửi thêm SID (`WindowsIdentity.GetCurrent().User.Value`) trong bản tin hello (bản tin hiện tại chỉ mang `SessionId`/`UserName`/`IsAdmin`, chưa có SID); tên hiển thị lấy từ bản tin hello của Tray. Usage (app/web) ghi theo (thiết bị, tài khoản Windows) rồi suy ra hồ sơ con — riêng lịch sử web và yêu cầu xin mở trang: NativeHost gắn thêm username/SID vào mỗi dòng `web_usage.jsonl` và `domain_requests.jsonl` (hiện các dòng này chưa có trường phân biệt user, hai NativeHost của hai user ghi chung một file); watermark chống lệnh cũ tách theo (thiết bị, con) thay vì theo thiết bị.
+- Đồng bộ trạng thái khi gắn thêm con vào máy chung: **CHƯA CHỐT cơ chế.** Máy chung chưa từng tiêu thụ lệnh của con B nên lệnh khóa cưỡng chế / ghi đè đang hiệu lực / tổng ngân hàng giờ của B (đã `done` trên máy khác của B) sẽ không tự tới được máy này qua vòng poll lệnh — B có thể ngồi vào máy chung mà không bị khóa dù đang bị khóa cưỡng chế. Hai phương án: (a) tái dùng kiểu migration 21 lúc tạo ánh xạ — chèn bản sao lệnh khóa/ghi đè mới nhất của B cho thiết bị này; (b) Service suy ra trạng thái hiện tại của B từ server lúc phiên của B lên console (hello-sync). Chốt lúc bắt đầu Sprint 5.
+- Dashboard: trang thiết bị liệt kê các con đang gắn với máy kèm tài khoản Windows tương ứng. Gắn/gỡ bằng cách chọn từ danh sách tài khoản Windows mà Tray đã "nhìn thấy" trên máy — không gõ tay (tên tài khoản Microsoft suy ra từ email nên gõ tay dễ sai). Lệnh khóa/mở và duyệt yêu cầu phải chọn đúng con trên đúng máy.
+- Tài khoản Standard chưa gắn với hồ sơ con nào: **QUYẾT ĐỊNH CÒN MỞ, chưa chốt.** Các lựa chọn: (a) mặc định không quản lý nhưng hiện lên Dashboard để phụ huynh thấy; (b) tùy chọn chỉ cho gia đình đúng 2 con — "tài khoản chưa gắn = con còn lại", kèm cảnh báo, và không đặt làm mặc định.
+- Không đổi: bộ cài (một lần, quyền Admin, cả máy), giao diện Tray theo phiên, mã PIN, ngân hàng giờ (đã tính theo từng con), RLS, báo cáo tuần theo từng con.
+
+**Đa máy theo hồ sơ con.** Mỗi con vẫn có thể có nhiều máy; một máy có thể dùng chung giữa các con hoặc riêng một con. Luật, ngân hàng giờ và báo cáo tính theo hồ sơ con trên mọi máy của con đó. Máy dùng chung thi hành luật của con đang active; máy riêng một con hoạt động như hiện nay. Ghép nối không đổi: một token duy nhất cho mỗi máy; bước ánh xạ (máy, tài khoản Windows) → hồ sơ con làm sau bước ghép nối.
+
+**Vì sao không chọn phương án 1 (thi hành đầy đủ theo từng phiên).** Phương án 1 phải giữ cache luật riêng cho từng con, xuất file domain rules riêng cho từng tài khoản Windows, và ca khóa máy cho phiên nền là không xác định ở tầng Win32 (`LockWorkStation` chỉ khóa console). Phương án 2 tránh được cả ba điểm này với cái giá chấp nhận được là phiên nền không bị thi hành cho tới khi quay lại console.
+
+**Kiểm thử.** Bắt buộc trên máy thật với 2 tài khoản con + chuyển đổi nhanh (fast user switching); CI không mô phỏng được đa phiên.
+
+**Độ lớn ước lượng:** khoảng 60–70% so với phương án 1 đầy đủ (chỉ là ước lượng, không phải cam kết).
+
 ## 3. Giai đoạn 2: App Android cho phụ huynh
 
 Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng thảo luận Android khi bắt đầu, để khỏi làm lại.
@@ -175,7 +201,7 @@ Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng t
 
 - [ ] ~~Chụp màn hình theo lịch (opt-in, phụ huynh bật rõ ràng, ảnh mã hóa, tự xóa sau 7 ngày)~~ — **ĐÃ LOẠI KHỎI KẾ HOẠCH ngày 17/11/2026** theo quyết định giữ ranh giới riêng tư (không chụp màn hình, không ghi phím, không đọc nội dung).
 - [x] Giới hạn theo website (thời gian cho từng domain). — Đã triển khai (chế độ giới hạn thời gian theo domain của extension, Sprint 2 đợt 2); chờ kiểm chứng đầu-cuối cùng extension.
-- [ ] Nhiều con/nhiều máy, quy tắc theo nhóm tuổi.
+- [ ] Nhiều con/nhiều máy — đã có hướng đi ở §2.11 / Sprint 5 (phương án 2: một phiên active; phê duyệt 20/11/2026, chưa bắt đầu code). Quy tắc theo nhóm tuổi: chưa làm.
 - [ ] Cảnh báo nội dung nguy hiểm theo từ khóa trên tiêu đề cửa sổ — **CẦN ĐÁNH GIÁ LẠI**: đọc tiêu đề cửa sổ mâu thuẫn với nguyên tắc thu thập tối thiểu hiện tại (Agent cố tình không đọc tiêu đề cửa sổ, không gọi `GetWindowText`); chỉ làm khi có quyết định riêng, sau khi đánh giá quyền riêng tư kỹ.
 - [ ] Báo cáo AI tóm tắt tuần (dùng API free/low-cost, dữ liệu đã ẩn danh hóa).
 

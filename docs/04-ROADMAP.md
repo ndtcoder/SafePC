@@ -51,6 +51,18 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 - [ ] Beta: anh Tiến dùng thật 1-2 tuần, ghi lại lỗi/cải tiến. — **Chờ anh Tiến**.
 - [ ] Kiểm thử RLS truy cập chéo gia đình (2 tài khoản). — **Chờ anh Tiến**.
 
+### Sprint 5 — Nhiều con dùng chung một máy (phương án 2: một phiên active) ⏳
+
+Trạng thái: đã chốt hướng đi ngày 20/11/2026, chưa bắt đầu code. Chi tiết ngữ nghĩa xem PRD §2.11. Nguyên tắc: chỉ phiên console đang hoạt động mới bị thi hành luật; mỗi con vẫn có thể có nhiều máy (dùng chung hoặc riêng), quản lý theo hồ sơ từng con.
+
+- [ ] Mô hình dữ liệu + migration: bảng ánh xạ thiết bị ↔ hồ sơ con ↔ tài khoản Windows (lưu theo SID — Tray gửi thêm SID trong bản tin hello); `commands` thêm `child_id`; watermark chống lệnh cũ tách theo (thiết bị, con); usage ghi theo (thiết bị, tài khoản Windows) rồi suy ra hồ sơ con; NativeHost gắn thêm username/SID vào mỗi dòng `web_usage.jsonl` và `domain_requests.jsonl`.
+- [ ] Service nhận biết phiên console + đổi bộ luật khi đổi phiên (cơ chế phát hiện đổi phiên: Service `OnSessionChange` / `WTSGetActiveConsoleSessionId` / hello từ phiên mới — chốt lúc triển khai): chỉ thi hành luật của con đang active; phiên nền hiện trạng thái tạm dừng và không tính giờ; ghi lại `domain_rules.json` theo con đang active. Đường giết app giữ nguyên (đã theo phiên).
+- [ ] Lệnh gắn theo con + hoãn khi chưa active: khóa/mở/ghi đè mang `child_id`; lệnh cho con chưa active thì hoãn tới khi con lên console; Dashboard hiện "sẽ áp dụng khi con đăng nhập".
+- [ ] Dashboard gắn tài khoản Windows + lệnh theo con: trang thiết bị liệt kê các con gắn với máy kèm tài khoản Windows; gắn/gỡ bằng cách chọn từ danh sách tài khoản Tray đã "nhìn thấy" (không gõ tay); lệnh khóa/mở/duyệt yêu cầu chọn đúng con trên đúng máy.
+- [ ] Kiểm thử máy thật với 2 tài khoản con + chuyển đổi nhanh (fast user switching); CI không mô phỏng được đa phiên.
+
+Quyết định còn mở: tài khoản Standard chưa gắn với hồ sơ con nào thì xử lý thế nào (mặc định không quản lý nhưng hiện lên Dashboard, hay tùy chọn "tài khoản chưa gắn = con còn lại" chỉ cho gia đình đúng 2 con — xem PRD §2.11). Đồng bộ trạng thái khi gắn thêm con vào máy chung: chưa chốt cơ chế (chèn bản sao kiểu migration 21 lúc tạo ánh xạ, hay Service suy ra lúc phiên của con lên console — xem PRD §2.11).
+
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
 **Tính năng nâng cao + giao diện chuyên nghiệp (theo thứ tự ưu tiên):**
