@@ -135,4 +135,27 @@ public static class StateKeys
 
     /// <summary>Mốc sàn lệnh khóa/mở (ISO-8601, giờ server trong created_at của lệnh): lệnh lock_now/unlock có created_at cũ hơn mốc này thì bị bỏ qua. Được nâng lên mỗi khi áp một lệnh lock_now hoặc unlock; sống sót qua khởi động lại Service, để lệnh khóa/mở cũ gửi lại sau (ack rớt) không lật lại trạng thái khóa do lệnh mới hơn đã đặt. Riêng biệt với mốc sàn lệnh ghi đè: ghi đè mở khóa tạm thời KHÔNG xóa cờ khóa cưỡng chế nên không được nâng mốc này. Vắng mặt = chưa từng áp lệnh khóa/mở nào, kể cả máy nâng cấp từ bản cũ — khi đó lệnh đầu tiên áp như trước.</summary>
     public const string ForcedLockCommandFloor = "forced_lock_command_floor";
+
+    // --- Sprint 5 (máy dùng chung, một phiên active): trạng thái theo con ---
+    // Mốc sàn + cờ khóa cưỡng chế tách theo (thiết bị, con): mỗi con có khóa
+    // riêng dạng "<khóa gốc>_<childId:N>" (Guid không gạch nối, chữ thường)
+    // để lệnh cũ của con A không chặn/lật trạng thái của con B. Đường đơn-con
+    // cũ giữ nguyên khóa gốc (không hậu tố) để không vỡ trạng thái máy đang
+    // chạy; con mặc định đọc khóa theo-con TRƯỚC, rơi về khóa gốc khi chưa có
+    // (máy nâng cấp từ bản cũ).
+
+    /// <summary>Hồ sơ con mặc định/chính của máy (devices.child_id, lấy từ heartbeat) — Guid dạng "D". Vắng mặt = chưa heartbeat thành công lần nào.</summary>
+    public const string DefaultChildId = "default_child_id";
+
+    /// <summary>Ánh xạ (thiết bị → hồ sơ con ↔ tài khoản Windows) đã tải từ RPC migration 24, dạng JSON mảng [{child_id, windows_sid, windows_username}]. Vắng mặt = chưa tải được lần nào (máy đơn-con vẫn chạy bằng fallback con mặc định).</summary>
+    public const string ChildAccountsJson = "child_accounts_json";
+
+    /// <summary>Mốc sàn lệnh ghi đè của riêng một con: "override_command_floor_" + childId dạng "N".</summary>
+    public static string OverrideCommandFloorForChild(Guid childId) => OverrideCommandFloor + "_" + childId.ToString("N");
+
+    /// <summary>Mốc sàn lệnh khóa/mở của riêng một con: "forced_lock_command_floor_" + childId dạng "N".</summary>
+    public static string ForcedLockCommandFloorForChild(Guid childId) => ForcedLockCommandFloor + "_" + childId.ToString("N");
+
+    /// <summary>Cờ khóa cưỡng chế của riêng một con: "forced_lock_" + childId dạng "N".</summary>
+    public static string ForcedLockForChild(Guid childId) => ForcedLock + "_" + childId.ToString("N");
 }

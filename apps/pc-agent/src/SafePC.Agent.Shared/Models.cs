@@ -79,7 +79,12 @@ public sealed class Rule
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-/// <summary>Khớp bảng <c>commands</c> (lệnh phụ huynh gửi xuống máy con).</summary>
+/// <summary>Khớp bảng <c>commands</c> (lệnh phụ huynh gửi xuống máy con).
+/// <c>ChildId</c> (migration 24, Sprint 5): hồ sơ con mà lệnh nhắm tới —
+/// null là lệnh cũ (không gắn con), thuộc về con mặc định của máy và giữ
+/// nguyên ngữ nghĩa hiện tại. Agent chỉ thi hành lệnh có ChildId khi đúng
+/// con đó đang ở phiên console; lệnh cho con chưa active thì giữ pending
+/// tới khi con đó lên console.</summary>
 public sealed class Command
 {
     [JsonPropertyName("id")]
@@ -90,6 +95,9 @@ public sealed class Command
 
     [JsonPropertyName("device_id")]
     public Guid DeviceId { get; set; }
+
+    [JsonPropertyName("child_id")]
+    public Guid? ChildId { get; set; }
 
     [JsonPropertyName("type")]
     public string Type { get; set; } = string.Empty;
@@ -129,6 +137,16 @@ public sealed class UsageRecord
     [JsonPropertyName("exe_path_hash")]
     public string? ExePathHash { get; set; }
 
+    /// <summary>
+    /// SID của tài khoản Windows đã dùng app này (Sprint 5) — server suy ra
+    /// hồ sơ con qua bảng <c>device_child_accounts</c>, không khớp thì ghi
+    /// theo con mặc định của máy (migration 24). Null với mẫu cũ (Tray cũ /
+    /// mẫu trước Sprint 5): server coi như không rõ phiên, ghi theo con mặc
+    /// định. Family_id/device_id/child_id do server suy ra, không gửi kèm.
+    /// </summary>
+    [JsonPropertyName("windows_sid")]
+    public string? WindowsSid { get; set; }
+
     [JsonPropertyName("started_at")]
     public DateTimeOffset StartedAt { get; set; }
 
@@ -167,4 +185,33 @@ public sealed class WebVisitRecord
 
     [JsonPropertyName("blocked")]
     public bool Blocked { get; set; }
+
+    /// <summary>
+    /// SID của tài khoản Windows đã thăm web (Sprint 5) — server suy ra hồ
+    /// sơ con qua bảng <c>device_child_accounts</c>, không khớp thì ghi theo
+    /// con mặc định của máy (migration 24). Null với dòng cũ (không có SID):
+    /// server coi như không rõ phiên, ghi theo con mặc định.
+    /// </summary>
+    [JsonPropertyName("windows_sid")]
+    public string? WindowsSid { get; set; }
+}
+
+/// <summary>
+/// Một hàng ánh xạ thiết bị ↔ hồ sơ con ↔ tài khoản Windows (bảng
+/// <c>device_child_accounts</c>, migration 24, Sprint 5): tài khoản Windows
+/// có SID này trên máy này là hồ sơ con <c>ChildId</c>. Agent tải danh sách
+/// này qua RPC <c>safepc_fetch_device_child_accounts</c> để biết phiên
+/// console nào là con nào; Dashboard (đợt sau) ghi hàng khi phụ huynh gắn
+/// tài khoản với hồ sơ con.
+/// </summary>
+public sealed class ChildAccountLink
+{
+    [JsonPropertyName("child_id")]
+    public Guid ChildId { get; set; }
+
+    [JsonPropertyName("windows_sid")]
+    public string WindowsSid { get; set; } = string.Empty;
+
+    [JsonPropertyName("windows_username")]
+    public string? WindowsUsername { get; set; }
 }

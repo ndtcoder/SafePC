@@ -78,8 +78,13 @@ public sealed record IpcMessage(string Type, string PayloadJson)
     }
 }
 
-/// <summary>Payload của <see cref="IpcMessageTypes.UsageSample"/>: chỉ metadata, không đường dẫn thô.</summary>
-public sealed record UsageSamplePayload(string AppName, string? ExePathHash, DateTimeOffset SampledAt);
+/// <summary>Payload của <see cref="IpcMessageTypes.UsageSample"/>: chỉ metadata, không đường dẫn thô.
+/// <c>Sid</c> là SID của tài khoản Windows của phiên gửi — Service ĐÓNG DẤU
+/// từ bản tin hello của writer đó (quyền quyết định, không tin client gửi),
+/// để mẫu usage ghi đúng con nào dùng app (Sprint 5: máy dùng chung). Tray
+/// không cần gửi trường này; dòng cũ không có thì Service để null (mẫu
+/// không rõ phiên, chỉ tính cho con mặc định của máy).</summary>
+public sealed record UsageSamplePayload(string AppName, string? ExePathHash, DateTimeOffset SampledAt, string? Sid = null);
 
 /// <summary>
 /// Payload của <see cref="IpcMessageTypes.ForegroundChanged"/>: app đang ở
@@ -96,8 +101,14 @@ public sealed record WarningPayload(int MinutesLeft, string Reason);
 /// <summary>Lệnh khóa: Tray hiện màn hình khóa toàn màn hình. <c>Immediate</c> = true khi lệnh khóa tới sau khi độ trễ cảnh báo đã hết — con đã có thời gian lưu bài trong lúc chờ nên màn hình khóa không đếm ngược 60 giây nữa mà khóa phiên ngay (yêu cầu test máy thật 17/11/2026). Mặc định false để JSON cũ (không có trường này) vẫn hiểu là khóa có đếm ngược như trước.</summary>
 public sealed record LockPayload(string Reason, bool Immediate = false);
 
-/// <summary>Payload của <see cref="IpcMessageTypes.ExtraTimeRequest"/>.</summary>
-public sealed record ExtraTimeRequestPayload(int Minutes, string Reason, DateTimeOffset RequestedAt);
+/// <summary>Payload của <see cref="IpcMessageTypes.ExtraTimeRequest"/>.
+/// <c>Sid</c> là SID của tài khoản Windows của phiên gửi — Service ĐÓNG DẤU
+/// từ bản tin hello của writer đó (quyền quyết định), để đợt sau biết yêu
+/// cầu này là của con nào (Sprint 5). RPC hiện tại
+/// (<c>safepc_push_extra_time_request</c>, migration 7) chưa nhận SID nên
+/// server vẫn ghi theo con mặc định của máy; trường này để sẵn cho lần
+/// migration sau bổ sung tham số SID vào RPC đó.</summary>
+public sealed record ExtraTimeRequestPayload(int Minutes, string Reason, DateTimeOffset RequestedAt, string? Sid = null);
 
 /// <summary>
 /// Payload của <see cref="IpcMessageTypes.Hello"/>: Tray báo phiên Windows,
@@ -105,8 +116,15 @@ public sealed record ExtraTimeRequestPayload(int Minutes, string Reason, DateTim
 /// MIỄN lệnh khóa/cảnh báo cho phiên admin (phụ huynh); phiên chưa giới
 /// thiệu (chưa nhận hello) vẫn nhận lệnh như thường — miễn trừ chỉ áp dụng
 /// khi đã biết chắc phiên đó là admin.
+/// <c>Sid</c> là SID của tài khoản Windows đang chạy Tray
+/// (<c>WindowsIdentity.GetCurrent().User.Value</c>), để Service biết phiên
+/// này là hồ sơ con nào trên máy dùng chung (Sprint 5, bảng
+/// <c>device_child_accounts</c> — ánh xạ theo SID cho bền khi đổi tên tài
+/// khoản). Tham số tùy chọn để phía gửi cũ (self-test giả lập) vẫn biên
+/// dịch và phía nhận cũ vẫn giải mã được khi thiếu trường này; thiếu SID
+/// thì Service coi phiên như chưa rõ danh tính (fallback con mặc định).
 /// </summary>
-public sealed record HelloPayload(int SessionId, string UserName, bool IsAdmin);
+public sealed record HelloPayload(int SessionId, string UserName, bool IsAdmin, string? Sid = null);
 
 /// <summary>
 /// Payload của <see cref="IpcMessageTypes.RemainingTimeRequest"/>: chỉ mang
