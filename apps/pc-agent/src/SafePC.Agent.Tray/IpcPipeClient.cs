@@ -184,11 +184,12 @@ public sealed class IpcPipeClient : IDisposable
         try
         {
             int sessionId = Process.GetCurrentProcess().SessionId;
-            (string helloUserName, bool helloIsAdmin, string elevationType) = DescribeCurrentUser();
+            (string helloUserName, bool helloIsAdmin, string elevationType, string? helloSid) = DescribeCurrentUser();
             await SendAsync(IpcMessage.Create(
                 IpcMessageTypes.Hello,
-                new HelloPayload(sessionId, helloUserName, helloIsAdmin))).ConfigureAwait(false);
-            _log.Info("IPC: đã gửi hello (phiên #" + sessionId + ", " + helloUserName + ", admin=" + helloIsAdmin + ", elevation=" + elevationType + ").");
+                new HelloPayload(sessionId, helloUserName, helloIsAdmin, helloSid))).ConfigureAwait(false);
+            _log.Info("IPC: đã gửi hello (phiên #" + sessionId + ", " + helloUserName + ", admin=" + helloIsAdmin + ", elevation=" + elevationType
+                + (helloSid is null ? ", chưa lấy được SID" : ", đã gửi SID") + ").");
         }
         catch (Exception ex)
         {
@@ -404,28 +405,32 @@ public sealed class IpcPipeClient : IDisposable
     /// TokenElevationType: Full/Limited (có split token) nghĩa là admin;
     /// Default nghĩa là standard user. Lỗi thì trả về không admin
     /// (fail-closed: phiên chưa rõ vẫn nhận lệnh khóa).
+    /// SID lấy từ cùng identity (<c>WindowsIdentity.GetCurrent().User</c>)
+    /// để Service biết phiên này là hồ sơ con nào (Sprint 5); không lấy
+    /// được thì null — Service fallback về con mặc định như Tray cũ.
     /// </summary>
-    private static (string UserName, bool IsAdmin, string ElevationType) DescribeCurrentUser()
+    private static (string UserName, bool IsAdmin, string ElevationType, string? Sid) DescribeCurrentUser()
     {
         try
         {
             using WindowsIdentity identity = WindowsIdentity.GetCurrent();
             string name = identity.Name;
+            string? sid = identity.User?.Value;
             if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
             {
                 // Đã elevated: chắc chắn là admin, khỏi hỏi token. Nhãn
                 // "elevated" (không phải "Full"): khi UAC tắt, token của
                 // admin thực chất là Default nhưng vẫn elevated.
-                return (name, true, "elevated");
+                return (name, true, "elevated", sid);
             }
 
             string elevationType = GetTokenElevationType();
             bool isAdmin = elevationType is "Full" or "Limited";
-            return (name, isAdmin, elevationType);
+            return (name, isAdmin, elevationType, sid);
         }
         catch
         {
-            return (Environment.UserName, false, "unknown");
+            return (Environment.UserName, false, "unknown", null);
         }
     }
 
