@@ -53,7 +53,8 @@ rule_templates (id, family_id, name, description, rules JSONB, created_at, updat
 app_usage (id, device_id, child_id, app_name, exe_path_hash, started_at, duration_sec)
 web_visits (id, device_id, child_id, domain, path, visited_at, duration_sec, blocked: bool) -- domain + đường dẫn (bỏ query/fragment, trần 500 ký tự), tự xóa sau 90 ngày (migration 19)
 requests (id, child_id, type: extra_time|unblock_app|unblock_domain, domain, status, reason, decided_by, decided_at, minutes, device_id)
-commands (id, device_id, type: lock_now|unlock|refresh_rules|update|temporary_override, payload, status, created_at)
+commands (id, device_id, type: lock_now|unlock|refresh_rules|update|temporary_override, payload, status, created_at, child_id NULL) -- child_id NULL = lệnh cũ, thuộc về con mặc định của máy (Sprint 5, migration 24)
+device_child_accounts (id, device_id, child_id, windows_sid, windows_username, created_at) -- ánh xạ tài khoản Windows ↔ hồ sơ con trên một máy, UNIQUE(device_id, windows_sid) (Sprint 5, migration 24)
 audit_logs (id, family_id, child_id, device_id, actor, action, target, ip_hash, details, created_at)
 time_bank_grants (id, family_id, child_id, minutes, reason, granted_by, status: active|voided, expires_at) -- lịch sử thưởng giờ
 family_invites (id, family_id, invited_email, token_hash, invited_by, expires_at, accepted_at, accepted_by, revoked_at) -- chỉ lưu hash token
@@ -80,7 +81,7 @@ notification_sends (id, family_id, kind: request|tamper|device_offline, event_ke
 - Mỗi 15s (khi online): poll commands. Mỗi 5 phút: đẩy usage batch (app + web). Polling là đường duy nhất — chưa dùng Realtime.
 - Khi hết giờ: Tray App hiện màn hình khóa, đếm ngược 60s để con kịp lưu bài rồi gọi LockWorkStation khóa phiên. Với lệnh khóa có độ trễ (xem 4.9), giai đoạn chờ chỉ hiện cửa sổ cảnh báo nhỏ, hết độ trễ mới hiện màn hình khóa.
 - Thứ tự đánh giá trong `RuleEngine` (Sprint 2 đợt 1 + đồng bộ): khóa cưỡng chế của phụ huynh (lệnh lock_now, tới khi có lệnh unlock) → ghi đè tạm thời (khóa/mở) → giờ ngủ → khung giờ được dùng → giới hạn ngày; cảnh báo lấy ngưỡng gần nhất. Mọi giờ giấc theo giờ địa phương của máy con; quy ước thứ 0–6 khớp `DayOfWeek` (0 = Chủ nhật). Ngày vắng mặt trong `minutesByWeekday`/`bedtimeByWeekday` = không áp rule ngày đó; riêng `time_window`, ngày vắng mặt = không được dùng máy. Bedtime qua đêm (`end <= start`) khóa từ `start` hôm nay tới `end` hôm sau — engine kiểm tra cả khung hôm nay và đuôi qua đêm của hôm qua.
-- Ghi đè tạm thời (lệnh `temporary_override`): Agent lưu ghi đè đang hiệu lực vào bảng SQLite `active_override` (tối đa 1 hàng, lệnh mới thay lệnh cũ) và kiểm tra `expires_at` ở mỗi lần đánh giá, nên ghi đè hết hạn đúng giờ kể cả sau khi Service khởi động lại. Không suy ra lại từ server mỗi lần kiểm tra vì lệnh là một lần (pending → done) — sau khi nhận, hàng lệnh rời khỏi poll pending. Dashboard hiển thị ghi đè đang hiệu lực bằng cách đọc lệnh `temporary_override` mới nhất của máy từ bảng `commands`.
+- Ghi đè tạm thời (lệnh `temporary_override`): Agent lưu ghi đè đang hiệu lực vào bảng SQLite `active_override` (tối đa 1 hàng THEO CON, khóa theo child id, lệnh mới của con đó thay ghi đè cũ của chính con đó — xem §4.13) và kiểm tra `expires_at` ở mỗi lần đánh giá, nên ghi đè hết hạn đúng giờ kể cả sau khi Service khởi động lại. Không suy ra lại từ server mỗi lần kiểm tra vì lệnh là một lần (pending → done) — sau khi nhận, hàng lệnh rời khỏi poll pending. Dashboard hiển thị ghi đè đang hiệu lực bằng cách đọc lệnh `temporary_override` mới nhất của máy từ bảng `commands`.
 - Khi quyết định chuyển từ khóa sang cho phép (hết giờ ngủ, ghi đè hết hạn...), Service gửi IPC `unlock` để Tray đóng màn hình khóa.
 
 ### 4.3. Lệnh từ xa
@@ -230,6 +231,154 @@ bại. `service_stopped` KHÔNG thể đẩy từ Agent (Service chết thì kh�
 vào allowlist của `safepc_push_tamper_event` (copy y hệt migration 5, chỉ
 thêm loại); Edge Function send-parent-notifications + Dashboard
 (TAMPER_ACTIONS, nhãn) + email báo cáo tuần đã cập nhật cùng đợt.
+
+### 4.13. Nhiều con dùng chung một máy — một phiên active (Sprint 5 đợt 1, backend, 20/11/2026)
+
+Phương án 2 đã phê duyệt (PRD §2.11): chỉ phiên console đang hoạt động mới
+bị thi hành luật; phiên nền tạm dừng, không tính giờ; lệnh cho con chưa
+active thì hoãn tới khi con đó lên console. Mỗi con vẫn có thể có nhiều máy
+(chung hoặc riêng); quản lý theo hồ sơ con trên mọi máy. Đợt 1 chỉ làm
+backend (migration 24 + Service + NativeHost) — KHÔNG chạm Dashboard,
+extension, Edge Function hay luồng pairing.
+
+**Phát hiện phiên console đã chọn:** `WTSGetActiveConsoleSessionId`
+(Win32) poll trong vòng tick rules 15s đã có, kết hợp các phiên đã hello
+từ Tray. Đây là cơ chế đơn giản, tin cậy nhất trong các phương án: không
+cần hook sự kiện đăng nhập, không cần theo dõi tiến trình theo session;
+Service chạy quyền SYSTEM nên gọi được. API trả 0xFFFFFFFF cho cả hai
+trường hợp "không có phiên console" và "API lỗi" — phân biệt bằng
+GetLastError (0 = không có phiên, khác 0 = lỗi): không có phiên console
+(màn hình đăng nhập) thì vòng tick BỎ QUA lần kiểm tra (không dọn ghi đè
+hết hạn, không ghi sự kiện thi hành trong lúc đó — thay đổi so với trước
+Sprint 5); API lỗi thì rơi về NoSessionInfo để GIỮ hành vi cũ (thi hành
+luật con mặc định). **CHƯA XÁC MINH (review lần hai, MINOR-1):** tiền đề
+phân biệt bằng GetLastError không được trang Microsoft Learn của hàm này
+xác nhận, và giá trị có thể là lỗi cũ còn sót trên thread — nên code đối
+chiếu thêm snapshot: từ lúc Service khởi động chưa phiên nào hello mà WTS
+trả 0xFFFFFFFF thì coi là không có phiên bất kể GetLastError; giá trị lỗi
+thô được log một lần khi đổi để xác minh trên máy thật. GIỚI HẠN: phiên
+RDP không phải phiên console nên không được tính — con dùng máy qua RDP
+thì không bị thi hành luật trong đợt này.
+
+**Biết "ai đang ngồi máy":** Tray gửi thêm SID trong bản tin hello
+(`HelloPayload` thêm `Sid`, lấy từ `WindowsIdentity.GetCurrent().User`
+ở `IpcPipeClient.DescribeCurrentUser`); Service lưu SID theo từng session
+(`IpcPipeServer.WriterEntry.Sid`, lấy từ hello — có thẩm quyền, Tray
+không cần gửi SID trong từng mẫu usage). Ánh xạ SID→con nằm ở bảng mới
+`device_child_accounts` (migration 24, UNIQUE(device_id, windows_sid));
+Service đồng bộ ánh xạ mỗi heartbeat (60s) vào `device_state`
+(`child_accounts_json`) + con mặc định của máy (`default_child_id`,
+từ heartbeat). Logic thuần phân giải con đang active nằm trong
+`ActiveChildResolver.cs` (harness 90/90 PASS, xem dưới): không phiên
+console → không thi hành; phiên chưa hello → con mặc định như hôm nay;
+phiên admin → miễn trừ; SID khớp ánh xạ → con đó; SID đã biết nhưng
+không khớp ánh xạ → **KHÔNG quản lý + ghi log Warning 1 lần/phiên
+(ĐÃ CHỐT 20/11/2026 — không còn là "mặc định tạm lấy")**; Tray cũ
+không gửi SID → con mặc định. Máy chưa có ánh xạ nào + có con mặc định
+thì phiên Standard duy nhất đó được coi là con mặc định (fallback chuyển
+tiếp, tránh "vách đá" lăn ra: máy đơn-con cài Tray mới chưa kịp gắn ánh xạ
+vẫn thi hành luật như cũ). Phần hiện cảnh báo tài khoản chưa gắn trên
+Dashboard làm ở đợt Dashboard sau, không làm ở đợt này. Phạm vi mẫu
+usage của con đang active gồm SID trong ánh xạ CỘNG SID của phiên console
+đang được phân giải (phiên đó đã được xác định là con này) — máy đơn-con
+chưa có ánh xạ vẫn đếm đúng mẫu Tray mới đóng dấu SID (sửa MAJOR-2: trước
+đây phạm vi rỗng nên điều kiện "sid IS NULL" không khớp mẫu nào, đếm 0).
+
+**Lệnh theo con:** `commands.child_id` (migration 24, NULLABLE — lệnh cũ
+giữ nguyên ngữ nghĩa). Vòng poll lệnh phân biệt `child_id`:
+`ActiveChildResolver.ShouldApplyCommand` — lệnh gắn con chỉ áp khi đúng
+con đó đang active; lệnh cho con chưa active thì giữ `pending` (không ack
+done, không thi hành) tới khi con đó lên console; lệnh cũ (child_id NULL)
+thuộc về con mặc định. Watermark chống lệnh cũ tách theo (thiết bị, con):
+`override_command_floor_<child_id>` / `forced_lock_command_floor_<child_id>`
+trong `device_state`; đường đơn-con cũ giữ nguyên key cũ để không vỡ
+trạng thái máy đang chạy. Cờ khóa cưỡng chế cũng tách theo con
+(`forced_lock_<child_id>`, khóa legacy thuộc về con mặc định); ghi đè tạm
+thời tách theo con — một hàng theo con trong bảng `active_override` (khóa
+`child_key`, hàng legacy "" thuộc về con mặc định; bảng cũ 1 hàng di trú
+tại chỗ khi Service khởi động, giữ nguyên ghi đè đang hiệu lực). Ghi đè
+mới của con B không xóa ghi đè của con A; lệnh khóa của con B không hủy
+ghi đè mở khóa của con A.
+
+**Rules theo con đang active:** RPC mới `safepc_fetch_device_child_rules`
+(migration 24; child NULL → luật con mặc định; con chưa gắn → `[]`,
+fail-closed). Con mặc định thì fallback về RPC cũ khi RPC mới chưa có
+(migration 24 chưa áp) — đường cũ (không truyền child) PHẢI trả về đúng
+luật như hiện tại; con khác không bao giờ fallback (RPC cũ trả luật SAI
+con). Cache rules chỉ chứa luật của MỘT con (`_rulesChildId`); đổi con mà
+chưa đồng bộ được luật mới (mất mạng) thì vòng tick BỎ QUA lần kiểm tra —
+thà không thi hành còn hơn thi hành luật của con khác. Đổi phiên/con thì
+đặt lại trạng thái tick trong bộ nhớ (`_lockSent`, hẹn khóa, bucket cảnh
+báo) và xuất bản lại `domain_rules.json` theo luật con mới. Gửi IPC khóa/
+cảnh báo/mở có đích tới Tray của phiên console (`SendToSessionAsync`),
+broadcast chỉ khi chưa biết phiên nào. Hello-sync khi Tray mới giới thiệu
+(`SyncStateToWriterAsync`) phân giải con của phiên vừa hello (SID + ánh
+xạ) và chỉ gửi khóa/cảnh báo khi đúng con của quyết định đang lưu
+(`TrayQueryState` lưu kèm con của quyết định); khác con thì không gửi gì
+— vòng tick (≤15s) gửi quyết định đúng của con mới. Khi đổi phiên/con mà
+quyết định mới là Allowed thì vòng tick gửi Unlock một lần kể cả khi chưa
+từng gửi khóa cho con mới, để dọn màn hình khóa do hello-sync gửi nhầm
+(sửa MAJOR-3).
+
+**Ghi công usage theo con:** mẫu usage app/web mang `windows_sid` —
+Service đóng dấu SID từ hello của phiên báo cáo (có thẩm quyền), NativeHost
+gắn SID + username của user đang chạy host (P/Invoke
+`GetTokenInformation` + `ConvertSidToStringSid`, vì NativeHost là net8.0
+thuần không có `WindowsIdentity`) vào mỗi dòng `web_usage.jsonl` /
+`domain_requests.jsonl`; hai trường này CHỈ ghi khi lấy được (không bao
+giờ ghi null — Service coi SID không phải chuỗi là dòng hỏng). Server suy
+ra con qua ánh xạ (RPC `safepc_push_device_usage` /
+`safepc_push_web_visits` đọc `windows_sid`, fallback về
+`devices.child_id` khi chưa có ánh xạ; sample không suy ra được con nào
+— không con mặc định, SID không có ánh xạ — thì bị bỏ khỏi batch, không
+fail cả batch, sửa MINOR-1); yêu cầu xin mở domain chống trùng
+theo (device, child, domain) + throttle Service theo cặp (domain, sid).
+Mẫu không rõ phiên (sid NULL, Tray cũ / mẫu trước Sprint 5) chỉ tính cho
+con mặc định. Nghỉ bắt buộc tính streak trên mẫu của con đang active,
+nhưng trạng thái `BreakEndsAt`/`BreakStreakFloor` vẫn dùng chung cả máy
+ở đợt 1 (xem giới hạn dưới).
+
+**Kiểm chứng đợt 1 (+ sửa review):** harness PGlite cho migration 24 thật:
+35/35 PASS (kể cả chạy migration 2 lần liên tiếp — an toàn chạy lại; gồm
+7 test mới cho MINOR-1: máy chưa gắn con chính + sample SID có ánh xạ vẫn
+ghi đúng con, sample không suy ra được con nào thì bị bỏ chứ không fail
+cả batch). Harness logic thuần dotnet (`sprint5-resolver-test/`, link đúng
+file thật `ActiveChildResolver.cs` + `WebUsageLine.cs` +
+`UnblockDomainRequest.cs` + `OutboxStore.cs` + `TemporaryOverride.cs` +
+`RuleEngine.cs` + các file Shared): 90/90 PASS (gồm test tích hợp cho
+MAJOR-1: ghi đè A còn nguyên sau khi lưu ghi đè B + di trú bảng cũ;
+MAJOR-2: máy đơn-con + mẫu đóng dấu SID đếm đúng 90 giây; MAJOR-3:
+hello-sync không gửi khóa nhầm con + gửi Unlock một lần khi đổi con;
+MINOR-1 (review lần hai): 4 test cho `ResolveNullConsoleSession` — chưa
+phiên nào hello + WTS 0xFFFFFFFF thì chắc chắn là không có phiên).
+Build toàn solution 0 error 0 warning mới. Giết app KHÔNG
+ĐỔI đường giết (`KillProcessesInSession` đã lọc theo session) — chỉ chắc
+chắn luật app được đánh giá cho đúng con của phiên báo cáo.
+
+**Còn mở / giới hạn đã biết (đợt sau):** (1) Đồng bộ trạng thái khi gắn
+thêm con B vào máy chung — CHƯA CHỐT cơ chế (2 phương án trong PRD §2.11),
+đợt này KHÔNG triển khai cơ chế nào, chỉ ghi chú trong migration 24.
+(2) Hello-sync: Tray mới hello CHỈ nhận khóa/cảnh báo khi đúng con của
+quyết định đang lưu; khác con thì không nhận gì và vòng tick (≤15s) gửi
+quyết định đúng của con mới — không còn hiện tượng nhận quyết định của con
+trước đó (đã sửa MAJOR-3; câu ghi cũ "nhận quyết định của con trước đó
+trong ≤15s" là SAI vì vòng tick không sửa lại được).
+(3) Nghỉ bắt buộc: trạng thái nghỉ dùng chung cả máy; con quay lại giữa
+giờ nghỉ của chính mình có thể ghi thêm một sự kiện `break_started`.
+(4) Yêu cầu xin thêm giờ: SID đã đóng dấu vào outbox nhưng server vẫn
+ghi theo con mặc định cho tới khi migration sau thêm `p_windows_sid` cho
+RPC `safepc_push_extra_time_request`. (5) Ân hạn thoát PIN của watchdog
+vẫn toàn cục (Sprint 4 MINOR-7) — nay trải qua cả các con trên máy chung.
+(6) Máy ghép nối TRƯỚC khi áp migration 24 thì RPC mới trả 404 —
+Agent giữ cache cũ (không mất luật), yêu cầu xin mở domain được giữ lại
+trong file để gửi lại sau khi áp migration; nên áp migration 24 trước
+hoặc ngay sau khi cài Agent mới. (7) Hello-sync mở khóa ≤15s khi đổi
+phiên về con đang bị khóa: quyết định đang lưu là Allowed-cho-A mà Tray
+của B (đang bị khóa theo luật của B) hello trước khi vòng tick đánh giá
+lại thì B nhận Unlock và được mở tối đa 1 chu kỳ tick (≤15s) trước khi
+tick khóa lại — hệ quả của việc quyết định đang lưu là toàn cục chứ không
+theo con; muốn đóng hẳn thì lưu quyết định theo con trong `TrayQueryState`
+thay vì một quyết định toàn cục (đợt sau).
 
 ## 5. Chống can thiệp (Tamper resistance) — MVP
 
