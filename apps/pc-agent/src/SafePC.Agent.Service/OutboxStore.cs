@@ -9,8 +9,11 @@ namespace SafePC.Agent.Service;
 /// <summary>Một bản ghi chờ gửi trong bảng outbox.</summary>
 public sealed record OutboxItem(long Id, string PayloadJson);
 
-/// <summary>Tổng hợp mẫu foreground theo app trong một khoảng thời gian, để gửi lên server.</summary>
-public sealed record UsageSummary(string AppName, string? ExePathHash, long SampleCount, DateTimeOffset FirstSampledAt, DateTimeOffset LastSampledAt);
+/// <summary>Tổng hợp mẫu foreground theo app trong một khoảng thời gian, để gửi lên server.
+/// <c>Sid</c> là SID của tài khoản Windows đã dùng app (Sprint 5) — null là
+/// mẫu không rõ phiên (Tray cũ / mẫu trước Sprint 5); nhóm theo (app, hash,
+/// sid) để không gộp giờ của hai con dùng chung app.</summary>
+public sealed record UsageSummary(string AppName, string? ExePathHash, long SampleCount, DateTimeOffset FirstSampledAt, DateTimeOffset LastSampledAt, string? Sid = null);
 
 /// <summary>
 /// Lưu trữ local SQLite cho Service (offline-first, docs/02-ARCHITECTURE.md mục 4.2):
@@ -18,7 +21,7 @@ public sealed record UsageSummary(string AppName, string? ExePathHash, long Samp
 /// - Bảng <c>rules_cache</c>: rules tải về lần cuối, để mất mạng vẫn thi hành đúng.
 /// - Bảng <c>usage_samples</c>: mẫu foreground Tray gửi qua IPC, dùng ước lượng
 ///   thời gian đã dùng hôm nay.
-/// - Bảng <c>active_override</c>: ghi đè tạm thời đang hiệu lực (tối đa 1 hàng),
+/// - Bảng <c>active_override</c>: ghi đè tạm thời đang hiệu lực (một hàng theo con, khóa <c>child_key</c>),
 ///   để ghi đè không bị mất khi Service khởi động lại và vẫn hết hạn đúng giờ.
 /// - Bảng <c>device_state</c>: trạng thái bền vững dạng khóa/giá trị (khóa
 ///   cưỡng chế của phụ huynh, watermark đẩy usage).
@@ -78,16 +81,18 @@ public sealed class OutboxStore
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 app_name TEXT NOT NULL,
                 exe_path_hash TEXT,
-                sampled_at TEXT NOT NULL
+                sampled_at TEXT NOT NULL,
+                sid TEXT
             );
             CREATE TABLE IF NOT EXISTS active_override (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
+                child_key TEXT PRIMARY KEY,
                 action TEXT NOT NULL,
                 minutes INTEGER NOT NULL,
                 expires_at TEXT NOT NULL,
                 domains_json TEXT,
                 apps_json TEXT,
                 command_created_at TEXT,
+                child_id TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS device_state (
@@ -107,6 +112,13 @@ public sealed class OutboxStore
         await EnsureOverrideDomainsColumnAsync(connection, ct);
         await EnsureOverrideAppsColumnAsync(connection, ct);
         await EnsureOverrideCommandCreatedAtColumnAsync(connection, ct);
+        await EnsureOverrideChildIdColumnAsync(connection, ct);
+        await EnsureUsageSamplesSidColumnAsync(connection, ct);
+
+        // Sprint 5 đợt 1 (sửa MAJOR-1): di trú bảng active_override từ 1 hàng
+        // duy nhất sang một hàng theo con — chạy sau các Ensure ở trên để
+        // cột child_id đã có khi copy hàng cũ.
+        await MigrateOverrideTableToPerChildAsync(connection, ct);
 
         // Sprint 4: khóa ACL file DB chỉ còn SYSTEM + Administrators. DB
         // chứa hàng đợi offline, cache rules, trạng thái bền (mốc chống
@@ -194,6 +206,148 @@ public sealed class OutboxStore
         {
             await using var alter = connection.CreateCommand();
             alter.CommandText = "ALTER TABLE active_override ADD COLUMN command_created_at TEXT;";
+            await alter.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    /// <summary>
+    /// Thêm cột <c>child_id</c> vào bảng <c>active_override</c> nếu chưa có
+    /// (Sprint 5: ghi đè thuộc về hồ sơ con nào — Guid dạng "D", null là
+    /// hàng cũ, thuộc về con mặc định của máy). Hàng cũ để NULL.
+    /// </summary>
+    private static async Task EnsureOverrideChildIdColumnAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool hasColumn = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(active_override);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (reader.GetString(1) == "child_id")
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE active_override ADD COLUMN child_id TEXT;";
+            await alter.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    /// <summary>Khóa hàng ghi đè của một con: guid dạng "D", "" cho hàng legacy chưa gắn con (thuộc về con mặc định của máy).</summary>
+    private static string OverrideChildKey(Guid? childId) => childId?.ToString("D") ?? string.Empty;
+
+    /// <summary>
+    /// Di trú bảng <c>active_override</c> từ 1 hàng duy nhất (khóa <c>id = 1</c>)
+    /// sang một hàng theo con (khóa <c>child_key</c> = guid con, "" = hàng legacy
+    /// thuộc về con mặc định) — sửa MAJOR-1 review Sprint 5 đợt 1: ghi đè mới
+    /// của con B từng XÓA ghi đè đang hiệu lực của con A. Chỉ chạy khi bảng cũ
+    /// còn cột <c>id</c>; bảng mới đã có cột <c>child_key</c> thì không làm gì.
+    /// Hàng cũ (tối đa 1) được giữ nguyên nội dung, child_key lấy từ child_id
+    /// (null → ""). Di trú trong một transaction để không mất ghi đè đang hiệu
+    /// lực nếu Service chết giữa chừng.
+    /// </summary>
+    private static async Task MigrateOverrideTableToPerChildAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool isOldShape = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(active_override);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (reader.GetString(1) == "id")
+                {
+                    isOldShape = true;
+                    break;
+                }
+            }
+        }
+
+        if (!isOldShape)
+        {
+            return;
+        }
+
+        await using var transaction = connection.BeginTransaction();
+        await using (var create = connection.CreateCommand())
+        {
+            create.Transaction = transaction;
+            create.CommandText = """
+                CREATE TABLE active_override_new (
+                    child_key TEXT PRIMARY KEY,
+                    action TEXT NOT NULL,
+                    minutes INTEGER NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    domains_json TEXT,
+                    apps_json TEXT,
+                    command_created_at TEXT,
+                    child_id TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                """;
+            await create.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (var copy = connection.CreateCommand())
+        {
+            copy.Transaction = transaction;
+            copy.CommandText = """
+                INSERT INTO active_override_new (child_key, action, minutes, expires_at, domains_json, apps_json, command_created_at, child_id, updated_at)
+                    SELECT COALESCE(child_id, ''), action, minutes, expires_at, domains_json, apps_json, command_created_at, child_id, updated_at FROM active_override;
+                """;
+            await copy.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (var drop = connection.CreateCommand())
+        {
+            drop.Transaction = transaction;
+            drop.CommandText = "DROP TABLE active_override;";
+            await drop.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (var rename = connection.CreateCommand())
+        {
+            rename.Transaction = transaction;
+            rename.CommandText = "ALTER TABLE active_override_new RENAME TO active_override;";
+            await rename.ExecuteNonQueryAsync(ct);
+        }
+
+        await transaction.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Thêm cột <c>sid</c> vào bảng <c>usage_samples</c> nếu chưa có
+    /// (Sprint 5: SID của tài khoản Windows đã dùng app — null là mẫu không
+    /// rõ phiên, chỉ tính cho con mặc định của máy).
+    /// </summary>
+    private static async Task EnsureUsageSamplesSidColumnAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool hasColumn = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(usage_samples);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (reader.GetString(1) == "sid")
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE usage_samples ADD COLUMN sid TEXT;";
             await alter.ExecuteNonQueryAsync(ct);
         }
     }
@@ -294,11 +448,17 @@ public sealed class OutboxStore
     /// bền vững: yêu cầu không mất khi mất mạng hay khởi động lại Service,
     /// và được gửi lại theo backoff của <see cref="MarkFailedAsync"/>.
     /// </summary>
-    public async Task EnqueueExtraTimeRequestAsync(int minutes, string reason, DateTimeOffset requestedAt, CancellationToken ct)
+    /// <summary>
+    /// Xếp một yêu cầu xin thêm giờ vào outbox. <paramref name="sid"/> là SID
+    /// của tài khoản Windows đã gửi yêu cầu (Sprint 5, Service đóng dấu từ
+    /// hello của phiên gửi) — lưu kèm trong payload để đợt sau biết yêu cầu
+    /// là của con nào; null với hàng cũ (không rõ phiên).
+    /// </summary>
+    public async Task EnqueueExtraTimeRequestAsync(int minutes, string reason, DateTimeOffset requestedAt, CancellationToken ct, string? sid = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(reason);
 
-        string payload = JsonSerializer.Serialize(new ExtraTimeRequestPayload(minutes, reason, requestedAt));
+        string payload = JsonSerializer.Serialize(new ExtraTimeRequestPayload(minutes, reason, requestedAt, sid));
 
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
@@ -415,63 +575,115 @@ public sealed class OutboxStore
     }
 
     /// <summary>
-    /// Lưu ghi đè tạm thời đang hiệu lực (ghi đè mới thay thế ghi đè cũ).
-    /// Chỉ có tối đa 1 hàng (id = 1). Domains của ghi đè domain được lưu
-    /// dạng mảng JSON trong cột <c>domains_json</c> (null với ghi đè khác);
-    /// apps của ghi đè app lưu tương tự trong cột <c>apps_json</c>;
-    /// <c>CommandCreatedAt</c> (giờ server của lệnh đã tạo ghi đè) lưu trong
-    /// cột <c>command_created_at</c> để lần poll sau so mốc chống lệnh cũ.
+    /// Lưu ghi đè tạm thời đang hiệu lực của MỘT con (Sprint 5 đợt 1, sửa
+    /// MAJOR-1): một hàng theo con, khóa <c>child_key</c> = guid con ("" =
+    /// hàng legacy chưa gắn con, thuộc về con mặc định). Ghi đè mới của con B
+    /// KHÔNG xóa ghi đè đang hiệu lực của con A nữa — mỗi con giữ hàng của
+    /// riêng mình. Chỉ có một hàng hiệu lực cho mỗi con: hàng legacy ("")
+    /// thuộc về con mặc định, nên khi con mặc định đã có hàng gắn guid thì
+    /// hàng legacy cũ bị thay thế (và ngược lại, lệnh legacy mới hơn thay thế
+    /// hàng guid của con mặc định) — <paramref name="defaultChildId"/> null
+    /// (chưa biết con mặc định) thì bỏ qua bước dọn này. Domains của ghi đè
+    /// domain được lưu dạng mảng JSON trong cột <c>domains_json</c> (null với
+    /// ghi đè khác); apps của ghi đè app lưu tương tự trong cột
+    /// <c>apps_json</c>; <c>CommandCreatedAt</c> (giờ server của lệnh đã tạo
+    /// ghi đè) lưu trong cột <c>command_created_at</c> để lần poll sau so mốc
+    /// chống lệnh cũ.
     /// </summary>
-    public async Task SaveOverrideAsync(TemporaryOverride ov, CancellationToken ct)
+    public async Task SaveOverrideAsync(TemporaryOverride ov, Guid? defaultChildId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(ov);
 
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
 
+        string childKey = OverrideChildKey(ov.ChildId);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO active_override (id, action, minutes, expires_at, domains_json, apps_json, command_created_at, updated_at)
-            VALUES (1, $action, $minutes, $expires, $domains, $apps, $created, $now)
-            ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO active_override (child_key, action, minutes, expires_at, domains_json, apps_json, command_created_at, child_id, updated_at)
+            VALUES ($key, $action, $minutes, $expires, $domains, $apps, $created, $childId, $now)
+            ON CONFLICT(child_key) DO UPDATE SET
                 action = excluded.action,
                 minutes = excluded.minutes,
                 expires_at = excluded.expires_at,
                 domains_json = excluded.domains_json,
                 apps_json = excluded.apps_json,
                 command_created_at = excluded.command_created_at,
+                child_id = excluded.child_id,
                 updated_at = excluded.updated_at;
             """;
+        command.Parameters.AddWithValue("$key", childKey);
         command.Parameters.AddWithValue("$action", ov.Action);
         command.Parameters.AddWithValue("$minutes", ov.Minutes);
         command.Parameters.AddWithValue("$expires", ov.ExpiresAt.ToString("o", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$domains", ov.Domains is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Domains));
         command.Parameters.AddWithValue("$apps", ov.Apps is null ? DBNull.Value : (object)JsonSerializer.Serialize(ov.Apps));
         command.Parameters.AddWithValue("$created", ov.CommandCreatedAt is null ? DBNull.Value : (object)ov.CommandCreatedAt.Value.ToString("o", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$childId", ov.ChildId is null ? DBNull.Value : (object)ov.ChildId.Value.ToString("D"));
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
         await command.ExecuteNonQueryAsync(ct);
+
+        // Một con chỉ có MỘT hàng hiệu lực: dọn hàng cũ của cùng con mặc
+        // định ở khóa còn lại (legacy "" ↔ guid). Hàng của con khác không
+        // đụng tới.
+        if (defaultChildId is not null)
+        {
+            string? supersededKey = null;
+            if (ov.ChildId is null)
+            {
+                supersededKey = defaultChildId.Value.ToString("D");
+            }
+            else if (ov.ChildId.Value == defaultChildId.Value)
+            {
+                supersededKey = string.Empty;
+            }
+
+            if (supersededKey is not null)
+            {
+                await DeleteOverrideRowAsync(connection, supersededKey, ct);
+            }
+        }
     }
 
     /// <summary>
-    /// Đọc ghi đè đang hiệu lực. Trả về null khi không có ghi đè, khi hàng
-    /// lưu bị hỏng, hoặc khi ghi đè đã hết hạn (hàng hết hạn được xóa luôn
-    /// để bảng không giữ trạng thái cũ). RuleEngine vẫn tự kiểm tra
+    /// Đọc ghi đè LEGACY đang hiệu lực (hàng child_key "", chưa gắn con —
+    /// thuộc về con mặc định của máy). Trả về null khi không có ghi đè, khi
+    /// hàng lưu bị hỏng, hoặc khi ghi đè đã hết hạn (hàng hết hạn được xóa
+    /// luôn để bảng không giữ trạng thái cũ). RuleEngine vẫn tự kiểm tra
     /// <c>ExpiresAt</c> ở mỗi lần đánh giá — đây là lớp bảo vệ thứ hai.
+    /// Đường theo con dùng <see cref="GetActiveOverrideForChildAsync"/>; hàm
+    /// này chỉ còn phục vụ đường cũ / chẩn đoán — ghi đè đã tách theo con
+    /// nên hàng của con khác không bao giờ trả về ở đây.
     /// </summary>
     public async Task<TemporaryOverride?> GetActiveOverrideAsync(CancellationToken ct)
     {
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
+        return await ReadOverrideRowAsync(connection, string.Empty, ct);
+    }
 
+    /// <summary>
+    /// Đọc một hàng ghi đè theo khóa con. Hết hạn hoặc không đọc được
+    /// <c>expires_at</c> thì XÓA đúng hàng đó (không đụng hàng con khác) rồi
+    /// trả null. domains_json/apps_json hỏng thì coi như không có danh sách
+    /// (ghi đè domain/app sẽ không sinh entry nào — an toàn hơn là đoán),
+    /// không xóa hàng. command_created_at hỏng thì coi như không có mốc —
+    /// hàng vẫn hiệu lực, watermark bền vững (nếu có) vẫn chặn lệnh cũ.
+    /// child_id hỏng thì coi như hàng cũ (con mặc định).
+    /// </summary>
+    private static async Task<TemporaryOverride?> ReadOverrideRowAsync(SqliteConnection connection, string childKey, CancellationToken ct)
+    {
         string? action = null;
         long minutes = 0;
         string? expiresText = null;
         string? domainsJson = null;
         string? appsJson = null;
         string? commandCreatedAtText = null;
+        string? childIdText = null;
         await using (var select = connection.CreateCommand())
         {
-            select.CommandText = "SELECT action, minutes, expires_at, domains_json, apps_json, command_created_at FROM active_override WHERE id = 1;";
+            select.CommandText = "SELECT action, minutes, expires_at, domains_json, apps_json, command_created_at, child_id FROM active_override WHERE child_key = $key;";
+            select.Parameters.AddWithValue("$key", childKey);
             await using var reader = await select.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct))
             {
@@ -481,6 +693,7 @@ public sealed class OutboxStore
                 domainsJson = reader.IsDBNull(3) ? null : reader.GetString(3);
                 appsJson = reader.IsDBNull(4) ? null : reader.GetString(4);
                 commandCreatedAtText = reader.IsDBNull(5) ? null : reader.GetString(5);
+                childIdText = reader.IsDBNull(6) ? null : reader.GetString(6);
             }
         }
 
@@ -492,20 +705,16 @@ public sealed class OutboxStore
         if (!DateTimeOffset.TryParse(
                 expiresText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset expiresAt))
         {
-            await DeleteOverrideRowAsync(connection, ct);
+            await DeleteOverrideRowAsync(connection, childKey, ct);
             return null;
         }
 
         if (expiresAt <= DateTimeOffset.UtcNow)
         {
-            await DeleteOverrideRowAsync(connection, ct);
+            await DeleteOverrideRowAsync(connection, childKey, ct);
             return null;
         }
 
-        // domains_json/apps_json hỏng thì coi như không có danh sách (ghi đè
-        // domain/app sẽ không sinh entry nào — an toàn hơn là đoán), không
-        // xóa hàng. command_created_at hỏng thì coi như không có mốc — hàng
-        // vẫn hiệu lực, watermark bền vững (nếu có) vẫn chặn lệnh cũ.
         DateTimeOffset? commandCreatedAt = null;
         if (!string.IsNullOrWhiteSpace(commandCreatedAtText)
             && DateTimeOffset.TryParse(
@@ -514,7 +723,53 @@ public sealed class OutboxStore
             commandCreatedAt = parsedCreatedAt;
         }
 
-        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson), ParseOverrideApps(appsJson), commandCreatedAt);
+        Guid? childId = null;
+        if (!string.IsNullOrWhiteSpace(childIdText)
+            && Guid.TryParse(childIdText, out Guid parsedChildId))
+        {
+            childId = parsedChildId;
+        }
+
+        return new TemporaryOverride(action, (int)minutes, expiresAt, ParseOverrideDomains(domainsJson), ParseOverrideApps(appsJson), commandCreatedAt, childId);
+    }
+
+    /// <summary>Hàng ghi đè của khóa con này có tồn tại không (kể cả đã hết hạn — chỉ kiểm tra sự hiện diện, không đọc nội dung).</summary>
+    private static async Task<bool> OverrideRowExistsAsync(SqliteConnection connection, string childKey, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM active_override WHERE child_key = $key;";
+        command.Parameters.AddWithValue("$key", childKey);
+        object? scalar = await command.ExecuteScalarAsync(ct);
+        return scalar is long count && count > 0;
+    }
+
+    /// <summary>
+    /// Đọc ghi đè đang hiệu lực của MỘT con (Sprint 5 đợt 1, sửa MAJOR-1):
+    /// hàng gắn đúng guid con đó; con mặc định thì thêm hàng legacy "" (ghi
+    /// đè cũ chưa gắn con) khi chưa từng có hàng guid — hàng guid đã hết hạn
+    /// thì không hồi sinh hàng legacy cũ hơn. Hàng của con khác không trả về
+    /// (ghi đè của con khác không được tính cho con đang ngồi máy, dù nó vẫn
+    /// còn hạn). Hết hạn/hỏng thì xử lý như <see cref="ReadOverrideRowAsync"/>
+    /// (xóa đúng hàng đã đọc).
+    /// </summary>
+    public async Task<TemporaryOverride?> GetActiveOverrideForChildAsync(Guid? childId, Guid? defaultChildId, CancellationToken ct)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        string key = OverrideChildKey(childId);
+        bool useLegacyFallback = childId is not null
+            && defaultChildId is not null
+            && childId.Value == defaultChildId.Value
+            && !await OverrideRowExistsAsync(connection, key, ct);
+
+        TemporaryOverride? row = await ReadOverrideRowAsync(connection, key, ct);
+        if (row is null && useLegacyFallback)
+        {
+            row = await ReadOverrideRowAsync(connection, string.Empty, ct);
+        }
+
+        return row;
     }
 
     /// <summary>Đọc mảng domains từ chuỗi JSON đã lưu. Null/hỏng thì trả về null.</summary>
@@ -583,12 +838,22 @@ public sealed class OutboxStore
         }
     }
 
-    /// <summary>Xóa ghi đè đang hiệu lực (khi phụ huynh gửi lệnh hủy).</summary>
-    public async Task ClearOverrideAsync(CancellationToken ct)
+    /// <summary>
+    /// Xóa ghi đè đang hiệu lực của MỘT con (khi phụ huynh gửi lệnh hủy cho
+    /// con đó). Hủy ghi đè của con A không xóa ghi đè của con B. Con mặc
+    /// định thì xóa cả hàng guid của nó lẫn hàng legacy "" (cả hai đều thuộc
+    /// về con mặc định; chỉ một trong hai tồn tại sau các lần lưu — xóa cả
+    /// hai cho chắc khi hàng legacy còn sót từ trước khi di trú).
+    /// </summary>
+    public async Task ClearOverrideForChildAsync(Guid? childId, Guid? defaultChildId, CancellationToken ct)
     {
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
-        await DeleteOverrideRowAsync(connection, ct);
+        await DeleteOverrideRowAsync(connection, OverrideChildKey(childId), ct);
+        if (childId is not null && defaultChildId is not null && childId.Value == defaultChildId.Value)
+        {
+            await DeleteOverrideRowAsync(connection, string.Empty, ct);
+        }
     }
 
     /// <summary>
@@ -598,8 +863,41 @@ public sealed class OutboxStore
     /// đè, nếu còn, vẫn tự mang mốc của nó).
     /// </summary>
     public async Task<DateTimeOffset?> GetOverrideCommandFloorAsync(CancellationToken ct)
+        => await GetOverrideCommandFloorAsync(null, null, ct);
+
+    /// <summary>
+    /// Đọc mốc sàn lệnh ghi đè của một con (Sprint 5): khóa theo-con
+    /// (<c>override_command_floor_&lt;childId:N&gt;</c>). Con mặc định thì
+    /// lấy mốc LỚN HƠN trong hai khóa (theo-con và khóa gốc) — khóa gốc giữ
+    /// mốc của máy nâng cấp từ bản cũ, lệnh cũ của con mặc định gửi lại sau
+    /// nâng cấp vẫn bị chặn. Con khác thì chỉ khóa theo-con của nó.
+    /// <paramref name="childId"/> null = đường cũ (khóa gốc).
+    /// </summary>
+    public async Task<DateTimeOffset?> GetOverrideCommandFloorAsync(Guid? childId, Guid? defaultChildId, CancellationToken ct)
     {
-        string? value = await GetStateAsync(StateKeys.OverrideCommandFloor, ct);
+        if (childId is null)
+        {
+            return await ReadFloorAsync(StateKeys.OverrideCommandFloor, ct);
+        }
+
+        DateTimeOffset? floor = await ReadFloorAsync(StateKeys.OverrideCommandFloorForChild(childId.Value), ct);
+        if (childId.Value != defaultChildId)
+        {
+            return floor;
+        }
+
+        DateTimeOffset? legacy = await ReadFloorAsync(StateKeys.OverrideCommandFloor, ct);
+        if (floor is null)
+        {
+            return legacy;
+        }
+
+        return legacy is null || floor.Value > legacy.Value ? floor : legacy;
+    }
+
+    private async Task<DateTimeOffset?> ReadFloorAsync(string key, CancellationToken ct)
+    {
+        string? value = await GetStateAsync(key, ct);
         if (string.IsNullOrWhiteSpace(value))
         {
             return null;
@@ -624,20 +922,26 @@ public sealed class OutboxStore
     /// ghi mốc năm 1 xuống DB.
     /// </summary>
     public async Task RaiseOverrideCommandFloorAsync(DateTimeOffset commandCreatedAt, CancellationToken ct)
+        => await RaiseOverrideCommandFloorAsync(null, commandCreatedAt, ct);
+
+    /// <summary>Nâng mốc sàn lệnh ghi đè của một con (Sprint 5): ghi khóa theo-con của con đó. Null = đường cũ (khóa gốc).</summary>
+    public async Task RaiseOverrideCommandFloorAsync(Guid? childId, DateTimeOffset commandCreatedAt, CancellationToken ct)
     {
         if (commandCreatedAt == default)
         {
             return;
         }
 
-        DateTimeOffset? current = await GetOverrideCommandFloorAsync(ct);
+        string key = childId is null
+            ? StateKeys.OverrideCommandFloor
+            : StateKeys.OverrideCommandFloorForChild(childId.Value);
+        DateTimeOffset? current = childId is null
+            ? await GetOverrideCommandFloorAsync(ct)
+            : await GetOverrideCommandFloorAsync(childId, null, ct);
         DateTimeOffset raised = OverrideCommandOrder.RaiseFloor(current, commandCreatedAt);
         if (current is null || raised > current.Value)
         {
-            await SetStateAsync(
-                StateKeys.OverrideCommandFloor,
-                raised.ToString("o", CultureInfo.InvariantCulture),
-                ct);
+            await SetStateAsync(key, raised.ToString("o", CultureInfo.InvariantCulture), ct);
         }
     }
 
@@ -648,20 +952,33 @@ public sealed class OutboxStore
     /// về hành vi cũ, lần nâng sau ghi đè giá trị đúng).
     /// </summary>
     public async Task<DateTimeOffset?> GetForcedLockCommandFloorAsync(CancellationToken ct)
+        => await GetForcedLockCommandFloorAsync(null, null, ct);
+
+    /// <summary>
+    /// Đọc mốc sàn lệnh khóa/mở của một con (Sprint 5) — cùng mẫu fallback
+    /// về khóa gốc cho con mặc định như
+    /// <see cref="GetOverrideCommandFloorAsync(Guid?, Guid?, CancellationToken)"/>.
+    /// </summary>
+    public async Task<DateTimeOffset?> GetForcedLockCommandFloorAsync(Guid? childId, Guid? defaultChildId, CancellationToken ct)
     {
-        string? value = await GetStateAsync(StateKeys.ForcedLockCommandFloor, ct);
-        if (string.IsNullOrWhiteSpace(value))
+        if (childId is null)
         {
-            return null;
+            return await ReadFloorAsync(StateKeys.ForcedLockCommandFloor, ct);
         }
 
-        if (DateTimeOffset.TryParse(
-                value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset floor))
+        DateTimeOffset? floor = await ReadFloorAsync(StateKeys.ForcedLockCommandFloorForChild(childId.Value), ct);
+        if (childId.Value != defaultChildId)
         {
             return floor;
         }
 
-        return null;
+        DateTimeOffset? legacy = await ReadFloorAsync(StateKeys.ForcedLockCommandFloor, ct);
+        if (floor is null)
+        {
+            return legacy;
+        }
+
+        return legacy is null || floor.Value > legacy.Value ? floor : legacy;
     }
 
     /// <summary>
@@ -674,31 +991,100 @@ public sealed class OutboxStore
     /// qua RPC thật) thì bỏ qua, không ghi mốc năm 1 xuống DB.
     /// </summary>
     public async Task RaiseForcedLockCommandFloorAsync(DateTimeOffset commandCreatedAt, CancellationToken ct)
+        => await RaiseForcedLockCommandFloorAsync(null, commandCreatedAt, ct);
+
+    /// <summary>Nâng mốc sàn lệnh khóa/mở của một con (Sprint 5): ghi khóa theo-con của con đó. Null = đường cũ (khóa gốc).</summary>
+    public async Task RaiseForcedLockCommandFloorAsync(Guid? childId, DateTimeOffset commandCreatedAt, CancellationToken ct)
     {
         if (commandCreatedAt == default)
         {
             return;
         }
 
-        DateTimeOffset? current = await GetForcedLockCommandFloorAsync(ct);
+        string key = childId is null
+            ? StateKeys.ForcedLockCommandFloor
+            : StateKeys.ForcedLockCommandFloorForChild(childId.Value);
+        DateTimeOffset? current = childId is null
+            ? await GetForcedLockCommandFloorAsync(ct)
+            : await GetForcedLockCommandFloorAsync(childId, null, ct);
         DateTimeOffset raised = OverrideCommandOrder.RaiseFloor(current, commandCreatedAt);
         if (current is null || raised > current.Value)
         {
-            await SetStateAsync(
-                StateKeys.ForcedLockCommandFloor,
-                raised.ToString("o", CultureInfo.InvariantCulture),
-                ct);
+            await SetStateAsync(key, raised.ToString("o", CultureInfo.InvariantCulture), ct);
         }
     }
 
-    private static async Task DeleteOverrideRowAsync(SqliteConnection connection, CancellationToken ct)
+    /// <summary>
+    /// Cờ khóa cưỡng chế của một con có đang bật không (Sprint 5).
+    /// <paramref name="childId"/> null = đường cũ (khóa gốc
+    /// <c>forced_lock</c>). Con mặc định thì đọc khóa theo-con TRƯỚC, rơi
+    /// về khóa gốc khi chưa có — máy nâng cấp từ bản cũ vẫn giữ lệnh khóa
+    /// đang hiệu lực của con mặc định cho tới khi lệnh sau ghi đè.
+    /// </summary>
+    public async Task<bool> GetForcedLockAsync(Guid? childId, Guid? defaultChildId, CancellationToken ct)
+    {
+        if (childId is null)
+        {
+            return await GetStateAsync(StateKeys.ForcedLock, ct) is not null;
+        }
+
+        if (await GetStateAsync(StateKeys.ForcedLockForChild(childId.Value), ct) is not null)
+        {
+            return true;
+        }
+
+        return childId.Value == defaultChildId
+            && await GetStateAsync(StateKeys.ForcedLock, ct) is not null;
+    }
+
+    /// <summary>
+    /// Bật/tắt cờ khóa cưỡng chế của một con (Sprint 5).
+    /// <paramref name="childId"/> null = đường cũ (ghi/xóa khóa gốc).
+    /// Ghi cho con mặc định thì đồng thời XÓA khóa gốc (di trú một lần) để
+    /// không còn hai nguồn sự thật song song: lần đọc sau chỉ còn khóa
+    /// theo-con. Con khác thì khóa gốc không được chạm tới.
+    /// </summary>
+    public async Task SetForcedLockAsync(Guid? childId, Guid? defaultChildId, bool locked, CancellationToken ct)
+    {
+        if (childId is null)
+        {
+            if (locked)
+            {
+                await SetStateAsync(StateKeys.ForcedLock, "1", ct);
+            }
+            else
+            {
+                await DeleteStateAsync(StateKeys.ForcedLock, ct);
+            }
+
+            return;
+        }
+
+        string key = StateKeys.ForcedLockForChild(childId.Value);
+        if (locked)
+        {
+            await SetStateAsync(key, "1", ct);
+        }
+        else
+        {
+            await DeleteStateAsync(key, ct);
+        }
+
+        if (childId.Value == defaultChildId)
+        {
+            await DeleteStateAsync(StateKeys.ForcedLock, ct);
+        }
+    }
+
+    private static async Task DeleteOverrideRowAsync(SqliteConnection connection, string childKey, CancellationToken ct)
     {
         await using var delete = connection.CreateCommand();
-        delete.CommandText = "DELETE FROM active_override WHERE id = 1;";
+        delete.CommandText = "DELETE FROM active_override WHERE child_key = $key;";
+        delete.Parameters.AddWithValue("$key", childKey);
         await delete.ExecuteNonQueryAsync(ct);
     }
 
-    /// <summary>Ghi một mẫu foreground do Tray gửi qua IPC.</summary>
+    /// <summary>Ghi một mẫu foreground do Tray gửi qua IPC. SID (nếu có) do Service đóng dấu từ bản tin hello của phiên gửi (xem IpcPipeServer) — mẫu không rõ phiên thì sid NULL, chỉ tính cho con mặc định của máy.</summary>
     public async Task RecordUsageSampleAsync(UsageSamplePayload sample, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(sample);
@@ -708,12 +1094,13 @@ public sealed class OutboxStore
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO usage_samples (app_name, exe_path_hash, sampled_at)
-            VALUES ($app, $hash, $at);
+            INSERT INTO usage_samples (app_name, exe_path_hash, sampled_at, sid)
+            VALUES ($app, $hash, $at, $sid);
             """;
         command.Parameters.AddWithValue("$app", sample.AppName);
         command.Parameters.AddWithValue("$hash", (object?)sample.ExePathHash ?? DBNull.Value);
         command.Parameters.AddWithValue("$at", sample.SampledAt.UtcDateTime.ToString("o"));
+        command.Parameters.AddWithValue("$sid", (object?)sample.Sid ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(ct);
     }
 
@@ -737,9 +1124,76 @@ public sealed class OutboxStore
         command.CommandText = "SELECT COUNT(*) FROM usage_samples WHERE sampled_at >= $from AND sampled_at < $to;";
         command.Parameters.AddWithValue("$from", from);
         command.Parameters.AddWithValue("$to", to);
-        object? value = await command.ExecuteScalarAsync(ct);
-        long count = value is long c ? c : 0;
+        object? scalar = await command.ExecuteScalarAsync(ct);
+        long count = scalar is long c ? c : 0;
         return TimeSpan.FromSeconds(count * AgentConstants.ForegroundSampleInterval.TotalSeconds);
+    }
+
+    /// <summary>
+    /// Thời gian đã dùng "hôm nay" của MỘT con (Sprint 5): chỉ đếm mẫu mang
+    /// SID thuộc về con đó, cộng thêm mẫu không rõ phiên (sid NULL) khi phạm
+    /// vi cho phép — mẫu không rõ phiên chỉ tính cho con mặc định của máy
+    /// (xem <see cref="UsageScope"/>). Cùng ranh giới ngày địa phương như
+    /// <see cref="GetUsageTodayAsync"/>.
+    /// </summary>
+    public async Task<TimeSpan> GetUsageTodayForChildAsync(UsageScope scope, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        DateTimeOffset localNow = DateTimeOffset.Now;
+        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
+        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        (string sidCondition, List<(string Name, object Value)> sidParameters) = BuildScopedSidCondition(scope);
+        command.CommandText = "SELECT COUNT(*) FROM usage_samples WHERE sampled_at >= $from AND sampled_at < $to AND " + sidCondition + ";";
+        command.Parameters.AddWithValue("$from", from);
+        command.Parameters.AddWithValue("$to", to);
+        foreach ((string name, object value) in sidParameters)
+        {
+            command.Parameters.AddWithValue(name, value);
+        }
+
+        object? scalar = await command.ExecuteScalarAsync(ct);
+        long count = scalar is long c ? c : 0;
+        return TimeSpan.FromSeconds(count * AgentConstants.ForegroundSampleInterval.TotalSeconds);
+    }
+
+    /// <summary>
+    /// Xây điều kiện SID cho truy vấn usage theo phạm vi của một con
+    /// (Sprint 5): mẫu thuộc phạm vi khi sid nằm trong danh sách SID của
+    /// con đó, hoặc (khi phạm vi cho phép) sid IS NULL — mẫu không rõ phiên.
+    /// Trả về (mảnh SQL điều kiện, tham số sid). Cùng mẫu dùng cho cả ba hàm
+    /// đếm theo con (ngày / theo app / chuỗi thời gian) để không lệch nhau.
+    /// </summary>
+    private static (string Condition, List<(string Name, object Value)> Parameters) BuildScopedSidCondition(UsageScope scope)
+    {
+        var parameters = new List<(string, object)>();
+        if (scope.Sids.Count == 0)
+        {
+            // Con chưa gắn SID nào (máy đơn-con chưa có ánh xạ): chỉ còn
+            // mẫu không rõ phiên — khi phạm vi cho phép (con mặc định) thì
+            // đếm đúng chúng, ngược lại không đếm gì.
+            return scope.IncludeUnattributed ? ("sid IS NULL", parameters) : ("1 = 0", parameters);
+        }
+
+        var sidParams = new List<string>();
+        for (int i = 0; i < scope.Sids.Count; i++)
+        {
+            string name = "$sid" + i;
+            sidParams.Add(name);
+            parameters.Add((name, scope.Sids[i]));
+        }
+
+        string inList = string.Join(", ", sidParams);
+        string condition = scope.IncludeUnattributed
+            ? $"(sid IN ({inList}) OR sid IS NULL)"
+            : $"sid IN ({inList})";
+        return (condition, parameters);
     }
 
     /// <summary>
@@ -782,6 +1236,47 @@ public sealed class OutboxStore
     }
 
     /// <summary>
+    /// Thời gian đã dùng "hôm nay" của MỘT con theo từng app (Sprint 5) —
+    /// cùng phạm vi SID như <see cref="GetUsageTodayForChildAsync"/>.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayForChildAsync(UsageScope scope, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        DateTimeOffset localNow = DateTimeOffset.Now;
+        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
+        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+
+        var usage = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        (string sidCondition, List<(string Name, object Value)> sidParameters) = BuildScopedSidCondition(scope);
+        command.CommandText =
+            "SELECT app_name, COUNT(*) FROM usage_samples WHERE sampled_at >= $from AND sampled_at < $to AND "
+            + sidCondition + " GROUP BY app_name;";
+        command.Parameters.AddWithValue("$from", from);
+        command.Parameters.AddWithValue("$to", to);
+        foreach ((string name, object value) in sidParameters)
+        {
+            command.Parameters.AddWithValue(name, value);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string appName = reader.GetString(0);
+            long count = reader.GetInt64(1);
+            usage[appName] = TimeSpan.FromSeconds(count * AgentConstants.ForegroundSampleInterval.TotalSeconds);
+        }
+
+        return usage;
+    }
+
+    /// <summary>
     /// Các thời điểm lấy mẫu mới hơn <paramref name="since"/>, theo thứ tự
     /// tăng dần — dùng tính chuỗi dùng liên tục cho nghỉ bắt buộc. Chuỗi
     /// thời gian hỏng thì bỏ qua mẫu đó (giống <see cref="GetUsageSummaryAsync"/>).
@@ -800,6 +1295,45 @@ public sealed class OutboxStore
             ORDER BY sampled_at ASC;
             """;
         command.Parameters.AddWithValue("$since", since.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (DateTimeOffset.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset sampledAt))
+            {
+                times.Add(sampledAt);
+            }
+        }
+
+        return times;
+    }
+
+    /// <summary>
+    /// Các thời điểm lấy mẫu của MỘT con mới hơn <paramref name="since"/>
+    /// (Sprint 5) — cùng phạm vi SID như
+    /// <see cref="GetUsageTodayForChildAsync"/>; nghỉ bắt buộc của con nào
+    /// thì tính chuỗi dùng của con đó (trạng thái nghỉ vẫn giữ ở cấp máy
+    /// trong đợt 1 — xem docs/02-ARCHITECTURE.md §4.13).
+    /// </summary>
+    public async Task<IReadOnlyList<DateTimeOffset>> GetSampleTimesSinceForChildAsync(DateTimeOffset since, UsageScope scope, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        var times = new List<DateTimeOffset>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        (string sidCondition, List<(string Name, object Value)> sidParameters) = BuildScopedSidCondition(scope);
+        command.CommandText =
+            "SELECT sampled_at FROM usage_samples WHERE sampled_at > $since AND "
+            + sidCondition + " ORDER BY sampled_at ASC;";
+        command.Parameters.AddWithValue("$since", since.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+        foreach ((string name, object value) in sidParameters)
+        {
+            command.Parameters.AddWithValue(name, value);
+        }
 
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -864,8 +1398,10 @@ public sealed class OutboxStore
     /// <summary>
     /// Tổng hợp mẫu foreground mới hơn <paramref name="since"/> theo từng app
     /// (số mẫu x 15 giây/mẫu = thời lượng ước lượng), để gửi lên server.
-    /// Nhóm theo cả tên app và hash exe để hai app trùng tên nhưng khác file
-    /// không bị gộp chung.
+    /// Nhóm theo cả tên app, hash exe VÀ sid để hai con dùng chung app
+    /// không bị gộp chung giờ (Sprint 5) — server suy ra con theo SID của
+    /// từng nhóm; nhóm sid NULL là mẫu không rõ phiên, server ghi theo con
+    /// mặc định của máy.
     /// </summary>
     public async Task<IReadOnlyList<UsageSummary>> GetUsageSummaryAsync(DateTimeOffset since, CancellationToken ct)
     {
@@ -876,10 +1412,10 @@ public sealed class OutboxStore
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT app_name, exe_path_hash, COUNT(*), MIN(sampled_at), MAX(sampled_at)
+            SELECT app_name, exe_path_hash, sid, COUNT(*), MIN(sampled_at), MAX(sampled_at)
             FROM usage_samples
             WHERE sampled_at > $since
-            GROUP BY app_name, exe_path_hash
+            GROUP BY app_name, exe_path_hash, sid
             ORDER BY MIN(sampled_at) ASC;
             """;
         command.Parameters.AddWithValue("$since", since.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
@@ -889,14 +1425,15 @@ public sealed class OutboxStore
         {
             string appName = reader.GetString(0);
             string? hash = reader.IsDBNull(1) ? null : reader.GetString(1);
-            long count = reader.GetInt64(2);
-            if (!DateTimeOffset.TryParse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset first)
-                || !DateTimeOffset.TryParse(reader.GetString(4), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset last))
+            string? sid = reader.IsDBNull(2) ? null : reader.GetString(2);
+            long count = reader.GetInt64(3);
+            if (!DateTimeOffset.TryParse(reader.GetString(4), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset first)
+                || !DateTimeOffset.TryParse(reader.GetString(5), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset last))
             {
                 continue;
             }
 
-            summaries.Add(new UsageSummary(appName, hash, count, first, last));
+            summaries.Add(new UsageSummary(appName, hash, count, first, last, sid));
         }
 
         return summaries;

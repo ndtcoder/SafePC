@@ -83,13 +83,17 @@ public sealed class DomainRulesPublisher
     /// lực. Trả về true chỉ khi file thực sự được ghi (nội dung thay đổi).
     /// Không bao giờ ném exception (trừ hủy): lỗi I/O/SQLite chỉ ghi log,
     /// để vòng lặp gọi không chết vì một lần xuất bản lỗi.
+    /// <paramref name="activeChildId"/> (Sprint 5): hồ sơ con đang ngồi ở
+    /// máy — ghi đè domain chỉ được tính khi thuộc về con đó; null = đường
+    /// cũ (không biết con nào, tính mọi ghi đè như trước — dùng lúc khởi
+    /// động trước khi vòng tick phân giải con lần đầu).
     /// </summary>
-    public async Task<bool> PublishAsync(CancellationToken ct)
+    public async Task<bool> PublishAsync(CancellationToken ct, Guid? activeChildId = null, Guid? defaultChildId = null)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            DomainRulesFile file = await BuildFileAsync(ct);
+            DomainRulesFile file = await BuildFileAsync(ct, activeChildId, defaultChildId);
 
             // So sánh nội dung TRỪ updated_at (đang để trống): nếu các quy
             // tắc không đổi thì không ghi lại, kể cả khi được gọi mỗi phút.
@@ -156,9 +160,13 @@ public sealed class DomainRulesPublisher
     /// <summary>
     /// Dựng nội dung file từ cache rules (chỉ rule website đang bật) và ghi
     /// đè domain đang hiệu lực. Mọi danh sách đều sắp xếp determinist để
-    /// chuỗi so sánh không đổi giả khi quy tắc không đổi.
+    /// chuỗi so sánh không đổi giả khi quy tắc không đổi. Cache rules chỉ
+    /// chứa luật của con đang active (AgentWorker đổi cache khi đổi phiên)
+    /// nên file luôn là luật của đúng con đó. Ghi đè domain (một hàng duy
+    /// nhất trên toàn máy) chỉ được tính khi thuộc về con đang active —
+    /// <paramref name="activeChildId"/> null thì tính như trước (đường cũ).
     /// </summary>
-    private async Task<DomainRulesFile> BuildFileAsync(CancellationToken ct)
+    private async Task<DomainRulesFile> BuildFileAsync(CancellationToken ct, Guid? activeChildId = null, Guid? defaultChildId = null)
     {
         var file = new DomainRulesFile();
         var blocked = new HashSet<string>(StringComparer.Ordinal);
@@ -369,10 +377,14 @@ public sealed class DomainRulesPublisher
             };
         }
 
-        // Ghi đè domain (tối đa 1 hàng, lệnh mới nhất thắng): chỉ sinh temp
-        // entry khi còn hạn (GetActiveOverrideAsync đã lọc hết hạn) và còn
-        // ít nhất một domain hợp lệ. Ghi đè giờ giấc không ảnh hưởng file này.
-        TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideAsync(ct);
+        // Ghi đè domain (một hàng theo con, lệnh mới nhất của con đó thắng):
+        // chỉ sinh temp entry khi còn hạn (GetActiveOverrideForChildAsync đã
+        // lọc hết hạn) và còn ít nhất một domain hợp lệ. Ghi đè giờ giấc
+        // không ảnh hưởng file này.
+        // Sprint 5: hàng ghi đè thuộc về MỘT con — chỉ tính khi đúng con
+        // đang active; chưa biết con nào thì tính cho con mặc định (đường cũ
+        // khi activeChildId null) qua GetActiveOverrideForChildAsync.
+        TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideForChildAsync(activeChildId ?? defaultChildId, defaultChildId, ct);
         if (activeOverride is not null
             && (activeOverride.Action == OverrideActions.AllowDomain || activeOverride.Action == OverrideActions.BlockDomain)
             && activeOverride.Domains is not null)

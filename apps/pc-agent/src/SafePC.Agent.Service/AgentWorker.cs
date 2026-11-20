@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -200,6 +201,134 @@ public sealed class AgentWorker : BackgroundService
     private string? _lastDecisionLogSignature;
     private DateTimeOffset _lastDecisionLogAt;
 
+    // Sprint 5 (máy dùng chung, một phiên active): phiên console + hồ sơ con
+    // đang ngồi máy ở lần kiểm tra trước, để phát hiện đổi phiên/đổi con và
+    // đặt lại trạng thái tick trong bộ nhớ (xem RuleCheckLoopAsync). Chỉ
+    // trong bộ nhớ: Service khởi động lại thì lần kiểm tra đầu tiên coi như
+    // "đổi phiên" và đặt lại — an toàn vì trạng thái bền đã tách theo con.
+    private int? _lastConsoleSessionId;
+    private Guid? _lastActiveChildId;
+
+    // Sprint 5, review lần hai MINOR-1: giá trị GetLastError thô gần nhất
+    // đã log khi WTSGetActiveConsoleSessionId trả 0xFFFFFFFF (int.MinValue
+    // = chưa log lần nào) — ghi log chẩn đoán một lần khi giá trị đổi, để
+    // xác minh trên máy thật tiền đề "GetLastError == 0 ⟺ không có phiên".
+    private int _lastConsoleQueryWin32Error = int.MinValue;
+
+    // Sprint 5: phiên Standard chưa gắn hồ sơ nào đã được cảnh báo trong lần
+    // chạy này (khóa theo session id) — quyết định đã chốt 20/11/2026 là
+    // không quản lý + ghi log cảnh báo 1 lần/phiên, không lấp log mỗi 15s.
+    private readonly HashSet<int> _unmappedWarnedSessions = new();
+
+    // Sprint 5: phiên admin đã được ghi chú miễn trừ 1 lần/phiên (tách khỏi
+    // _unmappedWarnedSessions vì session id có thể tái dùng sau khi phiên
+    // cũ đăng xuất — phiên con mới không được "ăn theo" ghi chú của admin).
+    private readonly HashSet<int> _adminNotedSessions = new();
+
+    // Sprint 5: con mà lần bỏ qua kiểm tra gần nhất (do chưa đồng bộ được
+    // rules) đã được cảnh báo — để mất mạng kéo dài không lấp log mỗi 15s.
+    private Guid? _rulesSkipWarnedChildId;
+
+    // Sprint 5: hồ sơ con mà cache rules hiện tại thuộc về (null = chưa biết,
+    // VD: vừa khởi động lại Service — suy ra từ cache ở lần kiểm tra đầu
+    // tiên). Cache chỉ chứa luật của MỘT con; đổi con mà cache chưa kịp đổi
+    // thì vòng tick không thi hành luật con cũ cho con mới.
+    private Guid? _rulesChildId;
+
+    // Sprint 5: lệnh đang hoãn (con chưa active) đã được log một lần (khóa
+    // theo id lệnh) — poll 15s không lấp log với cùng một lệnh. Lệnh rời
+    // khỏi hàng pending thì quên để lần hoãn sau (nếu có) lại được log.
+    private readonly HashSet<Guid> _deferredCommandLog = new();
+
+    /// <summary>
+    /// Phiên console + hồ sơ con đang ngồi máy ở một thời điểm (Sprint 5):
+    /// kết quả phân giải của <see cref="ActiveChildResolver"/> từ phiên
+    /// console (WTS), các phiên đã hello (SID) và ánh xạ SID→con. Mọi thi
+    /// hành trong một chu kỳ (tick rules, poll lệnh) dùng cùng một context
+    /// để không lệch nhau giữa chừng.
+    /// </summary>
+    private sealed record ActiveContext(
+        int? ConsoleSessionId,
+        ActiveChildStatus Status,
+        Guid? ChildId,
+        Guid? DefaultChildId,
+        IReadOnlyList<ChildAccountLink> Links,
+        string? ConsoleSessionSid = null)
+    {
+        /// <summary>
+        /// Phạm vi mẫu usage của con đang active (SID của con + mẫu không rõ
+        /// phiên chỉ cho con mặc định). Kèm SID của phiên console đang được
+        /// phân giải (sửa MAJOR-2): phiên đó đã được xác định là con này nên
+        /// mẫu Tray mới đóng dấu SID của phiên đó vẫn đếm đúng — máy đơn-con
+        /// chưa có ánh xạ không còn đếm 0.
+        /// </summary>
+        public UsageScope Scope => ActiveChildResolver.ScopeForChild(ChildId, DefaultChildId, Links, ConsoleSessionSid);
+    }
+
+    /// <summary>
+    /// Phiên console đang hoạt động của Windows (Sprint 5, phương án 2 "một
+    /// phiên active"): chỉ phiên này mới bị thi hành luật. Dùng
+    /// <c>WTSGetActiveConsoleSessionId</c> của Win32 (Service chạy quyền
+    /// SYSTEM nên gọi được) — đơn giản và tin cậy nhất trong các phương án:
+    /// không cần hook sự kiện đăng nhập, không cần theo dõi tiến trình theo
+    /// session, chỉ poll cùng nhịp vòng tick 15s đã có.
+    ///
+    /// Trả về (SessionId, ApiFailed, Win32Error):
+    /// - Có phiên console → (số phiên, false, 0).
+    /// - Không có phiên console nào (máy ở màn hình đăng nhập) → (null,
+    ///   false, lỗi thô): API trả 0xFFFFFFFF và GetLastError() == 0. Nơi gọi
+    ///   trả về NoConsoleSession và vòng tick BỎ QUA lần kiểm tra — không
+    ///   dọn ghi đè hết hạn, không ghi sự kiện thi hành trong lúc đó (thay
+    ///   đổi so với trước Sprint 5, ghi rõ ở docs/02-ARCHITECTURE.md §4.13).
+    /// - API không gọi được (trả 0xFFFFFFFF kèm lỗi Win32, hoặc thiếu DLL /
+    ///   entry point — môi trường lạ) → (null, true, lỗi thô): nơi gọi rơi
+    ///   về NoSessionInfo để GIỮ hành vi cũ (thi hành luật con mặc định),
+    ///   thay vì bỏ qua kiểm tra.
+    /// CHƯA XÁC MINH (review lần hai, MINOR-1): tiền đề "GetLastError == 0
+    /// ⟺ không có phiên console" KHÔNG được trang Microsoft Learn của hàm
+    /// này xác nhận, và giá trị có thể là lỗi cũ còn sót trên thread — nên
+    /// nơi gọi KHÔNG dựa hoàn toàn vào nó: khi chưa phiên nào hello mà WTS
+    /// trả 0xFFFFFFFF thì coi là không có phiên bất kể GetLastError (xem
+    /// GetActiveContextAsync), và giá trị lỗi thô được log một lần khi đổi
+    /// để xác minh trên máy thật.
+    /// GIỚI HẠN: phiên RDP không phải phiên console nên không được tính —
+    /// con dùng máy qua RDP thì không bị thi hành luật trong đợt này
+    /// (xem docs/02-ARCHITECTURE.md §4.13).
+    /// </summary>
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern uint WTSGetActiveConsoleSessionId();
+
+    private const uint NoConsoleSessionId = 0xFFFFFFFF;
+
+    private static (int? SessionId, bool ApiFailed, int Win32Error) GetConsoleSessionId()
+    {
+        try
+        {
+            uint sessionId = WTSGetActiveConsoleSessionId();
+            if (sessionId != NoConsoleSessionId)
+            {
+                return ((int)sessionId, false, 0);
+            }
+
+            // 0xFFFFFFFF vừa là "không có phiên console" vừa là "API lỗi":
+            // phân biệt bằng GetLastError — 0 nghĩa là chỉ không có phiên
+            // nào, khác 0 là API thật sự lỗi. Hai trường hợp xử lý khác nhau
+            // ở nơi gọi (bỏ qua tick / giữ hành vi cũ). Win32Error trả kèm
+            // để nơi gọi log chẩn đoán (review lần hai, MINOR-1): đọc ngay
+            // sau P/Invoke, không có lệnh nào xen giữa.
+            int win32Error = Marshal.GetLastWin32Error();
+            return (null, win32Error != 0, win32Error);
+        }
+        catch (DllNotFoundException)
+        {
+            return (null, true, -1);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return (null, true, -1);
+        }
+    }
+
     public AgentWorker(
         LocalLogger log,
         OutboxStore outbox,
@@ -336,6 +465,12 @@ public sealed class AgentWorker : BackgroundService
                             JsonSerializer.SerializeToElement(new { drift_minutes = Math.Round(drift.TotalMinutes, 1) }),
                             ct);
                     }
+
+                    // Sprint 5: đồng bộ ngữ cảnh con ↔ máy (con mặc định +
+                    // ánh xạ SID→con) TRƯỚC khi đồng bộ rules, để lần đồng
+                    // bộ rules ngay sau đó dùng được con mặc định và ánh xạ
+                    // mới nhất khi phân giải con đang active.
+                    await SyncChildContextAsync(result, ct);
 
                     await RefreshRulesAsync(ct);
 
@@ -502,28 +637,252 @@ public sealed class AgentWorker : BackgroundService
     }
 
     /// <summary>
-    /// Đồng bộ rules từ server về cache local. Lỗi mạng hoặc chưa pairing
-    /// (FetchRulesAsync trả về null) thì giữ nguyên cache cũ — KHÔNG xóa
-    /// cache, vì đó là đường thi hành duy nhất khi offline.
+    /// Đồng bộ rules từ server về cache local cho con đang active (Sprint 5).
+    /// Lỗi mạng hoặc chưa pairing (FetchRules trả về null) thì giữ nguyên
+    /// cache cũ — KHÔNG xóa cache, vì đó là đường thi hành duy nhất khi offline.
     /// </summary>
     private async Task RefreshRulesAsync(CancellationToken ct)
     {
-        IReadOnlyList<Rule>? rules = await _api.FetchRulesAsync(ct);
+        ActiveContext active = await GetActiveContextAsync(ct);
+        await RefreshRulesForChildAsync(active.ChildId, active.DefaultChildId, ct);
+    }
+
+    /// <summary>
+    /// Đồng bộ rules của MỘT con từ server về cache local (Sprint 5). Con
+    /// mặc định: thử RPC mới (migration 24), rơi về RPC cũ khi RPC mới chưa
+    /// có (migration 24 chưa áp) — đường cũ (không truyền child) PHẢI trả về
+    /// đúng luật như hiện tại. Con khác: chỉ RPC mới (RPC cũ trả luật SAI
+    /// con nên không được fallback); null thì giữ cache cũ. Trả về true khi
+    /// đã lưu rules mới (kể cả rỗng — con không có rule nào cũng là trạng
+    /// thái hợp lệ, cache rỗng), false khi không tải được gì (mất mạng /
+    /// RPC chưa có / chưa pairing). Lưu xong thì xuất bản lại file domain
+    /// cho con đó (publisher tự bỏ qua khi nội dung website không đổi).
+    /// </summary>
+    private async Task<bool> RefreshRulesForChildAsync(Guid? childId, Guid? defaultChildId, CancellationToken ct)
+    {
+        IReadOnlyList<Rule>? rules = await _api.FetchRulesForChildAsync(childId, ct);
+        if (rules is null && (childId is null || childId.Value == defaultChildId))
+        {
+            // RPC mới chưa có trên server (migration 24 chưa áp) hoặc lỗi
+            // mạng: con mặc định thì RPC cũ trả đúng luật của nó.
+            rules = await _api.FetchRulesAsync(ct);
+        }
+
         if (rules is null)
         {
-            return;
+            return false;
         }
 
         int before = (await _outbox.GetCachedRulesAsync(ct)).Count;
         await _outbox.SaveRulesAsync(rules, ct);
+        _rulesChildId = childId ?? defaultChildId;
         if (rules.Count != before)
         {
-            _log.Info("Đã đồng bộ rules từ server: " + rules.Count + " rules (trước đó " + before + ").");
+            _log.Info("Đã đồng bộ rules từ server cho con " + (_rulesChildId?.ToString("D") ?? "(chưa rõ)") + ": " + rules.Count + " rules (trước đó " + before + ").");
         }
 
         // Rules mới có thể đổi quy tắc website: xuất bản lại file domain
         // (publisher tự bỏ qua khi nội dung website không đổi).
-        await _publisher.PublishAsync(ct);
+        await _publisher.PublishAsync(ct, childId, defaultChildId);
+        return true;
+    }
+
+    /// <summary>
+    /// Phân giải "con nào đang ngồi ở máy" ngay lúc này (Sprint 5): phiên
+    /// console (WTS) + các phiên đã hello (SID) + ánh xạ SID→con đã đồng bộ
+    /// + con mặc định của máy. Lỗi đọc trạng thái thì trả về context rỗng
+    /// (không phiên, không con) để nơi gọi giữ hành vi cũ thay vì crash.
+    /// </summary>
+    private async Task<ActiveContext> GetActiveContextAsync(CancellationToken ct)
+    {
+        (int? consoleSessionId, bool consoleQueryFailed, int consoleWin32Error) = GetConsoleSessionId();
+        IReadOnlyList<TraySessionSnapshot> sessions = _ipc.GetTraySessionSnapshot();
+        IReadOnlyList<ChildAccountLink> links = await GetChildAccountsAsync(ct);
+        Guid? defaultChildId = await GetDefaultChildIdAsync(ct);
+        if (consoleSessionId is null)
+        {
+            // Chẩn đoán tiền đề GetLastError (review lần hai, MINOR-1): ghi
+            // log một lần khi giá trị lỗi thô đổi, để xác minh trên máy thật
+            // rằng ở màn hình đăng nhập GetLastError có đúng bằng 0 không.
+            if (consoleWin32Error != _lastConsoleQueryWin32Error)
+            {
+                _lastConsoleQueryWin32Error = consoleWin32Error;
+                _log.Info("WTSGetActiveConsoleSessionId trả 0xFFFFFFFF, GetLastError=" + consoleWin32Error + " (chẩn đoán Sprint 5, review lần hai MINOR-1: xác minh tiền đề phân biệt không-phiên/API-lỗi).");
+            }
+
+            // WTS trả 0xFFFFFFFF (không có phiên console HOẶC API lỗi):
+            // phân giải bằng ActiveChildResolver.ResolveNullConsoleSession
+            // — chưa phiên nào hello thì chắc chắn là không có phiên (đối
+            // chiếu snapshot, không cần dựa vào tiền đề GetLastError chưa
+            // xác minh); còn lại giữ tiền đề cũ (lỗi API → NoSessionInfo
+            // giữ hành vi cũ, không lỗi → NoConsoleSession bỏ qua tick).
+            // NoSessionInfo thì con thi hành là con mặc định (fail-closed,
+            // như hành vi hôm nay); NoConsoleSession thì không có con nào.
+            ActiveChildStatus nullStatus = ActiveChildResolver.ResolveNullConsoleSession(sessions.Count > 0, consoleQueryFailed);
+            Guid? nullChildId = nullStatus == ActiveChildStatus.NoSessionInfo ? defaultChildId : null;
+            return new ActiveContext(null, nullStatus, nullChildId, defaultChildId, links);
+        }
+
+        var infos = new List<ConsoleSessionInfo>(sessions.Count);
+        foreach (TraySessionSnapshot session in sessions)
+        {
+            infos.Add(new ConsoleSessionInfo(session.SessionId, session.Sid, session.UserName, session.IsAdmin));
+        }
+
+        (ActiveChildStatus status, Guid? childId) = ActiveChildResolver.Resolve(consoleSessionId, infos, links, defaultChildId);
+
+        // SID của phiên console (nếu phiên đó đã hello): đưa vào Scope để
+        // mẫu usage Tray mới đóng dấu SID vẫn đếm đúng cho con này — xem
+        // ActiveChildResolver.ScopeForChild (sửa MAJOR-2).
+        string? consoleSessionSid = null;
+        if (consoleSessionId.HasValue)
+        {
+            foreach (ConsoleSessionInfo info in infos)
+            {
+                if (info.SessionId == consoleSessionId.Value)
+                {
+                    consoleSessionSid = info.Sid;
+                    break;
+                }
+            }
+        }
+
+        return new ActiveContext(consoleSessionId, status, childId, defaultChildId, links, consoleSessionSid);
+    }
+
+    /// <summary>Ánh xạ SID→con của máy này đã đồng bộ từ server (device_state, heartbeat ghi). Lỗi thì trả về rỗng — máy đơn-con vẫn chạy bằng fallback con mặc định.</summary>
+    private async Task<IReadOnlyList<ChildAccountLink>> GetChildAccountsAsync(CancellationToken ct)
+    {
+        try
+        {
+            string? json = await _outbox.GetStateAsync(StateKeys.ChildAccountsJson, ct);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return Array.Empty<ChildAccountLink>();
+            }
+
+            List<ChildAccountLink>? links = JsonSerializer.Deserialize<List<ChildAccountLink>>(json);
+            return links ?? (IReadOnlyList<ChildAccountLink>)Array.Empty<ChildAccountLink>();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Đọc cache ánh xạ con ↔ tài khoản lỗi (coi như chưa có ánh xạ): " + ex.Message);
+            return Array.Empty<ChildAccountLink>();
+        }
+    }
+
+    /// <summary>
+    /// Con mặc định/chính của máy (devices.child_id). Ưu tiên giá trị
+    /// heartbeat đã lưu; chưa heartbeat thành công lần nào thì suy ra từ
+    /// cache rules — máy đơn-con thì mọi rule cùng một child_id. Trả về
+    /// null khi không suy ra được (máy chưa gắn con nào / cache lẫn nhiều
+    /// con) — nơi gọi giữ hành vi cũ thay vì đoán.
+    /// </summary>
+    private async Task<Guid?> GetDefaultChildIdAsync(CancellationToken ct)
+    {
+        try
+        {
+            string? stored = await _outbox.GetStateAsync(StateKeys.DefaultChildId, ct);
+            if (!string.IsNullOrWhiteSpace(stored) && Guid.TryParse(stored, out Guid parsed))
+            {
+                return parsed;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Đọc con mặc định của máy lỗi: " + ex.Message);
+        }
+
+        try
+        {
+            IReadOnlyList<Rule> cached = await _outbox.GetCachedRulesAsync(ct);
+            return DistinctCachedChild(cached);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Suy con mặc định từ cache rules lỗi: " + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Hồ sơ con duy nhất trong cache rules, hoặc null khi cache rỗng / lẫn
+    /// nhiều con (không nên xảy ra — cache chỉ chứa luật của một con).
+    /// </summary>
+    private static Guid? DistinctCachedChild(IReadOnlyList<Rule> rules)
+    {
+        Guid? only = null;
+        foreach (Rule rule in rules)
+        {
+            if (only is null)
+            {
+                only = rule.ChildId;
+            }
+            else if (only.Value != rule.ChildId)
+            {
+                return null;
+            }
+        }
+
+        return only;
+    }
+
+    /// <summary>
+    /// Đồng bộ ngữ cảnh con ↔ máy sau mỗi heartbeat thành công (Sprint 5):
+    /// lưu con mặc định của máy (devices.child_id, heartbeat trả về) + tải
+    /// ánh xạ SID→con (migration 24) để vòng tick biết phiên console nào là
+    /// con nào. Lỗi thì giữ cache cũ — máy đơn-con vẫn chạy bằng fallback
+    /// con mặc định; RPC ánh xạ chưa có (migration 24 chưa áp) thì giữ
+    /// cache cũ (rỗng lúc đầu) thay vì xóa.
+    /// </summary>
+    private async Task SyncChildContextAsync(HeartbeatResult result, CancellationToken ct)
+    {
+        try
+        {
+            if (result.ChildId is not null)
+            {
+                await _outbox.SetStateAsync(StateKeys.DefaultChildId, result.ChildId.Value.ToString("D"), ct);
+            }
+            else
+            {
+                await _outbox.DeleteStateAsync(StateKeys.DefaultChildId, ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Lưu con mặc định của máy lỗi: " + ex.Message);
+        }
+
+        try
+        {
+            IReadOnlyList<ChildAccountLink>? links = await _api.FetchChildAccountsAsync(ct);
+            if (links is not null)
+            {
+                await _outbox.SetStateAsync(StateKeys.ChildAccountsJson, JsonSerializer.Serialize(links), ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Đồng bộ ánh xạ con ↔ tài khoản lỗi (giữ cache cũ): " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Gửi một message tới Tray của phiên đang active (Sprint 5): biết phiên
+    /// console thì gửi có đích (<see cref="IpcPipeServer.SendToSessionAsync"/>)
+    /// — phiên nền không nhận lệnh khóa/cảnh báo/mở; chưa biết phiên nào
+    /// thì gửi broadcast như trước (fail-closed: lệnh khóa vẫn tới được Tray
+    /// nào đang nối). Trả về số Tray đã ghi thành công như
+    /// <see cref="IpcPipeServer.SendToTrayAsync"/>.
+    /// </summary>
+    private async Task<int> SendToTargetSessionAsync(IpcMessage message, ActiveContext active, CancellationToken ct)
+    {
+        if (active.ConsoleSessionId.HasValue)
+        {
+            return await _ipc.SendToSessionAsync(active.ConsoleSessionId.Value, message, ct);
+        }
+
+        return await _ipc.SendToTrayAsync(message, ct);
     }
 
     private async Task CommandPollLoopAsync(CancellationToken ct)
@@ -533,15 +892,41 @@ public sealed class AgentWorker : BackgroundService
             try
             {
                 IReadOnlyList<Command> commands = await _api.PollCommandsAsync(ct);
+
+                // Sprint 5: phân giải con đang ở phiên console MỘT lần cho
+                // cả đợt poll — mọi lệnh trong đợt dùng cùng context để
+                // không lệch nhau giữa chừng (đổi phiên giữa hai lệnh trong
+                // cùng một đợt poll là cực hiếm, đợt sau sửa lại).
+                ActiveContext active = await GetActiveContextAsync(ct);
+
                 foreach (Command command in commands)
                 {
+                    // Lệnh cho con chưa active thì HOÃN: giữ pending, không
+                    // ack, không thi hành — tới khi con đó lên console thì
+                    // vòng poll sau áp dụng. Lệnh cũ (không gắn con) thuộc
+                    // về con mặc định: hoãn khi con khác đang active.
+                    if (!ActiveChildResolver.ShouldApplyCommand(command.ChildId, active.Status, active.ChildId, active.DefaultChildId))
+                    {
+                        // Log một lần cho mỗi lệnh để poll 15s không lấp log
+                        // với cùng một lệnh đang chờ con lên console.
+                        if (_deferredCommandLog.Add(command.Id))
+                        {
+                            _log.Info("Hoãn command " + command.Id + " (" + command.Type + ", con "
+                                + (command.ChildId?.ToString("D") ?? "(mặc định)") + "): con đó chưa ở phiên console, giữ pending tới khi con lên console.");
+                        }
+
+                        continue;
+                    }
+
+                    _deferredCommandLog.Remove(command.Id);
+
                     // Mỗi lệnh xử lý độc lập: một lệnh lỗi không chặn các
                     // lệnh sau, và kết quả luôn được ack về server để phụ
                     // huynh biết lệnh đã tới máy hay chưa.
                     bool ok;
                     try
                     {
-                        ok = await ExecuteCommandAsync(command, ct);
+                        ok = await ExecuteCommandAsync(command, active, ct);
                     }
                     catch (Exception ex)
                     {
@@ -558,6 +943,10 @@ public sealed class AgentWorker : BackgroundService
                         _log.Error("Ack command " + command.Id + " lỗi.", ex);
                     }
                 }
+
+                // Dọn log hoãn: lệnh không còn pending (đã áp/ack/xóa) thì
+                // quên để lần hoãn sau (nếu có) lại được log một lần.
+                _deferredCommandLog.IntersectWith(commands.Select(c => c.Id));
 
                 // Đẩy các yêu cầu xin thêm giờ con đã gửi (Tray xếp vào
                 // outbox) lên bảng requests — cùng chu kỳ poll 15s để phụ
@@ -722,22 +1111,29 @@ public sealed class AgentWorker : BackgroundService
         DateTimeOffset now = DateTimeOffset.UtcNow;
         foreach (string line in lines)
         {
-            string? domain = DomainRequestLine.TryParseDomain(line);
-            if (domain is null)
+            // Sprint 5: dòng mang thêm SID của tài khoản đã bấm xin mở
+            // (NativeHost ghi) — yêu cầu được gán cho đúng con; dòng cũ
+            // không có SID vẫn đọc được (Sid null → con mặc định).
+            DomainRequest? request = DomainRequestLine.TryParseRequest(line);
+            if (request is null)
             {
                 invalid++;
                 continue;
             }
 
+            string domain = request.Domain;
+            string? sid = request.Sid;
+
             // Trùng trong cùng đợt (con bấm nút nhiều lần trước một chu kỳ
-            // poll): chỉ gửi một lần, các dòng trùng được tiêu thụ luôn vì
-            // RPC cũng chống trùng theo yêu cầu pending.
-            if (!seenInBatch.Add(domain))
+            // poll): chỉ gửi một lần MỖI (domain, con) — hai con xin mở
+            // cùng một domain là hai yêu cầu riêng (RPC chống trùng theo
+            // (device, child, domain) từ migration 24).
+            if (!seenInBatch.Add(domain + "\n" + (sid ?? string.Empty)))
             {
                 continue;
             }
 
-            if (!_unblockDomainThrottle.ShouldSend(domain, now))
+            if (!_unblockDomainThrottle.ShouldSend(domain, sid, now))
             {
                 throttled++;
                 continue;
@@ -746,7 +1142,7 @@ public sealed class AgentWorker : BackgroundService
             bool ok;
             try
             {
-                ok = await _api.PushUnblockDomainRequestAsync(domain, ct);
+                ok = await _api.PushUnblockDomainRequestAsync(domain, sid, ct);
             }
             catch (Exception ex)
             {
@@ -756,7 +1152,7 @@ public sealed class AgentWorker : BackgroundService
 
             if (ok)
             {
-                _unblockDomainThrottle.RecordSent(domain, now);
+                _unblockDomainThrottle.RecordSent(domain, sid, now);
                 sent++;
                 _log.Info("Đã đẩy yêu cầu xin mở domain lên server để phụ huynh duyệt: " + domain + ".");
             }
@@ -877,6 +1273,11 @@ public sealed class AgentWorker : BackgroundService
                             ExePathHash = item.ExePathHash,
                             StartedAt = item.FirstSampledAt,
                             DurationSec = (int)(item.SampleCount * AgentConstants.ForegroundSampleInterval.TotalSeconds),
+                            // Sprint 5: SID của tài khoản đã dùng app — server
+                            // suy ra hồ sơ con qua ánh xạ (migration 24);
+                            // mẫu cũ không có SID thì server fallback về
+                            // devices.child_id như trước.
+                            WindowsSid = item.Sid,
                         });
                     }
 
@@ -929,10 +1330,13 @@ public sealed class AgentWorker : BackgroundService
     /// <summary>
     /// Đẩy lượt thăm web lên server từ file JSONL do NativeHost ghi
     /// (<c>%ProgramData%\SafePC\shared\web_usage.jsonl</c>). Mỗi dòng là một
-    /// JSON {domain, startedAt, durationSec, blocked?} — chỉ domain, không
-    /// URL/path/query. Lượt bị chặn (extension 0.1.7) mang blocked = true
-    /// và durationSec = 0; dòng cũ không có blocked thì coi là false. File
-    /// chỉ bị cắt khi gửi thành công toàn bộ; gửi lỗi thì giữ nguyên để
+    /// JSON {domain, startedAt, durationSec, blocked?, path?, windows_sid?}
+    /// — chỉ domain, không URL/path/query; SID (Sprint 5) để server suy ra
+    /// hồ sơ con, dòng cũ không có SID thì server ghi theo con mặc định.
+    /// Lượt bị chặn (extension 0.1.7) mang blocked = true và durationSec = 0;
+    /// dòng cũ không có blocked thì coi là false. Phân tích dòng do
+    /// <see cref="WebUsageLine"/> đảm nhiệm (logic thuần, có harness).
+    /// File chỉ bị cắt khi gửi thành công toàn bộ; gửi lỗi thì giữ nguyên để
     /// chu kỳ sau gửi lại. Dòng dở cuối file (NativeHost đang ghi dở, chưa
     /// có newline) không được tiêu thụ.
     /// </summary>
@@ -1001,7 +1405,7 @@ public sealed class AgentWorker : BackgroundService
         int invalid = 0;
         foreach (string line in lines)
         {
-            WebVisitRecord? visit = TryParseWebUsageLine(line);
+            WebVisitRecord? visit = WebUsageLine.TryParse(line);
             if (visit is null)
             {
                 invalid++;
@@ -1134,169 +1538,175 @@ public sealed class AgentWorker : BackgroundService
         }
     }
 
-    /// <summary>
-    /// Phân tích một dòng JSONL {domain, startedAt, durationSec, blocked?, path?}. Trả về null
-    /// khi thiếu/sai trường. Domain phải dài 1-253 ký tự, không chứa khoảng
-    /// trắng, '/', '?' hay '#'; thời lượng kẹp về 0..86400 (khớp RPC).
-    /// Không log giá trị domain — chỉ đếm dòng lỗi ở nơi gọi.
-    /// </summary>
-    private static WebVisitRecord? TryParseWebUsageLine(string line)
-    {
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(line);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-
-        using (document)
-        {
-            JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            if (!root.TryGetProperty("domain", out JsonElement domainElement)
-                || domainElement.ValueKind != JsonValueKind.String
-                || domainElement.GetString() is not string rawDomain)
-            {
-                return null;
-            }
-
-            string domain = rawDomain.Trim().ToLowerInvariant();
-            if (!IsValidWebUsageDomain(domain))
-            {
-                return null;
-            }
-
-            if (!root.TryGetProperty("startedAt", out JsonElement startedElement)
-                || startedElement.ValueKind != JsonValueKind.String
-                || startedElement.GetString() is not string startedText
-                || !DateTimeOffset.TryParse(startedText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset visitedAt))
-            {
-                return null;
-            }
-
-            if (!root.TryGetProperty("durationSec", out JsonElement durationElement)
-                || durationElement.ValueKind != JsonValueKind.Number)
-            {
-                return null;
-            }
-
-            double seconds;
-            if (durationElement.TryGetInt32(out int intSeconds))
-            {
-                seconds = intSeconds;
-            }
-            else if (durationElement.TryGetDouble(out double doubleSeconds))
-            {
-                seconds = doubleSeconds;
-            }
-            else
-            {
-                return null;
-            }
-
-            int durationSec = (int)Math.Clamp(Math.Truncate(seconds), 0, 86400);
-
-            // Cờ bị chặn (migration 10, extension 0.1.7): dòng cũ không có
-            // trường này thì coi là false; có mà không phải boolean thì
-            // dòng không hợp lệ (cùng độ nghiêm với các trường khác).
-            bool blocked = false;
-            if (root.TryGetProperty("blocked", out JsonElement blockedElement))
-            {
-                if (blockedElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                {
-                    return null;
-                }
-
-                blocked = blockedElement.GetBoolean();
-            }
-
-            // Đường dẫn (migration 19, extension 0.1.10): dòng cũ không
-            // có trường này thì coi là không có đường dẫn; có mà không
-            // phải chuỗi thì dòng không hợp lệ (cùng độ nghiêm với cờ
-            // blocked). Chuỗi thì cắt lại qua WebVisitPath — phòng thủ
-            // theo chiều sâu vì file JSONL nằm ở thư mục chia sẻ, dòng
-            // viết tay có thể mang query/fragment; cắt không ra đường
-            // dẫn dùng được thì giữ lượt thăm ở dạng chỉ-domain, không
-            // vứt cả dòng. Lượt bị chặn không mang đường dẫn.
-            string? path = null;
-            if (root.TryGetProperty("path", out JsonElement pathElement))
-            {
-                if (pathElement.ValueKind != JsonValueKind.String
-                    || pathElement.GetString() is not string rawPath)
-                {
-                    return null;
-                }
-
-                path = WebVisitPath.Sanitize(rawPath);
-            }
-
-            if (blocked)
-            {
-                path = null;
-            }
-
-            return new WebVisitRecord { Domain = domain, Path = path, VisitedAt = visitedAt, DurationSec = durationSec, Blocked = blocked };
-        }
-    }
-
-    private static bool IsValidWebUsageDomain(string domain)
-    {
-        if (domain.Length == 0 || domain.Length > 253)
-        {
-            return false;
-        }
-
-        foreach (char c in domain)
-        {
-            if (char.IsWhiteSpace(c) || char.IsControl(c) || c == '/' || c == '?' || c == '#')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     private async Task RuleCheckLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             try
             {
+                // Sprint 5 (máy dùng chung, một phiên active): mọi thi hành
+                // trong một lần kiểm tra dùng cùng một context (phiên
+                // console + con đang ngồi máy) để không lệch nhau giữa
+                // chừng — xem GetActiveContextAsync.
+                ActiveContext active = await GetActiveContextAsync(ct);
+
+                // Phiên Standard chưa gắn hồ sơ nào: KHÔNG thi hành luật
+                // (quyết định ĐÃ CHỐT 20/11/2026) — ghi log cảnh báo 1
+                // lần/phiên, rồi chờ như thường. Cảnh báo trên Dashboard
+                // cho tài khoản này làm ở đợt Dashboard (chưa làm ở đây).
+                if (active.Status == ActiveChildStatus.UnmappedStandard)
+                {
+                    if (active.ConsoleSessionId.HasValue && _unmappedWarnedSessions.Add(active.ConsoleSessionId.Value))
+                    {
+                        _log.Warning("Phiên console " + active.ConsoleSessionId.Value + " chưa gắn với hồ sơ con nào: không thi hành luật trên phiên này.");
+                    }
+
+                    if (!await WaitAsync(AgentConstants.ForegroundSampleInterval, ct))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                // Phiên admin đang ngồi máy: miễn trừ như hiện tại (không
+                // thi hành luật). Ghi chú một lần/phiên để log trả lời được
+                // tại sao máy không khóa khi admin đang dùng.
+                if (active.Status == ActiveChildStatus.AdminExempt)
+                {
+                    if (active.ConsoleSessionId.HasValue && _adminNotedSessions.Add(active.ConsoleSessionId.Value))
+                    {
+                        _log.Info("Phiên console là phiên admin: miễn trừ thi hành luật.");
+                    }
+
+                    if (!await WaitAsync(AgentConstants.ForegroundSampleInterval, ct))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                // Không có phiên console nào (máy ở màn hình đăng nhập):
+                // không có ai để thi hành luật — chờ như thường, không log
+                // (trạng thái bình thường).
+                if (active.Status == ActiveChildStatus.NoConsoleSession)
+                {
+                    if (!await WaitAsync(AgentConstants.ForegroundSampleInterval, ct))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                // Đổi phiên console hoặc đổi con đang active: đặt lại trạng
+                // thái tick trong bộ nhớ — trạng thái này thuộc về con/phiên
+                // cũ (VD: _lockSent=true của con A không được chặn lệnh khóa
+                // cho con B; cửa sổ cảnh báo đang đếm ngược của con A không
+                // áp cho con B). Trạng thái BỀN (ghi đè, cờ khóa cưỡng chế,
+                // watermark) đã tách theo con nên không mất.
+                // Riêng _lastBreakActive chỉ đặt lại khi ĐỔI CON (giờ nghỉ
+                // thuộc về con, không thuộc về phiên): con quay lại giữa
+                // giờ nghỉ của chính mình sẽ ghi thêm một sự kiện
+                // break_started — chấp nhận được ở đợt 1 (sự kiện vẫn đúng
+                // cho phiên mới); đợt sau có thể tách trạng thái nghỉ theo con.
+                bool sessionChanged = active.ConsoleSessionId != _lastConsoleSessionId;
+                bool childChanged = active.ChildId != _lastActiveChildId;
+                // Sprint 5 đợt 1 (sửa MAJOR-3, phần b): tick đầu tiên sau
+                // khi đổi phiên/con — dùng ở nhánh Allowed để gửi Unlock một
+                // lần dọn màn hình khóa còn sót (xem
+                // ActiveChildResolver.ShouldSendUnlockOnAllowed).
+                bool contextJustChanged = sessionChanged || childChanged;
+                if (sessionChanged || childChanged)
+                {
+                    _lockSent = false;
+                    _pendingLockAt = null;
+                    _lastWarnBucket = 0;
+                    _lastPendingWarnMinutes = 0;
+                    _lastDecisionLogSignature = null;
+                    if (childChanged)
+                    {
+                        _lastBreakActive = false;
+                    }
+
+                    _lastConsoleSessionId = active.ConsoleSessionId;
+                    _lastActiveChildId = active.ChildId;
+                    _log.Info("Đổi phiên console/con đang active: phiên "
+                        + (active.ConsoleSessionId?.ToString(CultureInfo.InvariantCulture) ?? "(không rõ)")
+                        + ", con " + (active.ChildId?.ToString("D") ?? "(chưa rõ)") + ". Đặt lại trạng thái tick.");
+                }
+
+                // Cache rules chỉ chứa luật của MỘT con: nếu biết chắc cache
+                // đang là luật của con KHÁC, hoặc con đang active không phải
+                // con mặc định mà không biết cache của ai (vừa khởi động),
+                // thì thử đồng bộ luật của con đang active; không tải được
+                // (mất mạng / RPC mới chưa có) thì BỎ QUA lần kiểm tra này
+                // — thà không thi hành còn hơn thi hành luật của con khác
+                // cho con này. Máy đơn-con thì cache luôn là luật con mặc
+                // định nên không bao giờ rơi vào nhánh này.
+                if (active.ChildId is not null
+                    && ((_rulesChildId.HasValue && _rulesChildId.Value != active.ChildId.Value)
+                        || (!_rulesChildId.HasValue && active.ChildId.Value != active.DefaultChildId)))
+                {
+                    bool refreshed = await RefreshRulesForChildAsync(active.ChildId, active.DefaultChildId, ct);
+                    if (!refreshed)
+                    {
+                        if (_rulesSkipWarnedChildId != active.ChildId)
+                        {
+                            _rulesSkipWarnedChildId = active.ChildId;
+                            _log.Warning("Chưa đồng bộ được rules cho con đang active (" + active.ChildId.Value.ToString("D") + ") — bỏ qua lần kiểm tra này để không thi hành luật của con khác.");
+                        }
+
+                        if (!await WaitAsync(AgentConstants.ForegroundSampleInterval, ct))
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    _rulesSkipWarnedChildId = null;
+                }
+
                 IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
-                TimeSpan usedToday = await _outbox.GetUsageTodayAsync(ct);
+
+                // Sprint 5: chỉ tính giờ dùng của con đang active (mẫu
+                // usage gắn với SID của con; mẫu không rõ phiên chỉ tính
+                // cho con mặc định — xem ActiveChildResolver.ScopeForChild).
+                TimeSpan usedToday = await _outbox.GetUsageTodayForChildAsync(active.Scope, ct);
 
                 // Đọc ghi đè tạm thời ở mỗi lần kiểm tra: hết hạn thì tự
                 // vô hiệu (kể cả sau khi Service khởi động lại), không cần
                 // lệnh hủy riêng. RuleEngine kiểm tra lại hết hạn một lần nữa.
-                TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideAsync(ct);
+                // Sprint 5: ghi đè theo con đang active (hàng legacy không
+                // gắn con thuộc về con mặc định).
+                TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideForChildAsync(active.ChildId, active.DefaultChildId, ct);
                 DateTimeOffset now = DateTimeOffset.Now;
 
                 // Ghi đè đổi (áp dụng/hết hạn/bị thay) thì xuất bản lại file
-                // domain: GetActiveOverrideAsync xóa hàng hết hạn khi đọc,
+                // domain: GetActiveOverrideForChildAsync xóa hàng hết hạn khi đọc,
                 // nên lần kiểm tra đầu tiên sau khi hết hạn sẽ thấy chữ ký
                 // đổi sang "(none)" và temp entry được gỡ khỏi file trong
                 // vòng 15 giây. Publisher tự bỏ qua khi nội dung không đổi
                 // (ghi đè giờ giấc không ảnh hưởng file domain).
-                string overrideSignature = activeOverride is null
-                    ? "(none)"
-                    : activeOverride.Action + "|" + activeOverride.ExpiresAt.ToString("o", CultureInfo.InvariantCulture)
-                        + "|" + string.Join(",", activeOverride.Domains ?? Array.Empty<string>())
-                        + "|" + string.Join(",", activeOverride.Apps ?? Array.Empty<string>());
+                // Sprint 5: chữ ký mang cả con đang active — đổi con mà
+                // ghi đè giống hệt nhau vẫn xuất bản lại file theo con mới.
+                string overrideSignature = (active.ChildId?.ToString("D") ?? "(none)") + "|"
+                    + (activeOverride is null
+                        ? "(none)"
+                        : activeOverride.Action + "|" + activeOverride.ExpiresAt.ToString("o", CultureInfo.InvariantCulture)
+                            + "|" + string.Join(",", activeOverride.Domains ?? Array.Empty<string>())
+                            + "|" + string.Join(",", activeOverride.Apps ?? Array.Empty<string>()));
                 if (overrideSignature != _lastOverrideSignature)
                 {
                     _lastOverrideSignature = overrideSignature;
-                    await _publisher.PublishAsync(ct);
+                    await _publisher.PublishAsync(ct, active.ChildId, active.DefaultChildId);
                 }
 
-                bool forcedLock = await _outbox.GetStateAsync(StateKeys.ForcedLock, ct) is not null;
+                // Sprint 5: cờ khóa cưỡng chế theo con đang active (khóa
+                // legacy không gắn con thuộc về con mặc định).
+                bool forcedLock = await _outbox.GetForcedLockAsync(active.ChildId, active.DefaultChildId, ct);
 
                 // Ghi đè mở máy tạm thời (unlock) nghĩa là "máy được dùng thêm
                 // giờ": RuleEngine mở máy theo giờ giấc, nhưng nghỉ bắt buộc
@@ -1313,7 +1723,7 @@ public sealed class AgentWorker : BackgroundService
                 // thành khóa, qua đường dùng chung với handler ghi đè mở
                 // khóa — một nguồn sự thật duy nhất.
                 (RuleDecision decision, bool breakActive) = await EvaluateLockDecisionAsync(
-                    rules, usedToday, activeOverride, forcedLock, parsedAppRules, now, ct);
+                    rules, usedToday, activeOverride, forcedLock, parsedAppRules, now, active.Scope, ct);
 
                 // Lịch sử thi hành (migration 10): nghỉ bắt buộc vừa bắt
                 // đầu (chuyển false -> true) thì ghi sự kiện break_started.
@@ -1353,7 +1763,11 @@ public sealed class AgentWorker : BackgroundService
                         // Chỉ hủy pending khi gửi mở thành công (đúng mẫu
                         // _lockSent): gửi rớt thì tick sau gửi lại.
                         bool hadPendingLock = _pendingLockAt.HasValue;
-                        if (_lockSent || hadPendingLock)
+                        // Sprint 5 đợt 1 (sửa MAJOR-3, phần b): vừa đổi
+                        // phiên/con thì gửi Unlock một lần kể cả khi chưa từng
+                        // gửi khóa cho con mới — dọn màn hình khóa do
+                        // hello-sync gửi nhầm trước khi tick kịp đánh giá.
+                        if (ActiveChildResolver.ShouldSendUnlockOnAllowed(_lockSent, hadPendingLock, contextJustChanged))
                         {
                             // Chuyển từ khóa sang cho phép (hết giờ ngủ, hết
                             // khung cấm, ghi đè hết hạn...): báo Tray đóng
@@ -1362,7 +1776,9 @@ public sealed class AgentWorker : BackgroundService
                             // công tới ≥1 Tray (review batch #5): gửi rớt thì
                             // tick sau gửi lại.
                             _log.Info("Hết điều kiện khóa. Báo Tray đóng màn hình khóa/cảnh báo.");
-                            int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                            // Sprint 5: chỉ gửi tới Tray của phiên đang
+                            // active — phiên nền không nhận lệnh mở/khóa.
+                            int unlockSent = await SendToTargetSessionAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), active, ct);
                             if (unlockSent > 0)
                             {
                                 _lockSent = false;
@@ -1377,8 +1793,8 @@ public sealed class AgentWorker : BackgroundService
                         {
                             _lastWarnBucket = bucket;
                             _log.Info("Sắp hết giờ, còn " + decision.MinutesLeft + " phút. Báo Tray hiện cảnh báo.");
-                            int deadlineWarned = await _ipc.SendToTrayAsync(
-                                IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(decision.MinutesLeft, decision.Reason)), ct);
+                            int deadlineWarned = await SendToTargetSessionAsync(
+                                IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(decision.MinutesLeft, decision.Reason)), active, ct);
                             // Lịch sử thi hành: chỉ ghi khi cảnh báo tới
                             // được ≥1 Tray (đã hiện thật cho con). Hành vi
                             // bucket không đổi: đã chuyển bucket thì lần
@@ -1409,8 +1825,8 @@ public sealed class AgentWorker : BackgroundService
                                 if (minutesLeft != _lastPendingWarnMinutes)
                                 {
                                     _log.Info("Đang chờ khóa có độ trễ, còn " + minutesLeft + " phút. Gửi cảnh báo.");
-                                    int warned = await _ipc.SendToTrayAsync(
-                                        IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(minutesLeft, "Phụ huynh sẽ khóa máy. Hãy lưu bài làm của bạn.")), ct);
+                                    int warned = await SendToTargetSessionAsync(
+                                        IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(minutesLeft, "Phụ huynh sẽ khóa máy. Hãy lưu bài làm của bạn.")), active, ct);
                                     if (warned > 0)
                                     {
                                         _lastPendingWarnMinutes = minutesLeft;
@@ -1451,8 +1867,8 @@ public sealed class AgentWorker : BackgroundService
                             // hình khóa chưa từng hiện vì đúng lỗi này.
                             // Gửi thất bại thì cờ vẫn false, lần kiểm tra
                             // sau gửi lại.
-                            int sent = await _ipc.SendToTrayAsync(
-                                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason, delayJustExpired)), ct);
+                            int sent = await SendToTargetSessionAsync(
+                                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason, delayJustExpired)), active, ct);
                             if (firstLock)
                             {
                                 _lockSent = sent > 0;
@@ -1498,7 +1914,7 @@ public sealed class AgentWorker : BackgroundService
                 // giờ dùng máy, app bị chặn vẫn bị đóng. Qua cổng chống
                 // chồng chéo với lượt thi hành ngay khi nhận báo cáo
                 // foreground: cổng bận thì dùng kết quả gần nhất.
-                (bool focusActive, List<string> appBlocks) = await EnforceAppRulesForTickAsync(parsedAppRules, now, activeOverride, ct);
+                (bool focusActive, List<string> appBlocks) = await EnforceAppRulesForTickAsync(parsedAppRules, now, activeOverride, active, ct);
 
                 // Snapshot trạng thái thi hành + chẩn đoán quyết định: dựng
                 // mỗi lần kiểm tra và gửi lên server ngay khi đổi (gọi
@@ -1563,7 +1979,7 @@ public sealed class AgentWorker : BackgroundService
                     ? activeOverride.Minutes
                     : null;
 
-                _queryState.UpdateDecision(displayDecision, now, activeBonusMinutes);
+                _queryState.UpdateDecision(displayDecision, now, activeBonusMinutes, active.ChildId);
 
                 LogRuleDecisionIfDue(decision, ruleIds, usedToday, activeOverride);
             }
@@ -1846,6 +2262,7 @@ public sealed class AgentWorker : BackgroundService
         bool forcedLock,
         ParsedAppRules parsedAppRules,
         DateTimeOffset now,
+        UsageScope? scope,
         CancellationToken ct)
     {
         RuleDecision decision = _ruleEngine.Evaluate(rules, usedToday, now, foregroundAppName: null, activeOverride, forcedLock: forcedLock);
@@ -1855,7 +2272,10 @@ public sealed class AgentWorker : BackgroundService
         // đánh giá bình thường. Nghỉ bắt buộc luôn được đánh giá, kể cả
         // trong lúc mở khóa tạm thời (quyết định ngày 18/11/2026): dùng
         // liên tục đủ lâu thì vẫn khóa tới hết giờ nghỉ.
-        bool breakActive = await EvaluateForcedBreakAsync(parsedAppRules, now, ct);
+        // Sprint 5: streak nghỉ tính trên mẫu của con đang active (scope
+        // null = đường cũ: mọi mẫu; trạng thái BreakEndsAt/BreakStreakFloor
+        // vẫn dùng chung cả máy ở đợt 1 — xem docs §4.13).
+        bool breakActive = await EvaluateForcedBreakAsync(parsedAppRules, now, scope, ct);
         if (breakActive)
         {
             decision = new RuleDecision(RuleDecisionKind.Lock, "Đến giờ nghỉ bắt buộc", 0);
@@ -1873,7 +2293,7 @@ public sealed class AgentWorker : BackgroundService
     /// không làm gì. Trong giờ nghỉ thì bỏ qua đánh giá streak (mẫu lúc đó
     /// được sàn loại bỏ sau khi nghỉ xong).
     /// </summary>
-    private async Task<bool> EvaluateForcedBreakAsync(ParsedAppRules parsed, DateTimeOffset now, CancellationToken ct)
+    private async Task<bool> EvaluateForcedBreakAsync(ParsedAppRules parsed, DateTimeOffset now, UsageScope? scope, CancellationToken ct)
     {
         string? endsAtText = await _outbox.GetStateAsync(StateKeys.BreakEndsAt, ct);
         if (endsAtText is not null)
@@ -1915,7 +2335,9 @@ public sealed class AgentWorker : BackgroundService
             windowStart = floor;
         }
 
-        IReadOnlyList<DateTimeOffset> samples = await _outbox.GetSampleTimesSinceAsync(windowStart, ct);
+        IReadOnlyList<DateTimeOffset> samples = scope is null
+            ? await _outbox.GetSampleTimesSinceAsync(windowStart, ct)
+            : await _outbox.GetSampleTimesSinceForChildAsync(windowStart, scope, ct);
         TimeSpan streak = ComputeUsageStreak(samples, now);
         if (streak < TimeSpan.FromMinutes(config.WorkMinutes))
         {
@@ -2018,6 +2440,33 @@ public sealed class AgentWorker : BackgroundService
         CancellationToken ct = _stoppingToken;
         try
         {
+            // Sprint 5: phân giải con đang active TRƯỚC khi lấy cổng thi
+            // hành (đọc nhanh từ SQLite local) — báo cáo từ phiên nền, từ
+            // phiên admin, hay từ phiên chưa gắn hồ sơ thì bỏ qua ngay, kể
+            // cả khi cổng đang rảnh: đường thi hành ngay không được giết
+            // app của con đang chạy nền, cũng không được giết app của admin.
+            ActiveContext active = await GetActiveContextAsync(ct);
+            if (active.Status is ActiveChildStatus.UnmappedStandard or ActiveChildStatus.AdminExempt or ActiveChildStatus.NoConsoleSession)
+            {
+                return;
+            }
+
+            if (active.ConsoleSessionId.HasValue && report.Payload.SessionId != active.ConsoleSessionId.Value)
+            {
+                return;
+            }
+
+            // Cache rules chưa phải luật của con đang active (đổi con mà
+            // vòng tick chưa kịp đồng bộ) thì bỏ qua lượt này — vòng tick
+            // sẽ đồng bộ rồi thi hành trong ≤15 giây, không thi hành luật
+            // của con khác cho con này.
+            if (active.ChildId is not null
+                && ((_rulesChildId.HasValue && _rulesChildId.Value != active.ChildId.Value)
+                    || (!_rulesChildId.HasValue && active.ChildId.Value != active.DefaultChildId)))
+            {
+                return;
+            }
+
             if (!await _appEnforcementGate.WaitAsync(0, ct))
             {
                 return;
@@ -2026,9 +2475,10 @@ public sealed class AgentWorker : BackgroundService
             try
             {
                 IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
-                TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideAsync(ct);
+                // Sprint 5: ghi đè app theo con đang active.
+                TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideForChildAsync(active.ChildId, active.DefaultChildId, ct);
                 DateTimeOffset now = DateTimeOffset.Now;
-                await RunAndCacheAppEnforcementAsync(GetParsedAppRules(rules), now, activeOverride, ct);
+                await RunAndCacheAppEnforcementAsync(GetParsedAppRules(rules), now, activeOverride, active, ct);
 
                 // Breadcrumb chống spam (tối đa 1 dòng/15 phút): đủ để log
                 // trả lời được "đường thi hành ngay có chạy không" mà không
@@ -2064,6 +2514,7 @@ public sealed class AgentWorker : BackgroundService
         ParsedAppRules parsed,
         DateTimeOffset now,
         TemporaryOverride? activeOverride,
+        ActiveContext active,
         CancellationToken ct)
     {
         if (!await _appEnforcementGate.WaitAsync(0, ct))
@@ -2076,7 +2527,7 @@ public sealed class AgentWorker : BackgroundService
 
         try
         {
-            return await RunAndCacheAppEnforcementAsync(parsed, now, activeOverride, ct);
+            return await RunAndCacheAppEnforcementAsync(parsed, now, activeOverride, active, ct);
         }
         finally
         {
@@ -2093,9 +2544,10 @@ public sealed class AgentWorker : BackgroundService
         ParsedAppRules parsed,
         DateTimeOffset now,
         TemporaryOverride? activeOverride,
+        ActiveContext active,
         CancellationToken ct)
     {
-        (bool focusActive, List<string> appBlocks) = await EnforceAppRulesAsync(parsed, now, activeOverride, ct);
+        (bool focusActive, List<string> appBlocks) = await EnforceAppRulesAsync(parsed, now, activeOverride, active, ct);
         lock (_lastAppEnforcementLock)
         {
             _lastAppEnforcement = (focusActive, appBlocks);
@@ -2122,9 +2574,10 @@ public sealed class AgentWorker : BackgroundService
         ParsedAppRules parsed,
         DateTimeOffset now,
         TemporaryOverride? activeOverride,
+        ActiveContext active,
         CancellationToken ct)
     {
-        // Ghi đè app chỉ có hiệu lực khi còn hạn (GetActiveOverrideAsync đã
+        // Ghi đè app chỉ có hiệu lực khi còn hạn (GetActiveOverrideForChildAsync đã
         // lọc hết hạn, kiểm tra lại ở đây cho chắc).
         TemporaryOverride? appOverride = activeOverride is not null
             && activeOverride.ExpiresAt > now
@@ -2146,7 +2599,10 @@ public sealed class AgentWorker : BackgroundService
         DateTime local = now.LocalDateTime;
         (bool focusActive, _) = EvaluateFocusState(parsed, local);
 
-        IReadOnlyDictionary<string, TimeSpan> usageByApp = await _outbox.GetUsageByAppTodayAsync(ct);
+        // Sprint 5: hạn mức app tính trên giờ dùng của con đang active
+        // (mẫu gắn với SID của con; mẫu không rõ phiên chỉ tính cho con
+        // mặc định) — giờ của con kia không làm con này hết hạn mức.
+        IReadOnlyDictionary<string, TimeSpan> usageByApp = await _outbox.GetUsageByAppTodayForChildAsync(active.Scope, ct);
         Dictionary<string, TimeSpan> normalizedUsage = NormalizeUsageByApp(usageByApp);
 
         // App đang chịu thi hành chặn trong lần này (không cần foreground):
@@ -2194,6 +2650,16 @@ public sealed class AgentWorker : BackgroundService
 
         foreach (ForegroundReport report in reports)
         {
+            // Sprint 5: chỉ thi hành cho báo cáo của phiên console đang
+            // active — báo cáo của phiên nền (con kia đang chạy nền) không
+            // giết app, không cảnh báo. Đường thi hành ngay đã lọc trước
+            // khi lấy cổng; vòng tick lọc lại ở đây vì báo cáo có thể tới
+            // từ phiên đã rời console giữa chừng.
+            if (active.ConsoleSessionId.HasValue && report.Payload.SessionId != active.ConsoleSessionId.Value)
+            {
+                continue;
+            }
+
             await EnforceAppRulesForReportAsync(
                 report.Payload, parsed, normalizedUsage, local, todayKey, appOverride, overrideApps, appBlocks, ct);
         }
@@ -2373,7 +2839,10 @@ public sealed class AgentWorker : BackgroundService
         if (warnWindowMinutes is not null && warnWindowExe is not null && warnWindowDisplay is not null
             && MarkAppWarned(warnWindowExe, todayKey, "window"))
         {
-            int appWindowWarned = await _ipc.SendToTrayAsync(
+            // Sprint 5: cảnh báo chỉ gửi tới Tray của phiên đã báo cáo
+            // (phiên console đang active) — phiên nền không nhận.
+            int appWindowWarned = await _ipc.SendToSessionAsync(
+                foreground.SessionId,
                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(
                     warnWindowMinutes.Value,
                     warnWindowDisplay + " sắp hết khung giờ được dùng, còn " + warnWindowMinutes.Value + " phút.")),
@@ -2391,7 +2860,8 @@ public sealed class AgentWorker : BackgroundService
         if (warnLimitMinutes is not null && warnLimitExe is not null && warnLimitDisplay is not null
             && MarkAppWarned(warnLimitExe, todayKey, "limit"))
         {
-            int appLimitWarned = await _ipc.SendToTrayAsync(
+            int appLimitWarned = await _ipc.SendToSessionAsync(
+                foreground.SessionId,
                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(
                     warnLimitMinutes.Value,
                     warnLimitDisplay + " sắp hết thời gian cho phép, còn " + warnLimitMinutes.Value + " phút.")),
@@ -2563,7 +3033,10 @@ public sealed class AgentWorker : BackgroundService
         if (killed > 0)
         {
             _log.Info("Đã đóng " + normalizedExe + " vì " + clause + ".");
-            await _ipc.SendToTrayAsync(
+            // Sprint 5: thông báo đóng app chỉ gửi tới Tray của phiên đã
+            // báo cáo — phiên nền không nhận.
+            await _ipc.SendToSessionAsync(
+                sessionId,
                 IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(0, "Đã đóng " + displayName + " vì " + clause + ".")),
                 ct);
 
@@ -2650,9 +3123,14 @@ public sealed class AgentWorker : BackgroundService
     /// để làm), false khi payload sai/không rõ loại hoặc lệnh chưa triển khai
     /// — nơi gọi ack kết quả về server theo giá trị này.
     /// </summary>
-    private async Task<bool> ExecuteCommandAsync(Command command, CancellationToken ct)
+    private async Task<bool> ExecuteCommandAsync(Command command, ActiveContext active, CancellationToken ct)
     {
-        _log.Info("Nhận command: " + command.Type + " (id " + command.Id + ").");
+        // Sprint 5: lệnh thuộc về con nào — child_id của lệnh, rơi về con
+        // đang active, rồi con mặc định. Vòng poll đã hoãn lệnh của con
+        // chưa active nên tới đây targetChild luôn là con đang ngồi máy
+        // (hoặc con mặc định khi chưa biết phiên nào).
+        Guid? targetChild = command.ChildId ?? active.ChildId ?? active.DefaultChildId;
+        _log.Info("Nhận command: " + command.Type + " (id " + command.Id + ", con " + (targetChild?.ToString("D") ?? "(chưa rõ)") + ").");
         switch (command.Type)
         {
             case CommandTypes.LockNow:
@@ -2661,15 +3139,16 @@ public sealed class AgentWorker : BackgroundService
                 // cờ, kể cả trước chốt chặn ghi đè bên dưới. Bỏ qua thì vẫn
                 // trả true để ack done và rời khỏi hàng pending (xem
                 // IsStaleForcedLockCommandAsync).
-                if (await IsStaleForcedLockCommandAsync(command, ct))
+                if (await IsStaleForcedLockCommandAsync(command, targetChild, active.DefaultChildId, ct))
                 {
                     return true;
                 }
 
                 // Lưu bền vững: khóa cưỡng chế sống sót qua khởi động lại
-                // Service, chỉ hết khi có lệnh unlock.
-                await _outbox.SetStateAsync(StateKeys.ForcedLock, "1", ct);
-                await _outbox.RaiseForcedLockCommandFloorAsync(command.CreatedAt, ct);
+                // Service, chỉ hết khi có lệnh unlock. Sprint 5: cờ khóa
+                // theo con (khóa legacy không gắn con thuộc về con mặc định).
+                await _outbox.SetForcedLockAsync(targetChild, active.DefaultChildId, true, ct);
+                await _outbox.RaiseForcedLockCommandFloorAsync(targetChild, command.CreatedAt, ct);
 
                 // HÀNH ĐỘNG SAU THẮNG HÀNH ĐỘNG TRƯỚC (sửa 17/11/2026 theo
                 // yêu cầu test máy thật): đang "mở khóa ngay" mà phụ huynh
@@ -2678,7 +3157,10 @@ public sealed class AgentWorker : BackgroundService
                 // bị nuốt. Lệnh khóa mới nhất hủy ghi đè MỞ KHÓA đang hiệu
                 // lực (chỉ ghi đè mở khóa — ghi đè cộng giờ/chặn app/
                 // domain không xung đột với lệnh khóa nên giữ nguyên).
-                TemporaryOverride? conflictingOverride = await _outbox.GetActiveOverrideAsync(ct);
+                // Sprint 5: chỉ xét ghi đè của ĐÚNG con bị khóa — ghi đè
+                // mở khóa của con khác (hàng single-override) không bị
+                // hủy, để con đó quay lại vẫn còn mở khóa của mình.
+                TemporaryOverride? conflictingOverride = await _outbox.GetActiveOverrideForChildAsync(targetChild, active.DefaultChildId, ct);
                 if (conflictingOverride is not null && conflictingOverride.ExpiresAt > DateTimeOffset.UtcNow
                     && conflictingOverride.Action == OverrideActions.Unlock)
                 {
@@ -2703,11 +3185,12 @@ public sealed class AgentWorker : BackgroundService
                     }
                     else
                     {
-                        await _outbox.ClearOverrideAsync(ct);
+                        await _outbox.ClearOverrideForChildAsync(targetChild, active.DefaultChildId, ct);
                         // Nâng mốc sàn lên giờ của lệnh khóa để lệnh mở
                         // khóa cũ gửi lại sau không hồi sinh ghi đè vừa bị
                         // hủy (hàng đã xóa nên mốc trong hàng cũng mất).
-                        await _outbox.RaiseOverrideCommandFloorAsync(command.CreatedAt, ct);
+                        // Sprint 5: mốc sàn theo con bị khóa.
+                        await _outbox.RaiseOverrideCommandFloorAsync(targetChild, command.CreatedAt, ct);
                         _log.Info("Lệnh khóa mới hủy ghi đè mở khóa đang hiệu lực (hành động sau thắng hành động trước).");
                     }
                 }
@@ -2728,8 +3211,8 @@ public sealed class AgentWorker : BackgroundService
                     _pendingLockAt = DateTimeOffset.UtcNow.AddMinutes(delayMinutes);
                     _lastPendingWarnMinutes = 0;
                     _log.Info("Khóa có độ trễ: sẽ khóa sau " + delayMinutes + " phút. Gửi cảnh báo trước.");
-                    int warned = await _ipc.SendToTrayAsync(
-                        IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(delayMinutes, "Phụ huynh sẽ khóa máy. Hãy lưu bài làm của bạn.")), ct);
+                    int warned = await SendToTargetSessionAsync(
+                        IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(delayMinutes, "Phụ huynh sẽ khóa máy. Hãy lưu bài làm của bạn.")), active, ct);
                     if (warned > 0)
                     {
                         // Chỉ ghi nhận đã cảnh báo khi thật sự giao được:
@@ -2752,8 +3235,8 @@ public sealed class AgentWorker : BackgroundService
                 // giờ theo rule (con cần thời gian lưu bài); đường khóa có
                 // độ trễ đã cho thời gian đó qua cửa sổ cảnh báo nên khi
                 // hết trễ cũng khóa Immediate ở vòng kiểm tra rules.
-                int lockSent = await _ipc.SendToTrayAsync(
-                    IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy.", Immediate: true)), ct);
+                int lockSent = await SendToTargetSessionAsync(
+                    IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy.", Immediate: true)), active, ct);
                 _lockSent = lockSent > 0;
                 return true;
 
@@ -2762,17 +3245,17 @@ public sealed class AgentWorker : BackgroundService
                 // lệnh khóa mới hơn đã đặt. Bỏ qua thì vẫn trả true để ack
                 // done và rời khỏi hàng pending (xem
                 // IsStaleForcedLockCommandAsync).
-                if (await IsStaleForcedLockCommandAsync(command, ct))
+                if (await IsStaleForcedLockCommandAsync(command, targetChild, active.DefaultChildId, ct))
                 {
                     return true;
                 }
 
-                await _outbox.DeleteStateAsync(StateKeys.ForcedLock, ct);
-                await _outbox.RaiseForcedLockCommandFloorAsync(command.CreatedAt, ct);
+                await _outbox.SetForcedLockAsync(targetChild, active.DefaultChildId, false, ct);
+                await _outbox.RaiseForcedLockCommandFloorAsync(targetChild, command.CreatedAt, ct);
                 _pendingLockAt = null;
                 // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
                 // gửi rớt thì tick sau gửi lại từ quyết định Allowed.
-                int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                int unlockSent = await SendToTargetSessionAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), active, ct);
                 if (unlockSent > 0)
                 {
                     _lockSent = false;
@@ -2781,20 +3264,19 @@ public sealed class AgentWorker : BackgroundService
                 return true;
 
             case CommandTypes.RefreshRules:
-                IReadOnlyList<Rule>? rules = await _api.FetchRulesAsync(ct);
-                if (rules is null)
+                // Sprint 5: làm mới rules của con đang active (fallback
+                // RPC cũ chỉ cho con mặc định — xem RefreshRulesForChildAsync).
+                if (!await RefreshRulesForChildAsync(active.ChildId, active.DefaultChildId, ct))
                 {
                     _log.Warning("Làm mới rules thất bại (mất mạng hoặc chưa pairing). Giữ cache cũ.");
                     return false;
                 }
 
-                await _outbox.SaveRulesAsync(rules, ct);
-                _log.Info("Đã làm mới cache rules: " + rules.Count + " rules.");
-                await _publisher.PublishAsync(ct);
+                _log.Info("Đã làm mới cache rules theo lệnh phụ huynh.");
                 return true;
 
             case CommandTypes.TemporaryOverride:
-                return await ExecuteTemporaryOverrideAsync(command, ct);
+                return await ExecuteTemporaryOverrideAsync(command, active, ct);
 
             case CommandTypes.Update:
                 // TODO Sprint 2+: cập nhật Agent có kiểm tra hash + HTTPS (docs/03).
@@ -2818,15 +3300,17 @@ public sealed class AgentWorker : BackgroundService
     /// thật — cột <c>created_at</c> NOT NULL) thì không kết luận là cũ, áp
     /// như trước. Cũ hơn thì ghi log cảnh báo rõ ràng — không bỏ qua im lặng.
     /// </summary>
-    private async Task<bool> IsStaleOverrideCommandAsync(Command command, string action, CancellationToken ct)
+    private async Task<bool> IsStaleOverrideCommandAsync(Command command, string action, Guid? targetChild, Guid? defaultChildId, CancellationToken ct)
     {
         if (command.CreatedAt == default)
         {
             return false;
         }
 
-        TemporaryOverride? current = await _outbox.GetActiveOverrideAsync(ct);
-        DateTimeOffset? watermark = await _outbox.GetOverrideCommandFloorAsync(ct);
+        // Sprint 5: so mốc với ghi đè + watermark của ĐÚNG con bị lệnh
+        // nhắm tới (ghi đè của con khác không làm lệnh này cũ).
+        TemporaryOverride? current = await _outbox.GetActiveOverrideForChildAsync(targetChild, defaultChildId, ct);
+        DateTimeOffset? watermark = await _outbox.GetOverrideCommandFloorAsync(targetChild, defaultChildId, ct);
         DateTimeOffset? floor = OverrideCommandOrder.Floor(current?.CommandCreatedAt, watermark);
         if (!OverrideCommandOrder.IsStale(command.CreatedAt, floor))
         {
@@ -2855,14 +3339,16 @@ public sealed class AgentWorker : BackgroundService
     /// (không xảy ra qua RPC thật) thì không kết luận là cũ, áp như trước.
     /// Cũ hơn thì ghi log cảnh báo rõ ràng — không bỏ qua im lặng.
     /// </summary>
-    private async Task<bool> IsStaleForcedLockCommandAsync(Command command, CancellationToken ct)
+    private async Task<bool> IsStaleForcedLockCommandAsync(Command command, Guid? targetChild, Guid? defaultChildId, CancellationToken ct)
     {
         if (command.CreatedAt == default)
         {
             return false;
         }
 
-        DateTimeOffset? floor = await _outbox.GetForcedLockCommandFloorAsync(ct);
+        // Sprint 5: watermark khóa cưỡng chế tách theo con — lệnh khóa/mở
+        // cũ của con A không bị chặn bởi lệnh mới hơn của con B (và ngược lại).
+        DateTimeOffset? floor = await _outbox.GetForcedLockCommandFloorAsync(targetChild, defaultChildId, ct);
         if (!OverrideCommandOrder.IsStale(command.CreatedAt, floor))
         {
             return false;
@@ -2878,8 +3364,9 @@ public sealed class AgentWorker : BackgroundService
     /// Thi hành lệnh ghi đè tạm thời (payload: action, minutes, expires_at;
     /// ghi đè domain thêm domains, ghi đè app thêm apps). Ghi đè được lưu
     /// xuống SQLite để sống sót qua khởi động lại Service; lệnh mới nhất
-    /// thay thế lệnh trước đó (chỉ 1 hàng active_override — ghi đè app mới
-    /// sẽ thay ghi đè giờ giấc/domain đang có và ngược lại).
+    /// thay thế lệnh trước đó CỦA CÙNG CON (một hàng active_override theo
+    /// con — child_key; ghi đè app mới của con này sẽ thay ghi đè giờ
+    /// giấc/domain đang có của cùng con đó, không chạm ghi đè của con khác).
     /// Payload thiếu/sai thì bỏ qua và trả về false — không đoán ý phụ huynh.
     /// Lệnh cũ hơn trạng thái đang hiệu lực (ack rớt nên poll trả lại sau
     /// khi lệnh mới hơn đã áp) thì bị bỏ qua nhưng vẫn trả về true để được
@@ -2891,31 +3378,43 @@ public sealed class AgentWorker : BackgroundService
     /// Ghi đè app (block_app/allow_app) CHỈ ảnh hưởng thi hành theo app
     /// trong vòng kiểm tra rules, cũng không mở/khóa máy và không gửi IPC.
     /// </summary>
-    private async Task<bool> ExecuteTemporaryOverrideAsync(Command command, CancellationToken ct)
+    private async Task<bool> ExecuteTemporaryOverrideAsync(Command command, ActiveContext active, CancellationToken ct)
     {
+        // Sprint 5: ghi đè thuộc về con nào — child_id của lệnh, rơi về con
+        // đang active, rồi con mặc định (cùng quy tắc như ExecuteCommandAsync).
+        // Store giữ một hàng active_override theo con (child_key) nên ghi đè
+        // mới chỉ thay thế ghi đè cũ của cùng con — ghi đè của con khác
+        // không bị chạm (sửa MAJOR-1).
+        Guid? targetChild = command.ChildId ?? active.ChildId ?? active.DefaultChildId;
         JsonElement payload = command.Payload;
         string? action = TryGetPayloadString(payload, "action");
 
         if (action == OverrideActions.Cancel)
         {
             // Lệnh hủy cũ không được xóa ghi đè mới hơn đã áp sau nó.
-            if (await IsStaleOverrideCommandAsync(command, OverrideActions.Cancel, ct))
+            if (await IsStaleOverrideCommandAsync(command, OverrideActions.Cancel, targetChild, active.DefaultChildId, ct))
             {
                 return true;
             }
 
-            await _outbox.ClearOverrideAsync(ct);
+            // Chỉ xóa khi hàng ghi đè hiện tại thuộc về ĐÚNG con bị hủy —
+            // hủy ghi đè của con A không được xóa ghi đè của con B.
+            if (await _outbox.GetActiveOverrideForChildAsync(targetChild, active.DefaultChildId, ct) is not null)
+            {
+                await _outbox.ClearOverrideForChildAsync(targetChild, active.DefaultChildId, ct);
+            }
+
             // Nâng mốc sàn: hàng đã xóa nên mốc trong hàng cũng mất — không
             // nâng thì lệnh ghi đè cũ gửi lại sau sẽ hồi sinh trạng thái
             // vừa bị hủy.
-            await _outbox.RaiseOverrideCommandFloorAsync(command.CreatedAt, ct);
+            await _outbox.RaiseOverrideCommandFloorAsync(targetChild, command.CreatedAt, ct);
             // KHÔNG xóa _lockSent ở đây (review batch #5): nếu màn hình khóa
             // đang hiện mà cờ bị xóa trước, tick sau quyết định Allowed nhưng
             // nhánh Allowed thấy cờ đã false nên không gửi Unlock và màn hình
             // khóa ở lại tới khi đếm ngược khóa phiên. Để tick sau tự gửi
             // Unlock qua nhánh Allowed rồi mới xóa cờ.
             _log.Info("Đã hủy ghi đè tạm thời theo lệnh phụ huynh.");
-            await _publisher.PublishAsync(ct);
+            await _publisher.PublishAsync(ct, targetChild, active.DefaultChildId);
             return true;
         }
 
@@ -2975,13 +3474,13 @@ public sealed class AgentWorker : BackgroundService
         // Lệnh cũ hơn trạng thái đang hiệu lực thì bỏ qua — kiểm tra SAU
         // khi payload đã hợp lệ và còn hạn, để lệnh sai payload vẫn ack
         // failed như trước (không đổi ngữ nghĩa lỗi).
-        if (await IsStaleOverrideCommandAsync(command, action!, ct))
+        if (await IsStaleOverrideCommandAsync(command, action!, targetChild, active.DefaultChildId, ct))
         {
             return true;
         }
 
-        await _outbox.SaveOverrideAsync(new TemporaryOverride(action!, minutes, expiresAt, domains, apps, command.CreatedAt), ct);
-        await _outbox.RaiseOverrideCommandFloorAsync(command.CreatedAt, ct);
+        await _outbox.SaveOverrideAsync(new TemporaryOverride(action!, minutes, expiresAt, domains, apps, command.CreatedAt, targetChild), active.DefaultChildId, ct);
+        await _outbox.RaiseOverrideCommandFloorAsync(targetChild, command.CreatedAt, ct);
         if (isDomainAction)
         {
             _log.Info("Đã lưu ghi đè domain: " + action + " " + domains!.Count + " domain, " + minutes + " phút, hết hạn " + expiresAt.ToString("o") + ".");
@@ -2997,7 +3496,9 @@ public sealed class AgentWorker : BackgroundService
 
         // Xuất bản lại file domain ngay: ghi đè domain có tác dụng trong vòng
         // 1 phút (chu kỳ đọc của extension), không chờ đồng bộ rules.
-        await _publisher.PublishAsync(ct);
+        // Sprint 5: xuất bản theo con bị lệnh nhắm tới (= con đang active,
+        // vì vòng poll đã hoãn lệnh của con khác).
+        await _publisher.PublishAsync(ct, targetChild, active.DefaultChildId);
 
         // Tác dụng ngay với ghi đè giờ giấc, không chờ tới lần kiểm tra rules
         // tiếp theo (15 giây). Ghi đè domain/app không chạm tới khóa/mở máy:
@@ -3015,8 +3516,8 @@ public sealed class AgentWorker : BackgroundService
             // Khóa tạm thời do phụ huynh bấm: khóa ngay, không đếm ngược
             // (giống lock_now độ trễ 0 — đếm ngược chỉ dành cho khóa khi
             // hết thời gian theo quy tắc).
-            int lockSent = await _ipc.SendToTrayAsync(
-                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy tạm thời.", Immediate: true)), ct);
+            int lockSent = await SendToTargetSessionAsync(
+                IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload("Phụ huynh đã khóa máy tạm thời.", Immediate: true)), active, ct);
             _lockSent = lockSent > 0;
         }
         else if (!isDomainAction && action == OverrideActions.Unlock)
@@ -3035,12 +3536,22 @@ public sealed class AgentWorker : BackgroundService
             try
             {
                 IReadOnlyList<Rule> currentRules = await _outbox.GetCachedRulesAsync(ct);
-                TimeSpan usedToday = await _outbox.GetUsageTodayAsync(ct);
-                TemporaryOverride? currentOverride = await _outbox.GetActiveOverrideAsync(ct);
-                bool forcedLock = await _outbox.GetStateAsync(StateKeys.ForcedLock, ct) is not null;
+                // Sprint 5: đánh giá trên giờ dùng + ghi đè + cờ khóa của
+                // ĐÚNG con bị lệnh nhắm tới (phạm vi mẫu theo SID của con).
+                // Lệnh chỉ áp khi con đó đang active (vòng poll đã hoãn lệnh
+                // của con khác) nên dùng luôn Scope của context — gồm SID
+                // phiên console (sửa MAJOR-2); lệnh nhắm con khác (không xảy
+                // ra qua vòng poll) thì tính phạm vi riêng, không kèm SID
+                // phiên.
+                UsageScope targetScope = targetChild == active.ChildId
+                    ? active.Scope
+                    : ActiveChildResolver.ScopeForChild(targetChild, active.DefaultChildId, active.Links);
+                TimeSpan usedToday = await _outbox.GetUsageTodayForChildAsync(targetScope, ct);
+                TemporaryOverride? currentOverride = await _outbox.GetActiveOverrideForChildAsync(targetChild, active.DefaultChildId, ct);
+                bool forcedLock = await _outbox.GetForcedLockAsync(targetChild, active.DefaultChildId, ct);
                 (RuleDecision currentDecision, _) = await EvaluateLockDecisionAsync(
                     currentRules, usedToday, currentOverride, forcedLock,
-                    GetParsedAppRules(currentRules), DateTimeOffset.Now, ct);
+                    GetParsedAppRules(currentRules), DateTimeOffset.Now, targetScope, ct);
                 currentKind = currentDecision.Kind;
                 if (currentKind != RuleDecisionKind.Allowed)
                 {
@@ -3059,7 +3570,7 @@ public sealed class AgentWorker : BackgroundService
             {
                 // Chỉ xóa cờ khi gửi thành công tới ≥1 Tray (review batch #5):
                 // gửi rớt thì tick sau gửi lại từ ghi đè đang hiệu lực.
-                int unlockSent = await _ipc.SendToTrayAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
+                int unlockSent = await SendToTargetSessionAsync(IpcMessage.Create(IpcMessageTypes.Unlock, new { }), active, ct);
                 if (unlockSent > 0)
                 {
                     _lockSent = false;

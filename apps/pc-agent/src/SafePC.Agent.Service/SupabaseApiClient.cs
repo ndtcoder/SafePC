@@ -220,10 +220,71 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Tải rules đang bật của MỘT con trên máy này (Sprint 5, RPC migration
+    /// 24 <c>safepc_fetch_device_child_rules</c>). <paramref name="childId"/>
+    /// null = con mặc định của máy — cùng kết quả với
+    /// <see cref="FetchRulesAsync"/>. Trả về null khi chưa sẵn sàng, lỗi
+    /// mạng, HOẶC RPC chưa có trên server (migration 24 chưa áp — PostgREST
+    /// trả 404); nơi gọi phân biệt bằng fallback: con mặc định thì gọi lại
+    /// RPC cũ, con khác thì giữ cache cũ (RPC cũ trả luật SAI con nên không
+    /// được fallback). Con không gắn với máy này thì RPC trả rỗng (không
+    /// phải null) — fail-closed phía server.
+    /// </summary>
+    public async Task<IReadOnlyList<Rule>?> FetchRulesForChildAsync(Guid? childId, CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Fetch rules theo con bỏ qua: " + reason + ".");
+            return null;
+        }
+
+        List<Rule>? rules = await PostRpcAsync<List<Rule>>(
+            "safepc_fetch_device_child_rules",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_child_id = childId,
+            },
+            ct);
+        return rules;
+    }
+
+    /// <summary>
+    /// Tải ánh xạ (hồ sơ con ↔ tài khoản Windows) của máy này (Sprint 5, RPC
+    /// migration 24 <c>safepc_fetch_device_child_accounts</c>). Trả về null
+    /// khi chưa sẵn sàng, lỗi mạng, HOẶC RPC chưa có trên server (migration
+    /// 24 chưa áp) — nơi gọi giữ cache ánh xạ cũ (máy đơn-con vẫn chạy bằng
+    /// fallback con mặc định). Danh sách rỗng (không null) nghĩa là máy chưa
+    /// gắn tài khoản nào.
+    /// </summary>
+    public async Task<IReadOnlyList<ChildAccountLink>?> FetchChildAccountsAsync(CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Fetch child accounts bỏ qua: " + reason + ".");
+            return null;
+        }
+
+        List<ChildAccountLink>? links = await PostRpcAsync<List<ChildAccountLink>>(
+            "safepc_fetch_device_child_accounts",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+            },
+            ct);
+        return links;
+    }
+
+    /// <summary>
     /// Gửi một batch usage lên bảng app_usage. family_id/child_id/device_id
     /// do server suy ra từ device đã xác thực — các trường đó trong
-    /// <see cref="UsageRecord"/> không được gửi đi. Trả về true chỉ khi
-    /// server xác nhận đã nhận (để nơi gọi tiến watermark).
+    /// <see cref="UsageRecord"/> không được gửi đi. Riêng
+    /// <c>windows_sid</c> (Sprint 5) ĐƯỢC gửi theo từng sample để server suy
+    /// ra đúng hồ sơ con qua bảng device_child_accounts (migration 24);
+    /// sample thiếu SID thì server ghi theo con mặc định của máy. Trả về
+    /// true chỉ khi server xác nhận đã nhận (để nơi gọi tiến watermark).
     /// </summary>
     public async Task<bool> SendUsageBatchAsync(IReadOnlyList<UsageRecord> records, CancellationToken ct)
     {
@@ -249,6 +310,7 @@ public sealed class SupabaseApiClient
                 exe_path_hash = record.ExePathHash,
                 started_at = record.StartedAt,
                 duration_sec = record.DurationSec,
+                windows_sid = record.WindowsSid,
             });
         }
 
@@ -266,11 +328,12 @@ public sealed class SupabaseApiClient
 
     /// <summary>
     /// Gửi một batch web visits lên bảng web_visits (migration 4, sửa ở
-    /// migration 10 thêm cờ blocked, migration 19 thêm đường dẫn). Hình
-    /// dạng payload: mỗi sample là {domain, path, visited_at,
-    /// duration_sec, blocked}, khớp cột recordset của RPC
-    /// <c>safepc_push_web_visits</c> và cột bảng web_visits. Sample thiếu
-    /// path (client cũ) thì RPC ghi NULL — client cũ vẫn chạy. family_id/
+    /// migration 10 thêm cờ blocked, migration 19 thêm đường dẫn, migration
+    /// 24 thêm SID). Hình dạng payload: mỗi sample là {domain, path,
+    /// visited_at, duration_sec, blocked, windows_sid}, khớp cột recordset
+    /// của RPC <c>safepc_push_web_visits</c> và cột bảng web_visits. Sample
+    /// thiếu path (client cũ) thì RPC ghi NULL — client cũ vẫn chạy; sample
+    /// thiếu windows_sid thì RPC ghi theo con mặc định của máy. family_id/
     /// child_id/device_id do server suy ra từ device đã xác thực. Trả về
     /// true chỉ khi server xác nhận đã nhận (để nơi gọi cắt file
     /// web_usage.jsonl); false thì giữ file lại gửi sau.
@@ -300,6 +363,7 @@ public sealed class SupabaseApiClient
                 visited_at = record.VisitedAt,
                 duration_sec = record.DurationSec,
                 blocked = record.Blocked,
+                windows_sid = record.WindowsSid,
             });
         }
 
@@ -410,13 +474,16 @@ public sealed class SupabaseApiClient
     /// <summary>
     /// Đẩy một yêu cầu xin mở domain của con lên bảng <c>requests</c>
     /// (migration 18, RPC <c>safepc_push_unblock_domain_request</c>). Chỉ
-    /// tên miền, không URL/path/query. Trả về true khi server trả về id yêu
-    /// cầu — kể cả khi RPC trả về yêu cầu pending đã có (chống trùng phía
-    /// server), vì yêu cầu đã nằm trên server để phụ huynh duyệt. Lỗi
+    /// tên miền, không URL/path/query. <paramref name="windowsSid"/> (Sprint
+    /// 5, migration 24) là SID của tài khoản Windows đã bấm nút xin mở —
+    /// server suy ra hồ sơ con qua bảng device_child_accounts; null thì
+    /// server ghi theo con mặc định của máy. Trả về true khi server trả về
+    /// id yêu cầu — kể cả khi RPC trả về yêu cầu pending đã có (chống trùng
+    /// phía server), vì yêu cầu đã nằm trên server để phụ huynh duyệt. Lỗi
     /// mạng/server đều trả false để AgentWorker giữ dòng trong file và thử
     /// lại chu kỳ sau.
     /// </summary>
-    public async Task<bool> PushUnblockDomainRequestAsync(string domain, CancellationToken ct)
+    public async Task<bool> PushUnblockDomainRequestAsync(string domain, string? windowsSid, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(domain);
 
@@ -433,10 +500,15 @@ public sealed class SupabaseApiClient
                 p_device_id = creds.DeviceId,
                 p_token_hash = Hashing.HashSecret(creds.Token),
                 p_domain = domain,
+                p_windows_sid = windowsSid,
             },
             ct);
         return result.HasValue;
     }
+
+    /// <summary>Đẩy yêu cầu xin mở domain khi không biết phiên nào đã gửi (đường cũ): server ghi theo con mặc định của máy.</summary>
+    public Task<bool> PushUnblockDomainRequestAsync(string domain, CancellationToken ct)
+        => PushUnblockDomainRequestAsync(domain, null, ct);
 
     /// <summary>
     /// Gỡ mã PIN thoát khỏi server sau khi mã đã dùng đúng một lần (migration

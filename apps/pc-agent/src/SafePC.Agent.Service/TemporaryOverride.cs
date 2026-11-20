@@ -64,8 +64,14 @@ public static class OverrideActions
 /// ghi đè này (giờ server Postgres, cột <c>command_created_at</c>): mốc để
 /// bỏ qua lệnh ghi đè cũ gửi lại sau (ack rớt) khi đã có lệnh mới hơn.
 /// Null với hàng do bản Agent cũ ghi (chưa có cột) — coi như không có mốc.
+/// <c>ChildId</c> (Sprint 5, cột <c>child_id</c>): hồ sơ con mà ghi đè này
+/// thuộc về — null là hàng cũ, thuộc về con mặc định của máy. Mỗi con có
+/// MỘT ghi đè hiệu lực riêng (một hàng theo con trong bảng
+/// <c>active_override</c>): ghi đè của con đang active mới được tính; ghi đè
+/// của con khác không được tính cho con đang ngồi máy, và ghi đè mới của con
+/// này không xóa ghi đè của con khác.
 /// </summary>
-public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null, IReadOnlyList<string>? Apps = null, DateTimeOffset? CommandCreatedAt = null);
+public sealed record TemporaryOverride(string Action, int Minutes, DateTimeOffset ExpiresAt, IReadOnlyList<string>? Domains = null, IReadOnlyList<string>? Apps = null, DateTimeOffset? CommandCreatedAt = null, Guid? ChildId = null);
 
 /// <summary>
 /// Thứ tự lệnh ghi đè theo giờ server — logic thuần, không chạm DB, để

@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
@@ -73,9 +74,11 @@ public sealed class IpcPipeServer : BackgroundService
     /// message hello (trống khi Tray chưa kịp giới thiệu). Lệnh khóa và
     /// cảnh báo chỉ giao tới writer KHÔNG phải admin; writer chưa rõ (chưa
     /// có hello) vẫn nhận lệnh — miễn trừ chỉ áp dụng khi đã biết chắc
-    /// phiên đó là admin (fail-closed cho khóa máy). Mọi trường phiên chỉ
-    /// được ghi dưới <see cref="_writersLock"/> (nhánh hello) và đọc khi
-    /// chụp danh sách dưới cùng khóa đó (gửi message).
+    /// phiên đó là admin (fail-closed cho khóa máy). <c>Sid</c> là SID của
+    /// tài khoản Windows của phiên (Sprint 5, Tray gửi trong hello) để
+    /// Service biết phiên này là hồ sơ con nào; null khi Tray cũ chưa gửi.
+    /// Mọi trường phiên chỉ được ghi dưới <see cref="_writersLock"/> (nhánh
+    /// hello) và đọc khi chụp danh sách dưới cùng khóa đó (gửi message).
     /// </summary>
     private sealed class WriterEntry
     {
@@ -84,6 +87,7 @@ public sealed class IpcPipeServer : BackgroundService
         public string? UserName { get; set; }
         public bool IsAdmin { get; set; }
         public bool HasHello { get; set; }
+        public string? Sid { get; set; }
 
         /// <summary>Thời điểm hello gần nhất của phiên này (Sprint 4: watchdog Tray dùng để biết phiên nào đã mất Tray).</summary>
         public DateTimeOffset LastHelloAt { get; set; }
@@ -124,17 +128,19 @@ public sealed class IpcPipeServer : BackgroundService
             {
                 string? userName = null;
                 bool isAdmin = false;
+                string? sid = null;
                 foreach (WriterEntry entry in _clientWriters)
                 {
                     if (entry.SessionId == pair.Key)
                     {
                         userName = entry.UserName;
                         isAdmin = entry.IsAdmin;
+                        sid = entry.Sid;
                         break;
                     }
                 }
 
-                snapshot.Add(new TraySessionSnapshot(pair.Key, userName, isAdmin, pair.Value, connected.Contains(pair.Key)));
+                snapshot.Add(new TraySessionSnapshot(pair.Key, userName, isAdmin, pair.Value, connected.Contains(pair.Key), sid));
             }
 
             return snapshot;
@@ -240,6 +246,53 @@ public sealed class IpcPipeServer : BackgroundService
             return 0;
         }
 
+        return await WriteToTargetsAsync(targets, message, ct);
+    }
+
+    /// <summary>
+    /// Gửi một message CHỈ tới Tray của một phiên (Sprint 5, phương án 2
+    /// "một phiên active"): chỉ phiên console đang hoạt động mới nhận lệnh
+    /// khóa/cảnh báo/mở — phiên nền không bị thi hành luật. Lệnh khóa và
+    /// cảnh báo vẫn MIỄN phiên admin như <see cref="SendToTrayAsync"/> (mục
+    /// tiêu là phiên admin thì trả 0, không gửi gì). Mở khóa và message khác
+    /// tới mọi writer của phiên đó. Trả về số Tray đã ghi thành công (0 khi
+    /// phiên chưa nối, là admin mà message là khóa/cảnh báo, chờ khóa ghi
+    /// quá hạn, hoặc mọi lần ghi đều lỗi). Nơi gọi dùng giá trị này như
+    /// <see cref="SendToTrayAsync"/> để quyết định "đã gửi".
+    /// </summary>
+    public async Task<int> SendToSessionAsync(int sessionId, IpcMessage message, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        bool lockOrWarning = message.Type == IpcMessageTypes.Lock || message.Type == IpcMessageTypes.Warning;
+        System.Collections.Generic.List<WriterEntry> targets;
+        lock (_writersLock)
+        {
+            targets = _clientWriters
+                .Where(e => e.SessionId == sessionId && (!lockOrWarning || !e.IsAdmin))
+                .ToList();
+        }
+
+        _log.Info("IPC: gửi message " + message.Type + " tới phiên #" + sessionId + " (tìm thấy " + targets.Count + " writer"
+            + (lockOrWarning ? " không admin" : "") + ").");
+
+        if (targets.Count == 0)
+        {
+            return 0;
+        }
+
+        return await WriteToTargetsAsync(targets, message, ct);
+    }
+
+    /// <summary>
+    /// Ghi một message xuống đúng danh sách writer đã chọn (dùng chung bởi
+    /// <see cref="SendToTrayAsync"/> và <see cref="SendToSessionAsync"/>):
+    /// chờ khóa ghi tối đa 5 giây, ghi từng dòng + flush tường minh (KHÔNG
+    /// AutoFlush — xem ghi chú ở đầu file), writer lỗi thì gỡ khỏi danh sách.
+    /// Trả về số writer đã ghi thành công.
+    /// </summary>
+    private async Task<int> WriteToTargetsAsync(IReadOnlyList<WriterEntry> targets, IpcMessage message, CancellationToken ct)
+    {
         string line = message.ToLine();
 
         // Chờ khóa ghi có giới hạn: writer của một kết nối chết có thể treo
@@ -337,46 +390,108 @@ public sealed class IpcPipeServer : BackgroundService
     /// chưa đánh giá lần nào thì không gửi gì (vòng kiểm tra rules sẽ gửi
     /// khi có quyết định); đang khóa thì gửi khóa, đang cảnh báo thì gửi
     /// cảnh báo — cả hai đều MIỄN phiên admin như
-    /// <see cref="SendToTrayAsync"/>; đang cho phép thì gửi mở tới mọi
-    /// phiên để đóng màn hình khóa/cảnh báo cũ còn sót. Khóa đồng bộ luôn
-    /// là khóa NGAY (Immediate = true): lệnh khóa đã có hiệu lực từ trước
-    /// khi Tray nối lại, đếm ngược "sẽ khóa sau 60 giây" là sai sự thật —
-    /// test máy thật 17/11/2026 cho thấy Tray nối lại vẫn đếm ngược như
-    /// bản cũ (đợt sửa 17/11/2026).
+    /// <see cref="SendToTrayAsync"/> và CHỈ gửi cho đúng con của quyết định
+    /// đang lưu (Sprint 5 đợt 1, sửa MAJOR-3 — quyết định của con A không
+    /// được gửi cho Tray của con B); đang cho phép thì gửi mở tới mọi phiên
+    /// để đóng màn hình khóa/cảnh báo cũ còn sót. Khóa đồng bộ luôn là khóa
+    /// NGAY (Immediate = true): lệnh khóa đã có hiệu lực từ trước khi Tray
+    /// nối lại, đếm ngược "sẽ khóa sau 60 giây" là sai sự thật — test máy
+    /// thật 17/11/2026 cho thấy Tray nối lại vẫn đếm ngược như bản cũ (đợt
+    /// sửa 17/11/2026). Phiên khác con với quyết định đang lưu thì không gửi
+    /// gì — vòng tick (≤15s) sẽ gửi quyết định đúng của con mới.
     /// </summary>
     private async Task SyncStateToWriterAsync(WriterEntry entry, CancellationToken ct)
     {
-        if (!_queryState.TryGetDecision(out RuleDecision decision, out _))
+        if (!_queryState.TryGetDecisionWithChild(out RuleDecision decision, out _, out Guid? decisionChildId))
         {
             return;
         }
 
+        (ActiveChildStatus writerStatus, Guid? writerChildId) = await ResolveWriterChildAsync(entry, ct);
         bool isAdmin;
         lock (_writersLock)
         {
             isAdmin = entry.IsAdmin;
         }
 
-        switch (decision.Kind)
+        // Sprint 5 đợt 1 (sửa MAJOR-3): quyết định đang lưu thuộc về MỘT
+        // con — chỉ gửi khóa/cảnh báo khi đúng con của phiên vừa hello.
+        // Gửi khóa của con A cho Tray của con B sẽ làm B kẹt ở màn hình khóa
+        // (màn hình khóa chỉ đóng khi nhận Unlock, mà vòng tick sau khi đổi
+        // con không gửi Unlock nếu không có cờ — xem ShouldSendUnlockOnAllowed).
+        ActiveChildResolver.HelloSyncAction action = ActiveChildResolver.DecideHelloSync(decision.Kind, decisionChildId, writerStatus, writerChildId, isAdmin);
+        switch (action)
         {
-            case RuleDecisionKind.Lock when !isAdmin:
+            case ActiveChildResolver.HelloSyncAction.SendLock:
                 _log.Info("IPC: đồng bộ trạng thái cho Tray mới nối: đang khóa, gửi lệnh khóa ngay (không đếm ngược).");
                 await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Lock, new LockPayload(decision.Reason, Immediate: true)), ct);
                 break;
 
-            case RuleDecisionKind.Warn when !isAdmin:
+            case ActiveChildResolver.HelloSyncAction.SendWarn:
                 _log.Info("IPC: đồng bộ trạng thái cho Tray mới nối: đang cảnh báo, gửi cảnh báo.");
                 await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Warning, new WarningPayload(decision.MinutesLeft, decision.Reason)), ct);
                 break;
 
-            case RuleDecisionKind.Allowed:
+            case ActiveChildResolver.HelloSyncAction.SendUnlock:
                 await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.Unlock, new { }), ct);
                 break;
 
             default:
-                // Phiên admin đang khóa/cảnh báo: miễn, không gửi gì.
+                _log.Info("IPC: không đồng bộ quyết định khóa/cảnh báo cho Tray mới nối (phiên không phải con của quyết định đang lưu — chờ vòng tick).");
                 break;
         }
+    }
+
+    /// <summary>
+    /// Phân giải hồ sơ con của một Tray vừa hello (Sprint 5 đợt 1, sửa
+    /// MAJOR-3): cùng luật <see cref="ActiveChildResolver.Resolve"/> như
+    /// vòng tick — SID trong hello + ánh xạ đã đồng bộ (device_state) + con
+    /// mặc định của máy. Lỗi đọc trạng thái thì trả về NoSessionInfo kèm con
+    /// mặc định (nếu biết) để không chặn khóa vì thiếu thông tin. Phiên chưa
+    /// hello (không có SessionId) thì NoSessionInfo.
+    /// </summary>
+    private async Task<(ActiveChildStatus Status, Guid? ChildId)> ResolveWriterChildAsync(WriterEntry entry, CancellationToken ct)
+    {
+        int? sessionId;
+        string? sid;
+        string? userName;
+        bool isAdmin;
+        lock (_writersLock)
+        {
+            sessionId = entry.SessionId;
+            sid = entry.Sid;
+            userName = entry.UserName;
+            isAdmin = entry.IsAdmin;
+        }
+
+        if (sessionId is null)
+        {
+            return (ActiveChildStatus.NoSessionInfo, null);
+        }
+
+        IReadOnlyList<ChildAccountLink> links = Array.Empty<ChildAccountLink>();
+        Guid? defaultChildId = null;
+        try
+        {
+            string? linksJson = await _outbox.GetStateAsync(StateKeys.ChildAccountsJson, ct);
+            if (!string.IsNullOrWhiteSpace(linksJson))
+            {
+                links = JsonSerializer.Deserialize<List<ChildAccountLink>>(linksJson) ?? (IReadOnlyList<ChildAccountLink>)Array.Empty<ChildAccountLink>();
+            }
+
+            string? storedDefault = await _outbox.GetStateAsync(StateKeys.DefaultChildId, ct);
+            if (!string.IsNullOrWhiteSpace(storedDefault) && Guid.TryParse(storedDefault, out Guid parsed))
+            {
+                defaultChildId = parsed;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warning("Đọc ánh xạ con ↔ tài khoản cho hello-sync lỗi (coi như chưa có ánh xạ): " + ex.Message);
+        }
+
+        var infos = new[] { new ConsoleSessionInfo(sessionId.Value, sid, userName, isAdmin) };
+        return ActiveChildResolver.Resolve(sessionId, infos, links, defaultChildId);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -802,6 +917,7 @@ public sealed class IpcPipeServer : BackgroundService
                         entry.SessionId = hello.SessionId;
                         entry.UserName = hello.UserName;
                         entry.IsAdmin = hello.IsAdmin;
+                        entry.Sid = hello.Sid;
                         entry.HasHello = true;
                         entry.LastHelloAt = DateTimeOffset.UtcNow;
                         // Sprint 4: ghi lại để watchdog biết phiên này từng
@@ -810,6 +926,7 @@ public sealed class IpcPipeServer : BackgroundService
                     }
 
                     _log.Info("IPC: Tray phiên #" + hello.SessionId + " (" + hello.UserName + ") đã giới thiệu, admin=" + hello.IsAdmin
+                        + (hello.Sid is null ? " (chưa gửi SID — Tray cũ)" : " (đã gửi SID)")
                         + " — lệnh khóa/cảnh báo " + (hello.IsAdmin ? "sẽ MIỄN phiên này." : "sẽ giao tới phiên này."));
 
                     // ĐỒNG BỘ TRẠNG THÁI KHI TRAY MỚI NỐI (sửa 17/11/2026
@@ -830,7 +947,17 @@ public sealed class IpcPipeServer : BackgroundService
                 UsageSamplePayload? sample = message.GetPayload<UsageSamplePayload>();
                 if (sample is not null)
                 {
-                    await _outbox.RecordUsageSampleAsync(sample, ct);
+                    // Sprint 5: ĐÓNG DẤU SID từ bản tin hello của writer này
+                    // (quyền quyết định — không tin SID client tự gửi trong
+                    // sample) để mẫu usage ghi đúng con nào dùng app. Đọc
+                    // dưới khóa như IsAdmin ở SyncStateToWriterAsync.
+                    string? sampleSid;
+                    lock (_writersLock)
+                    {
+                        sampleSid = entry.Sid;
+                    }
+
+                    await _outbox.RecordUsageSampleAsync(sample with { Sid = sampleSid }, ct);
                 }
                 break;
 
@@ -851,11 +978,20 @@ public sealed class IpcPipeServer : BackgroundService
                     // non-nullable) — .Trim() trực tiếp sẽ NRE và giết cả
                     // handler/kết nối (review đợt này).
                     string reason = (request.Reason ?? string.Empty).Trim();
+                    // Sprint 5: đóng dấu SID từ hello của writer này (như
+                    // usage sample) để đợt sau biết yêu cầu là của con nào.
+                    string? requestSid;
+                    lock (_writersLock)
+                    {
+                        requestSid = entry.Sid;
+                    }
+
                     await _outbox.EnqueueExtraTimeRequestAsync(
                         request.Minutes,
                         reason.Length == 0 ? "(không có lý do)" : reason[..Math.Min(reason.Length, 500)],
                         request.RequestedAt,
-                        ct);
+                        ct,
+                        requestSid);
                     _log.Info("IPC: nhận yêu cầu xin thêm giờ (" + request.Minutes + " phút), đã xếp vào outbox để đẩy lên server.");
                 }
                 else

@@ -1,7 +1,8 @@
 namespace SafePC.Agent.Service;
 
-/// <summary>Một phiên user từng có Tray nối qua IPC: lần hello gần nhất + Tray có đang nối không.</summary>
-public sealed record TraySessionSnapshot(int SessionId, string? UserName, bool IsAdmin, DateTimeOffset LastHelloAt, bool Connected);
+/// <summary>Một phiên user từng có Tray nối qua IPC: lần hello gần nhất + Tray có đang nối không.
+/// <c>Sid</c> là SID của tài khoản Windows của phiên (Sprint 5, Tray mới gửi trong hello) — null khi Tray cũ chưa gửi; AgentWorker dùng để phân giải phiên này là hồ sơ con nào. Tham số tùy chọn để harness watchdog cũ vẫn biên dịch.</summary>
+public sealed record TraySessionSnapshot(int SessionId, string? UserName, bool IsAdmin, DateTimeOffset LastHelloAt, bool Connected, string? Sid = null);
 
 /// <summary>Việc watchdog yêu cầu vòng lặp gọi thực hiện cho một phiên.</summary>
 public sealed record TrayWatchdogAction(int SessionId, TrayWatchdogActionKind Kind, string Reason);
