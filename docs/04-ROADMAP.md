@@ -61,7 +61,7 @@ Trạng thái: đã chốt hướng đi ngày 20/11/2026, chưa bắt đầu cod
 - [ ] Dashboard gắn tài khoản Windows + lệnh theo con: trang thiết bị liệt kê các con gắn với máy kèm tài khoản Windows; gắn/gỡ bằng cách chọn từ danh sách tài khoản Tray đã "nhìn thấy" (không gõ tay); lệnh khóa/mở/duyệt yêu cầu chọn đúng con trên đúng máy.
 - [ ] Kiểm thử máy thật với 2 tài khoản con + chuyển đổi nhanh (fast user switching); CI không mô phỏng được đa phiên.
 
-Quyết định còn mở: tài khoản Standard chưa gắn với hồ sơ con nào thì xử lý thế nào (mặc định không quản lý nhưng hiện lên Dashboard, hay tùy chọn "tài khoản chưa gắn = con còn lại" chỉ cho gia đình đúng 2 con — xem PRD §2.11). Đồng bộ trạng thái khi gắn thêm con vào máy chung: chưa chốt cơ chế (chèn bản sao kiểu migration 21 lúc tạo ánh xạ, hay Service suy ra lúc phiên của con lên console — xem PRD §2.11).
+Đã chốt 20/11/2026: tài khoản Standard chưa gắn thì không quản lý nhưng hiện cảnh báo lên Dashboard (xem PRD §2.11). Đồng bộ trạng thái khi gắn thêm con vào máy chung: chưa chốt cơ chế (chèn bản sao kiểu migration 21 lúc tạo ánh xạ, hay Service suy ra lúc phiên của con lên console — xem PRD §2.11).
 
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
