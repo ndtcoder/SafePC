@@ -1,0 +1,71 @@
+# AMENDMENTS.md — Các lần đổi spec/quy ước đã chốt của SafePC
+
+Gói bàn giao SafePC — tạo 2026-11-26.
+
+Mỗi mục: **đổi gì / vì sao / ngày / ai quyết**. Mặc định người quyết là anh Tiến (chủ dự án); mục nào do phía kỹ thuật tự đính chính bài học sẽ ghi rõ. Nguồn: `~/MEMORY.md`, `docs/01-PRD.md` (§2.8–2.11), `docs/04-ROADMAP.md` và lịch sử chat.
+
+## A-01. Loại chụp màn hình khỏi kế hoạch
+- **Đổi gì:** Hủy hẳn mục "chụp màn hình theo lịch (opt-in)" ở PRD §4; SafePC không chụp màn hình, không ghi phím, không đọc nội dung chat/file của con — ở mọi đợt, kể cả dạng tự nguyện.
+- **Vì sao:** Giữ ranh giới riêng tư của dự án (dữ liệu trẻ em); anh Tiến phê duyệt cùng gói 3 đề xuất lớn và loại riêng mục này.
+- **Ngày:** 17/11/2026. **Ai quyết:** anh Tiến.
+
+## A-02. Scheme version Agent = `0.1.<số run CI>`
+- **Đổi gì:** Version bản cài là `0.1.<CI run number>` (ví dụ build #111 → v0.1.111), CI tự đóng dấu qua `dotnet publish -p:Version` + ISCC `/DAppVersion`; cấm hardcode chuỗi version trong code.
+- **Vì sao:** Đối chiếu 1-1 giữa bản cài trên máy và run CI sinh ra nó, hết cảnh nhớ/mò version thủ công.
+- **Ngày:** 17/11/2026. **Ai quyết:** anh Tiến (yêu cầu).
+
+## A-03. Ngữ nghĩa unlock: chỉ hoãn khóa máy theo giờ giấc
+- **Đổi gì:** "Mở khóa tạm thời" (temporary override dạng unlock) CHỈ hoãn việc khóa máy theo giờ giấc/giới hạn ngày; chặn app, giờ học tập trung (focus) và nghỉ bắt buộc VẪN thi hành trong suốt thời gian mở khóa.
+- **Vì sao:** Tránh việc mở khóa tạm vô hiệu hóa toàn bộ luật bảo vệ khác; đã chứng minh trên máy thật (v0.1.187, CI #187 xanh, commit 652c693).
+- **Ngày:** 18/11/2026 (anh chốt 10:52). **Ai quyết:** anh Tiến.
+
+## A-04. Lịch sử web: lưu domain + đường dẫn (nới từ "chỉ domain")
+- **Đổi gì:** Lịch sử web lưu tên miền **và đường dẫn**, nhưng BỎ phần truy vấn (query) và fragment; giữ 90 ngày rồi tự xóa cũ hơn. Trước đó quy ước là chỉ lưu tên miền.
+- **Vì sao:** Anh Tiến chủ động nới ranh giới riêng tư một cách có ý thức để phụ huynh kiểm tra được nội dung con truy cập, kèm tìm kiếm + lọc lịch sử web trong Báo cáo tuần.
+- **Ngày:** 18/11/2026 (anh chốt 23:13). **Ai quyết:** anh Tiến.
+
+## A-05. Giữ WhatsApp Web / Telegram Web / LinkedIn trong danh mục "Mạng xã hội"
+- **Đổi gì:** KHÔNG tách nhóm nhắn tin ra khỏi danh mục chặn "Mạng xã hội": WhatsApp Web, Telegram Web và LinkedIn vẫn thuộc danh mục này.
+- **Vì sao:** Anh Tiến trả lời câu hỏi mở của đợt chặn theo danh mục; giữ phân loại đơn giản, không sửa code.
+- **Ngày:** 18/11/2026 (anh trả lời 22:49). **Ai quyết:** anh Tiến.
+
+## A-06. Ép cài extension: chỉ qua Edge Add-ons, chấp nhận đổi ID extension
+- **Đổi gì:** Đường ép cài extension duy nhất là đăng lên cửa hàng Edge Add-ons chính thức (máy không join domain thì Edge/Chrome chỉ ép cài được extension đã lên cửa hàng). Chỉ làm Edge, không làm Chrome Web Store; chấp nhận ID extension MỚI do cửa hàng cấp (NativeHost phải nướng ID mới, storage cục bộ reset, dữ liệu server không mất); giữ bản cài tay (unpacked) để debug; chính sách ép cài chỉ bật sau khi extension ổn định.
+- **Vì sao:** Ràng buộc kỹ thuật của Windows/Edge trên máy không join domain; tài khoản Edge Add-ons đã đăng ký + xác minh 18/11/2026 (Individual, Việt Nam, tên hiển thị "NDT Soft").
+- **Ngày:** 18/11/2026 (anh quyết 14:47). **Ai quyết:** anh Tiến.
+
+## A-07. Domain dự án: ndt.ap.vn thay cho ndtcoder.io.vn
+- **Đổi gì:** Domain dùng cho email/hạ tầng SafePC là `ndt.ap.vn` (đăng ký chiều 18/11/2026, DNS cấu hình từ Resend); bỏ phương án `ndtcoder.io.vn` — hóa đơn của phương án cũ KHÔNG thanh toán.
+- **Vì sao:** Anh Tiến đổi lựa chọn domain khi đăng ký thực tế.
+- **Ngày:** 18/11/2026. **Ai quyết:** anh Tiến.
+- **Diễn biến sau:** domain live 25/11/2026, Resend đã verified cùng ngày; email thật đầu tiên qua Edge Function đã tới hộp thư phụ huynh 25/11/2026 15:50.
+
+## A-08. Tên xưng của AI: TraMuse / em My (thay "em MyMuse")
+- **Đổi gì:** AI tự xưng là **TraMuse** hoặc **em My**; gọi user là **anh Tiến**; luôn trao đổi bằng tiếng Việt.
+- **Vì sao:** Anh Tiến đổi tên cho trợ lý để gọi thân thương hơn.
+- **Ngày:** 18/11/2026. **Ai quyết:** anh Tiến.
+
+## A-09. Artifact CI: retention 14 ngày
+- **Đổi gì:** Bước upload-artifact trong `.github/workflows/ci.yml` đặt `retention-days: 14` (trước đó mặc định GitHub giữ 90 ngày); chủ trương xóa bản cài cũ, chỉ giữ bản cài hiện hành.
+- **Vì sao:** GitHub báo dung lượng Actions đạt 90% hạn mức gói Free (0,46/0,5 GB, email 19/11/2026) — artifact bản cài ~95 MB mỗi run chất đống sẽ chặn các lần tải lên sau. (Con số 0,5 GB là mức trung bình theo thời gian, không phải tổng tức thời; KHÔNG đặt ngân sách $0 cho Actions vì sẽ chặn luôn lần tải bản cài mới.)
+- **Ngày:** 19/11/2026 (anh quyết 08:21; triển khai commit 16f7550, run #287 xanh). **Ai quyết:** anh Tiến.
+
+## A-10. Sprint 5: phương án 2 — một phiên active
+- **Đổi gì:** Quản lý nhiều con trên một máy theo phương án 2: chỉ phiên console đang active mới bị thi hành luật; phiên nền tạm dừng (không thi hành, không tính giờ) cho tới khi quay lại console; lệnh gắn theo từng con, lệnh cho con chưa active thì hoãn tới khi con đó lên console; một file `domain_rules.json` chung mang luật của con đang active; mỗi con vẫn có thể có nhiều máy, quản lý theo hồ sơ từng con. KHÔNG chọn phương án 1 (thi hành đầy đủ theo từng phiên).
+- **Vì sao:** Phương án 1 phải giữ cache luật riêng từng con, xuất domain rules riêng từng tài khoản Windows, và khóa phiên nền không xác định ở tầng Win32 (`LockWorkStation` chỉ khóa console). Phương án 2 tốn khoảng 60–70% công sức phương án 1 (ước lượng) với cái giá chấp nhận được. Chi tiết: PRD §2.11.
+- **Ngày:** 20/11/2026 (anh phê duyệt 23:18). **Ai quyết:** anh Tiến.
+
+## A-11. Tài khoản Standard chưa gắn hồ sơ con: không quản lý + cảnh báo trên Dashboard
+- **Đổi gì:** Tài khoản Windows Standard chưa được gắn với hồ sơ con nào thì KHÔNG bị quản lý, nhưng phải HIỆN CẢNH BÁO trên Dashboard để phụ huynh thấy. Không dùng tùy chọn "tài khoản chưa gắn = con còn lại".
+- **Vì sao:** Anh Tiến chốt trong các lựa chọn xử lý tài khoản chưa gắn của Sprint 5; thà không quản lý còn hơn quản lý nhầm con, nhưng phụ huynh phải nhìn thấy để gắn bổ sung.
+- **Ngày:** 20/11/2026 (anh chốt 23:29). **Ai quyết:** anh Tiến.
+
+## A-12. Đồng bộ trạng thái lúc gắn: phương án (a) — sao chép trạng thái lúc gắn
+- **Đổi gì:** Khi gắn thêm con B vào máy chung, trạng thái thi hành hiện tại của B (khóa cưỡng chế + tối đa 1 ghi đè đang hiệu lực kể cả giờ thưởng) được SAO CHÉP sang máy đó ngay lúc gắn, kiểu migration 21 — triển khai bằng migration 27 (RPC `safepc_sync_enforcement_state_to_device`), Dashboard gọi ngay sau khi gắn, best-effort (chưa áp migration 27 thì gắn vẫn xong, chỉ hiện ghi chú; gắn trước khi áp M27 thì sau khi áp phải gỡ rồi gắn lại mới đồng bộ). KHÔNG chọn phương án (b) Service tự suy ra khi con lên console.
+- **Vì sao:** Nếu không đồng bộ, con B ngồi vào máy chung sẽ không chịu lệnh khóa/ghi đè đang hiệu lực của mình vì máy này chưa từng tiêu thụ lệnh của B qua vòng poll.
+- **Ngày:** 21/11/2026 (anh chọn 12:32). **Ai quyết:** anh Tiến.
+
+## A-13. zalo.me thuộc danh mục "Mạng xã hội"
+- **Đổi gì:** Thêm `zalo.me` vào danh sách hạt giống của danh mục "Mạng xã hội" trong `DomainCategoryLists.cs` (danh mục tăng 16 → 17 domain; tổng hạt giống 53 → 54). Đã sửa trong cây local, build xanh; đẩy cùng đợt Agent tiếp theo (đang chờ sau khi anh test xong bản 309).
+- **Vì sao:** Diệu Linh xin mở Zalo Web (chat.zalo.me) 3 lần chiều 21/11/2026; anh Tiến xác nhận zalo.me là mạng xã hội. Nhất quán với A-05 (các web nhắn tin/trò chuyện thuộc danh mục Mạng xã hội).
+- **Ngày:** 24/11/2026. **Ai quyết:** anh Tiến.
