@@ -21,7 +21,7 @@ SafePC là app quản lý máy tính của con, gần giống Microsoft Family S
 ### Repo và cây làm việc
 
 - Repo GitHub: `ndtcoder/SafePC`, **Private**, nhánh chính `main`.
-- Head hiện tại: `bdfc640` — kiểm chứng qua GitHub API ngày 2026-11-21. Sau thời điểm đó KHÔNG có push nào: các đợt Sprint 5 Dashboard + migration 27 đang giữ ở cây local có chủ đích (chờ anh test xong bản 309, vì Vercel tự deploy theo `main`).
+- Head hiện tại: `fa69c96` (26/11/2026) — gồm 5 commit chỉ-tài-liệu của gói bàn giao này (handoff/, STATE/OWNER-INBOX/AMENDMENTS/open-questions/verify-owner-guide, acceptance/) trên nền head code `bdfc640` (kiểm chứng qua GitHub API ngày 2026-11-21). Về CODE, từ sau `bdfc640` KHÔNG có push nào: các đợt Sprint 5 Dashboard + migration 27 đang giữ ở cây local có chủ đích (chờ anh test xong bản 309, vì Vercel tự deploy theo `main`).
 - Cây local `~/workspace/projects/safepc` **KHÔNG có `.git`** — không chạy được `git status`/`git log` tại đây. Mọi đẩy code lên GitHub đều qua giao diện web (upload từng đợt); Git Trees API và SSH git đều bị chặn từ môi trường này.
 - Từ 25/11/2026 cây local có backup tự động mỗi 30 phút (script `~/workspace/scripts/backup-safepc.sh`, giữ 12 snapshot ở `~/workspace/backups/safepc/`) và chat log được đẩy lên nhánh riêng `chat-logs` của repo (không bao giờ lên `main`).
 
