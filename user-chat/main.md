@@ -4170,3 +4170,9 @@ Duyệt merge MyHome lên production
 
 ## [2026-11-26 13:12 +07] TraMuse
 Báo cáo từ chat MyHome: đợt dọn dẹp P1b ĐÃ MERGE lên production xong lúc 13:11 hôm nay — PR #3 (develop → main), 16 commit, không xung đột, merge commit 3085dcd; kiểm chứng production: health ok, nút 'Đăng nhập bằng Google' hiện đúng. P1b đã live trọn vẹn. Mặc định tòa nhà khách thuê giữ nguyên theo chỉ đạo. Việc MyHome còn lại: P1c chưa bắt đầu.
+
+## [2026-11-26 20:31 +07] Anh Tiến (cuộc gọi thoại)
+My ơi hồ sơ hai tên miền Tino đã đủ cho em đóng vấn đề này giúp anh.
+
+## [2026-11-26 20:32 +07] TraMuse
+Dạ, em đóng việc giấy tờ Tino luôn: hồ sơ của cả ndt.ap.vn và myhome.ap.vn đã đủ theo xác nhận của anh tối nay — em đã ghi vào danh sách việc của anh là đã xong và sẽ không nhắc lại việc này nữa.
