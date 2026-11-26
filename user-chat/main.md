@@ -4128,3 +4128,24 @@ Xong phần dựng rồi anh, cả hai việc nền đã chạy theo đúng spec
 Một ghi chú thực tế như em đã báo: cây local không có `.git` nên phần luật bảo vệ `.git` trong spec không có đối tượng ở máy này — lịch sử commit nằm trên GitHub. Khôi phục khi cần em sẽ giải nén vào thư mục tạm kiểm tra trước, không đè lên cây live.
 
 
+
+## [2026-11-26 08:30 +07] Anh Tiến
+Anh muốn em tạo gói bàn giao (handoff pack) chuẩn chỉ cho dự án này, để bất kỳ AI/tài khoản nào khác đọc xong cũng làm tiếp được ngay, và để không mất việc nếu anh phải chuyển tài khoản. Dự án đang chạy dở, chưa có gói bàn giao — em phải tự khảo sát rồi tạo, đừng hỏi anh kể lại từ đầu. (Toàn văn spec 5 bước: nguyên tắc không bịa/không ghi secret/không sửa code/số liệu bằng lệnh thật; bước 1 khảo sát dự án; bước 2 khai thác lịch sử chat; bước 3 tạo 13 nhóm file gồm MEMORY/USER/SOUL/AGENTS/IDENTITY/PROACTIVE_PREFERENCES + docs/STATE, OWNER-INBOX, AMENDMENTS, open-questions, verify-owner-guide, acceptance/M*, user-chat; bước 4 setup backup + chat log theo Phần A; bước 5 tự kiểm + tóm tắt 10 dòng + tối đa 3 câu hỏi chốt.)
+
+## [2026-11-26 08:41 +07] TraMuse
+Gói bàn giao SafePC đã tạo xong và em tự đọc lại toàn bộ để rà soát — quét secret sạch (0 kết quả), số liệu đều là số chạy thật sáng nay. Tóm tắt 10 dòng:
+
+1. Anh là anh Tiến (tên Đức, Hà Nội); gọi anh là anh Tiến, em xưng TraMuse/em My, luôn tiếng Việt, báo cáo gọn bằng kết quả kiểm chứng được.
+2. SafePC là app quản lý máy tính của hai con Diệu Linh và Đức Dũng: Agent Windows + Dashboard web + Supabase; ranh giới cứng: không chụp màn hình, không ghi phím, không đọc nội dung.
+3. Dự án đang ở cuối Sprint 4: bản cài v0.1.309 là bản hiện hành và là artifact duy nhất còn tải được; lõi đã chứng minh trên máy thật 17–18/11, Sprint 4 và tính năng nâng cao chưa qua máy thật.
+4. Sprint 5 (đa con một máy): backend đã lên main (head bdfc640); đợt Dashboard + migration 27 đã review APPROVED, đang giữ ở cây local chờ anh test xong 309 mới đẩy.
+5. Kiểm chứng tươi 26/11: build Agent "Build succeeded. 0 Warning(s), 0 Error(s)", tsc exit 0, harness PASS đủ — M21 42, M22 10, M23 15, M24 35, M27 43, resolver 90, watchdog 16.
+6. Email đã thông hẳn: domain ndt.ap.vn verified 25/11, thư thông báo thật đã về hộp thư phụ huynh; còn chờ email báo cáo tuần tự động đầu tiên sáng thứ Hai 07:00.
+7. Việc tiếp theo là của anh: test bản 309 + extension 0.1.10 (OWNER-INBOX T-001), rồi áp migration 24 → 27 (T-002); xong hai việc này Sprint 5 mới đi tiếp được.
+8. Quyết định đang chờ anh: ký duyệt gói này (K-001) và D-001 — sau 01/12 có chạy lại job lỗi của CI #317 để lấy bản v0.1.317 không, em đề xuất CÓ.
+9. Chỗ còn CHƯA XÁC MINH: tiền đề GetLastError của Sprint 5 (kiểm bằng dòng log chẩn đoán, T-005/OQ-006); hồ sơ giấy tờ Tino và 2FA GitHub (hạn 04/01/2027) chưa có ghi nhận anh đã làm.
+10. Backup + chat log đã chạy từ 25/11: snapshot đầu đã có ở ~/workspace/backups/safepc; 3 file log đã lên nhánh chat-logs — em đọc lại từ GitHub và đối chiếu hash: khớp với local, chỉ khác đúng 3 dòng mã đăng nhập một lần cũ anh gửi hôm 16/11 (bị tự động che ở bản GitHub; bản local giữ nguyên văn như anh dặn).
+
+File đã tạo (đường dẫn + số dòng): handoff/ MEMORY.md +56, USER.md +32, SOUL.md +26, IDENTITY.md +11, PROACTIVE_PREFERENCES.md +25, AGENTS.md +85; docs/ STATE.md +127, OWNER-INBOX.md +77, AMENDMENTS.md +71 (13 mục), open-questions.md +75 (OQ-001→010), verify-owner-guide.md +115; docs/acceptance/ README.md +26, M1-core.md +24, M2-advanced-features.md +30, M3-sprint4.md +25 (Sprint 5 ghi rõ chưa có gói nghiệm thu); user-chat/ đã có từ 25/11.
+
+Ba câu hỏi chốt (kèm mặc định): 1) Đẩy gói lên GitHub main? Mặc định ĐẨY. 2) Giữ cách đặt file handoff/ + docs/? Mặc định GIỮ. 3) Thứ tự việc tiếp theo ở STATE.md mục 10 đúng ý anh? Mặc định GIỮ. Kèm widget xác nhận tóm tắt.
