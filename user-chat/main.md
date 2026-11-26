@@ -4161,3 +4161,12 @@ Tóm tắt đúng — gói bàn giao xong
 
 ## [2026-11-26 11:48 +07] TraMuse
 Em báo 1 lần thôi ạ: backup SafePC vẫn chạy tốt, nhưng snapshot mới nhất (09:16 sáng nay, sau khi đẩy gói bàn giao) đã hơn 2 giờ vì cây làm việc không có thay đổi nội dung nên không có gì mới để nén. Không có lỗi gì đâu ạ.
+
+## [2026-11-26 13:08 +07] Anh Tiến
+Duyệt merge MyHome lên production
+
+## [2026-11-26 13:08 +07] TraMuse
+Đã chuyển lệnh duyệt của anh sang chat MyHome — merge đợt dọn dẹp develop → main đang được thực hiện ở đó kèm kiểm chứng production, xong em báo lại ở đây. Câu hỏi phụ về mặc định tòa nhà cho khách thuê anh chưa trả lời nên em giữ nguyên hiện trạng, không động vào.
+
+## [2026-11-26 13:12 +07] TraMuse
+Báo cáo từ chat MyHome: đợt dọn dẹp P1b ĐÃ MERGE lên production xong lúc 13:11 hôm nay — PR #3 (develop → main), 16 commit, không xung đột, merge commit 3085dcd; kiểm chứng production: health ok, nút 'Đăng nhập bằng Google' hiện đúng. P1b đã live trọn vẹn. Mặc định tòa nhà khách thuê giữ nguyên theo chỉ đạo. Việc MyHome còn lại: P1c chưa bắt đầu.
