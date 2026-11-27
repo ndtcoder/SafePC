@@ -25,6 +25,7 @@
     <Border Background="White" BorderBrush="#FFABADB3" BorderThickness="1">
         <StackPanel>
             <Button Content="Xem thời gian còn lại" Click="RemainingButton_Click" />
+            <Button Content="Nhắn tin với bố mẹ" Click="ChatButton_Click" />
             <Button Content="Xin thêm giờ" Click="ExtraTimeButton_Click" />
             <Separator Margin="0,4" />
             <Button Content="Thoát" Click="ExitButton_Click" />

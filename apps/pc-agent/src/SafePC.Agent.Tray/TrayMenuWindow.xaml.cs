@@ -27,6 +27,7 @@ public partial class TrayMenuWindow : Window
 {
     private readonly LocalLogger _log;
     private readonly Action _showRemainingTime;
+    private readonly Action _openChat;
     private readonly Action _showExtraTime;
     private readonly Action _requestExit;
 
@@ -40,15 +41,17 @@ public partial class TrayMenuWindow : Window
     /// </summary>
     private DateTimeOffset _shownAt;
 
-    public TrayMenuWindow(LocalLogger log, Action showRemainingTime, Action showExtraTime, Action requestExit)
+    public TrayMenuWindow(LocalLogger log, Action showRemainingTime, Action openChat, Action showExtraTime, Action requestExit)
     {
         ArgumentNullException.ThrowIfNull(log);
         ArgumentNullException.ThrowIfNull(showRemainingTime);
+        ArgumentNullException.ThrowIfNull(openChat);
         ArgumentNullException.ThrowIfNull(showExtraTime);
         ArgumentNullException.ThrowIfNull(requestExit);
 
         _log = log;
         _showRemainingTime = showRemainingTime;
+        _openChat = openChat;
         _showExtraTime = showExtraTime;
         _requestExit = requestExit;
 
@@ -92,6 +95,13 @@ public partial class TrayMenuWindow : Window
         _log.Info("Tray: menu — bấm 'Xem thời gian còn lại' (bắt đầu).");
         Close();
         InvokeMenuAction(_showRemainingTime, "Xem thời gian còn lại");
+    }
+
+    private void ChatButton_Click(object sender, RoutedEventArgs e)
+    {
+        _log.Info("Tray: menu — bấm 'Nhắn tin với bố mẹ' (bắt đầu).");
+        Close();
+        InvokeMenuAction(_openChat, "Nhắn tin với bố mẹ");
     }
 
     private void ExtraTimeButton_Click(object sender, RoutedEventArgs e)

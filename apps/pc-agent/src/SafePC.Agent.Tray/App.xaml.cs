@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -61,6 +62,9 @@ public partial class App : System.Windows.Application
     private string? _remainingTimeRequestId;
     private TaskCompletionSource<PinVerifyResponsePayload?>? _pinVerifyTcs;
     private string? _pinVerifyRequestId;
+    private TaskCompletionSource<ChatOpenResponsePayload?>? _chatOpenTcs;
+    private string? _chatOpenRequestId;
+    private ChatMessageWindow? _chatMessageWindow;
     private System.Windows.Window? _anchor;
     private Mutex? _singleInstanceMutex;
     private bool _ownsSingleInstanceMutex;
@@ -151,7 +155,7 @@ public partial class App : System.Windows.Application
             _anchor.Show();
             _log.Info("Tray khởi động: bước 5/6 — cửa sổ neo đã hiện.");
 
-            _tray = new TrayIconManager(_log, _anchor, ShowRemainingTime, ShowExtraTime, RequestExit);
+            _tray = new TrayIconManager(_log, _anchor, ShowRemainingTime, OpenChat, ShowExtraTime, RequestExit);
             _log.Info("Tray khởi động: bước 6/6 — tray icon đã tạo.");
         }
         catch (Exception ex)
@@ -599,6 +603,14 @@ public partial class App : System.Windows.Application
                             }
                             break;
 
+                        case IpcMessageTypes.ChatOpenResponse:
+                            ChatOpenResponsePayload? chatResult = message.GetPayload<ChatOpenResponsePayload>();
+                            if (chatResult is not null && chatResult.RequestId == _chatOpenRequestId)
+                            {
+                                _chatOpenTcs?.TrySetResult(chatResult);
+                            }
+                            break;
+
                         case IpcMessageTypes.Lock:
                             LockPayload? lockPayload = message.GetPayload<LockPayload>();
 
@@ -824,6 +836,156 @@ public partial class App : System.Windows.Application
                 _pinVerifyTcs = null;
                 _pinVerifyRequestId = null;
             }
+        }
+    }
+
+    /// <summary>
+    /// Xin Service cấp phiên chat và chờ câu trả lời tối đa 20 giây (Service
+    /// còn phải gọi server cấp token, lâu hơn hỏi/đáp nội bộ 5 giây của
+    /// thời gian còn lại/PIN). Trả về null khi chưa nối Service hoặc quá
+    /// hạn. Không bao giờ throw; không ghi log URL/token.
+    /// </summary>
+    private async Task<ChatOpenResponsePayload?> RequestChatOpenAsync()
+    {
+        if (_ipc is null)
+        {
+            return null;
+        }
+
+        string requestId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<ChatOpenResponsePayload?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _chatOpenRequestId = requestId;
+        _chatOpenTcs = tcs;
+        try
+        {
+            await _ipc.SendAsync(IpcMessage.Create(
+                IpcMessageTypes.ChatOpenRequest,
+                new ChatOpenRequestPayload(requestId)));
+            Task completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(20)));
+            if (completed != tcs.Task)
+            {
+                _log?.Info("Tray: xin phiên chat quá hạn 20 giây.");
+                return null;
+            }
+
+            return await tcs.Task;
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: xin phiên chat lỗi.", ex);
+            return null;
+        }
+        finally
+        {
+            if (_chatOpenRequestId == requestId)
+            {
+                _chatOpenTcs = null;
+                _chatOpenRequestId = null;
+            }
+        }
+    }
+
+    private void OpenChat()
+    {
+        _log?.Info("Tray: menu — Nhắn tin với bố mẹ (bắt đầu).");
+        // Chạy nền (fire-and-forget): chờ IPC/server không bao giờ được
+        // chặn UI thread (bài học pipe — xem ghi chú ở OnStartup). Thao tác
+        // cửa sổ/trình duyệt ở cuối luồng tự quay về UI thread qua
+        // Dispatcher. OpenChatAsync không bao giờ throw.
+        _ = OpenChatAsync();
+        _log?.Info("Tray: menu — Nhắn tin với bố mẹ (đã xếp luồng nền).");
+    }
+
+    /// <summary>
+    /// Luồng mở chat: hỏi Service → có URL thì mở trình duyệt mặc định tới
+    /// trang chat; lỗi thì hiện hộp thông báo dịch theo mã lỗi của Service.
+    /// Không bao giờ throw và không ghi log URL (URL chứa token phiên).
+    /// </summary>
+    private async Task OpenChatAsync()
+    {
+        try
+        {
+            ChatOpenResponsePayload? response = await RequestChatOpenAsync();
+            if (response is { Ok: true } && !string.IsNullOrWhiteSpace(response.Url))
+            {
+                string chatUrl = response.Url;
+                _log?.Info("Tray: đã nhận URL trang chat từ Service, mở trình duyệt mặc định.");
+                try
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        Process.Start(new ProcessStartInfo(chatUrl) { UseShellExecute = true });
+                    });
+                    _log?.Info("Tray: đã mở trang chat trong trình duyệt.");
+                }
+                catch (Exception ex)
+                {
+                    _log?.Error("Tray: mở trình duyệt tới trang chat lỗi.", ex);
+                    ShowChatMessage("Không mở được nhắn tin lúc này, thử lại sau nhé con.");
+                }
+
+                return;
+            }
+
+            string message = response?.Error switch
+            {
+                ChatOpenErrors.NotPaired => "Máy này chưa được ghép nối với hồ sơ con.",
+                ChatOpenErrors.ChatNotEnabled => "Tính năng nhắn tin chưa được bật trên máy chủ. Bố mẹ kiểm tra bản cập nhật SafePC nhé.",
+                _ => "Không mở được nhắn tin lúc này, thử lại sau nhé con.",
+            };
+            _log?.Info("Tray: mở nhắn tin không thành công (mã lỗi: " + (response?.Error ?? "không có trả lời") + ").");
+            ShowChatMessage(message);
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: luồng mở nhắn tin lỗi (đã bắt, Tray tiếp tục chạy).", ex);
+            ShowChatMessage("Không mở được nhắn tin lúc này, thử lại sau nhé con.");
+        }
+    }
+
+    /// <summary>
+    /// Hiện hộp thông báo nhắn tin (chỉ giữ một cửa sổ: đang hiện thì đưa
+    /// lên trước thay vì mở thêm). Chạy trên UI thread qua Dispatcher; cửa
+    /// sổ là top-level độc lập, không Owner như mọi cửa sổ Tray khác.
+    /// </summary>
+    private void ShowChatMessage(string text)
+    {
+        try
+        {
+            Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    if (_chatMessageWindow is { IsVisible: true })
+                    {
+                        _chatMessageWindow.Activate();
+                        _log?.Info("Tray: cửa sổ thông báo nhắn tin đã hiện, đưa lên trước.");
+                        return;
+                    }
+
+                    var window = new ChatMessageWindow(text);
+                    window.Closed += (_, _) =>
+                    {
+                        if (ReferenceEquals(_chatMessageWindow, window))
+                        {
+                            _chatMessageWindow = null;
+                        }
+
+                        _log?.Info("Tray: cửa sổ thông báo nhắn tin đã đóng.");
+                    };
+                    _chatMessageWindow = window;
+                    window.Show();
+                    _log?.Info("Tray: cửa sổ thông báo nhắn tin đã hiện.");
+                }
+                catch (Exception ex)
+                {
+                    _log?.Error("Tray: mở cửa sổ thông báo nhắn tin lỗi.", ex);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: Dispatcher.Invoke (thông báo nhắn tin) lỗi.", ex);
         }
     }
 

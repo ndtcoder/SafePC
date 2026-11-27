@@ -9,7 +9,7 @@ namespace SafePC.Agent.Tray;
 /// Tray icon dùng System.Windows.Forms.NotifyIcon (bật UseWindowsForms, không
 /// cần package ngoài). Menu chuột phải là một cửa sổ WPF thật
 /// (<see cref="TrayMenuWindow"/>), mở bằng tay khi nhận MouseUp chuột phải.
-/// Menu: Xem thời gian còn lại, Xin thêm giờ, Thoát. Thoát yêu cầu mã PIN —
+/// Menu: Xem thời gian còn lại, Nhắn tin với bố mẹ, Xin thêm giờ, Thoát. Thoát yêu cầu mã PIN —
 /// logic PIN nằm ở <see cref="PinDialog"/>.
 ///
 /// Vì sao KHÔNG dùng ContextMenu (cả WinForms lẫn WPF): app này là WPF,
@@ -34,6 +34,7 @@ public sealed class TrayIconManager : IDisposable
     private readonly WinForms.NotifyIcon _icon;
     private readonly System.Windows.Window _anchor;
     private readonly Action _showRemainingTime;
+    private readonly Action _openChat;
     private readonly Action _showExtraTime;
     private readonly Action _requestExit;
     private TrayMenuWindow? _menuWindow;
@@ -41,17 +42,19 @@ public sealed class TrayIconManager : IDisposable
     private DateTimeOffset _menuOpenedAt;
     private bool _disposed;
 
-    public TrayIconManager(LocalLogger log, System.Windows.Window anchor, Action showRemainingTime, Action showExtraTime, Action requestExit)
+    public TrayIconManager(LocalLogger log, System.Windows.Window anchor, Action showRemainingTime, Action openChat, Action showExtraTime, Action requestExit)
     {
         ArgumentNullException.ThrowIfNull(log);
         ArgumentNullException.ThrowIfNull(anchor);
         ArgumentNullException.ThrowIfNull(showRemainingTime);
+        ArgumentNullException.ThrowIfNull(openChat);
         ArgumentNullException.ThrowIfNull(showExtraTime);
         ArgumentNullException.ThrowIfNull(requestExit);
 
         _log = log;
         _anchor = anchor;
         _showRemainingTime = showRemainingTime;
+        _openChat = openChat;
         _showExtraTime = showExtraTime;
         _requestExit = requestExit;
 
@@ -135,7 +138,7 @@ public sealed class TrayIconManager : IDisposable
         {
             CloseMenu();
 
-            var menu = new TrayMenuWindow(_log, _showRemainingTime, _showExtraTime, _requestExit)
+            var menu = new TrayMenuWindow(_log, _showRemainingTime, _openChat, _showExtraTime, _requestExit)
             {
                 // KHÔNG đặt Owner: menu là cửa sổ top-level độc lập. Gán Owner
                 // là cửa sổ neo 0x0 + ShowActivated=false đã khiến cửa sổ con
