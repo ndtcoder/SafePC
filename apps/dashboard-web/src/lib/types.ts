@@ -173,6 +173,30 @@ export interface Message {
   created_at: string
 }
 
+/** Kênh của một đăng ký nhận thông báo đẩy (bảng push_subscriptions, migration 30). */
+export type PushPlatform = 'web' | 'android'
+
+/**
+ * Một đăng ký nhận thông báo đẩy của phụ huynh (bảng
+ * push_subscriptions, migration 30 — PRD §2.13). 'web' là Web Push
+ * của Dashboard PWA: endpoint + cặp khóa (p256dh/auth) do trình
+ * duyệt cấp khi subscribe. 'android' để sẵn cho app Android/FCM
+ * (chưa dùng ở v1, hai cột khóa khi đó null). Tên có hậu tố Record
+ * để không trùng kiểu PushSubscription của DOM.
+ */
+export interface PushSubscriptionRecord {
+  id: string
+  user_id: string
+  family_id: string
+  platform: PushPlatform
+  endpoint: string
+  p256dh: string | null
+  auth: string | null
+  user_agent: string | null
+  created_at: string
+  last_seen_at: string
+}
+
 export interface AppRequest {
   id: string
   family_id: string
