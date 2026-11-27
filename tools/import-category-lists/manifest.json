@@ -1,0 +1,205 @@
+{
+  "generatedAt": "2026-11-27T12:10:16.600Z",
+  "sources": {
+    "stevenblack:porn": {
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
+      "uniqueDomains": 64305
+    },
+    "stevenblack:gambling": {
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
+      "uniqueDomains": 5186
+    },
+    "stevenblack:social": {
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts",
+      "uniqueDomains": 3724
+    },
+    "blp:porn": {
+      "url": "https://blocklistproject.github.io/Lists/porn.txt",
+      "uniqueDomains": 952054
+    },
+    "blp:gambling": {
+      "url": "https://blocklistproject.github.io/Lists/gambling.txt",
+      "uniqueDomains": 342623
+    },
+    "blp:facebook": {
+      "url": "https://blocklistproject.github.io/Lists/facebook.txt",
+      "uniqueDomains": 21334
+    },
+    "blp:tiktok": {
+      "url": "https://blocklistproject.github.io/Lists/tiktok.txt",
+      "uniqueDomains": 3694
+    },
+    "blp:twitter": {
+      "url": "https://blocklistproject.github.io/Lists/twitter.txt",
+      "uniqueDomains": 1185
+    },
+    "blp:whatsapp": {
+      "url": "https://blocklistproject.github.io/Lists/whatsapp.txt",
+      "uniqueDomains": 225
+    },
+    "ut1:gambling": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/gambling.tar.gz",
+      "uniqueDomains": 95180
+    },
+    "ut1:games": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/games.tar.gz",
+      "uniqueDomains": 33652
+    },
+    "ut1:audio-video": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/audio-video.tar.gz",
+      "uniqueDomains": 3620
+    },
+    "ut1:warez": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/warez.tar.gz",
+      "uniqueDomains": 1532
+    },
+    "ut1:agressif": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/agressif.tar.gz",
+      "uniqueDomains": 266
+    },
+    "ut1:dangerous_material": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/dangerous_material.tar.gz",
+      "uniqueDomains": 35
+    },
+    "ut1:social_networks": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/social_networks.tar.gz",
+      "uniqueDomains": 715
+    },
+    "ut1:chat": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/chat.tar.gz",
+      "uniqueDomains": 195
+    },
+    "ut1:adult-crossref": {
+      "url": "https://dsi.ut-capitole.fr/blacklists/download/adult.tar.gz",
+      "uniqueDomains": 4599292,
+      "note": "Chi doi chieu: 589996 domain cua pool adult (StevenBlack ∪ BLP) co mat trong UT1 adult."
+    },
+    "tranco:top-1m": {
+      "url": "https://tranco-list.eu/top-1m.csv.zip",
+      "matchedCandidates": 34314
+    }
+  },
+  "categories": {
+    "adult": {
+      "budget": 8000,
+      "poolSize": 983597,
+      "multiSourceInPool": 601209,
+      "seeds": 14,
+      "droppedToHigherCategory": 0,
+      "collapsedSubdomains": 0,
+      "excludedRemoved": 0,
+      "backfilled": 0,
+      "finalCount": 8000,
+      "excludedDomains": []
+    },
+    "gambling": {
+      "budget": 4000,
+      "poolSize": 386738,
+      "multiSourceInPool": 55325,
+      "seeds": 23,
+      "droppedToHigherCategory": 2,
+      "collapsedSubdomains": 0,
+      "excludedRemoved": 0,
+      "backfilled": 0,
+      "finalCount": 4000,
+      "excludedDomains": []
+    },
+    "violence": {
+      "budget": 500,
+      "poolSize": 301,
+      "multiSourceInPool": 0,
+      "seeds": 0,
+      "droppedToHigherCategory": 5,
+      "collapsedSubdomains": 0,
+      "excludedRemoved": 0,
+      "backfilled": 0,
+      "finalCount": 296,
+      "excludedDomains": []
+    },
+    "games": {
+      "budget": 2500,
+      "poolSize": 33652,
+      "multiSourceInPool": 0,
+      "seeds": 0,
+      "droppedToHigherCategory": 68,
+      "collapsedSubdomains": 0,
+      "excludedRemoved": 0,
+      "backfilled": 0,
+      "finalCount": 2500,
+      "excludedDomains": []
+    },
+    "movies": {
+      "budget": 2000,
+      "poolSize": 5096,
+      "multiSourceInPool": 0,
+      "seeds": 0,
+      "droppedToHigherCategory": 30,
+      "collapsedSubdomains": 1,
+      "excludedRemoved": 1,
+      "backfilled": 1,
+      "finalCount": 2000,
+      "excludedDomains": [
+        "youtube.com"
+      ]
+    },
+    "social": {
+      "budget": 2500,
+      "poolSize": 28523,
+      "multiSourceInPool": 2356,
+      "seeds": 17,
+      "droppedToHigherCategory": 47,
+      "collapsedSubdomains": 26929,
+      "excludedRemoved": 5,
+      "backfilled": 0,
+      "finalCount": 1543,
+      "excludedDomains": [
+        "plus.google.com",
+        "plusone.google.com",
+        "chatenabled.mail.google.com",
+        "talk.google.com",
+        "talkgadget.google.com"
+      ]
+    }
+  },
+  "notes": [],
+  "sensitivePresent": {
+    "steampowered.com": "games",
+    "itch.io": "games",
+    "twitch.tv": "movies",
+    "roblox.com": "games",
+    "netflix.com": "movies",
+    "hulu.com": "movies",
+    "disneyplus.com": "movies",
+    "spotify.com": "movies",
+    "vimeo.com": "movies",
+    "dailymotion.com": "movies",
+    "epicgames.com": "games",
+    "origin.com": "games",
+    "battle.net": "games",
+    "gog.com": "games"
+  },
+  "totalDomains": 18339,
+  "excludedList": [
+    "google.com",
+    "google.com.vn",
+    "youtube.com",
+    "wikipedia.org",
+    "wikimedia.org",
+    "bing.com",
+    "duckduckgo.com",
+    "cococ.com",
+    "vio.edu.vn",
+    "olm.vn",
+    "hocmai.vn",
+    "tuyensinh247.com",
+    "loigiaihay.com",
+    "vietjack.com",
+    "khanacademy.org",
+    "vnexpress.net",
+    "tuoitre.vn",
+    "thannien.vn",
+    "dantri.com.vn",
+    "bbc.com",
+    "cnn.com"
+  ]
+}

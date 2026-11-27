@@ -1,0 +1,28 @@
+# Danh sách BẢO VỆ của SafePC — các domain trong file này (và mọi tên miền
+# con của chúng) KHÔNG BAO GIỜ được vào bất kỳ nhóm chặn nào, dù list nguồn
+# có chứa. Script áp dụng sau bước chọn lọc và báo số lượng bị loại theo
+# nhóm vào manifest.json. Sửa tay file này khi cần bảo vệ thêm domain.
+# Tìm kiếm / trình duyệt / hệ sinh thái học tập
+google.com
+google.com.vn
+youtube.com
+wikipedia.org
+wikimedia.org
+bing.com
+duckduckgo.com
+cococ.com
+# Giáo dục / học tập Việt Nam + quốc tế
+vio.edu.vn
+olm.vn
+hocmai.vn
+tuyensinh247.com
+loigiaihay.com
+vietjack.com
+khanacademy.org
+# Tin tức lớn
+vnexpress.net
+tuoitre.vn
+thannien.vn
+dantri.com.vn
+bbc.com
+cnn.com
