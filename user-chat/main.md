@@ -4188,3 +4188,12 @@ SafePC: A muốn tính năng kiểm duyệt cả từ khóa tìm kiếm như Fam
 
 ## [2026-11-27 14:47 +07] ChaMuse
 Nhận việc và đã khởi động xây: chặn tìm kiếm chứa từ cấm (5 công cụ Google/Bing/DuckDuckGo/Yahoo/Cốc Cốc, hiện trang cảnh báo) + ghi nhận mọi lượt tìm và thống kê vào Báo cáo tuần như lịch sử web; danh sách từ cấm theo từng hồ sơ con, có danh sách mẫu để anh sửa. Có ghi rõ đây là quyết định nới ranh giới riêng tư của anh (chỉ cụm từ trên công cụ tìm kiếm mới được lưu, giữ 90 ngày). Hai builder đang làm song song (extension/Service/migration và Dashboard/tài liệu), xong em cho review độc lập rồi báo cáo; cả đợt giao cùng nhịp đẩy sau khi anh test xong v0.1.309.
+
+## [2026-11-27 14:51 +07] Anh Tiến
+kèm theo đó em thêm cho anh vài danh sách các từ khóa cấm (default) theo các topic: nội dung người lớn (16+, 18+), bạo lực, game, phim, mạng xã hội. user có thể chọn tích các nhóm đó và add thêm các từ khóa mong muốn khác
+
+## [2026-11-27 14:52 +07] ChaMuse
+Đã nhận và đang cho xây bổ sung: 5 nhóm từ khóa mẫu theo chủ đề (người lớn 16+/18+, bạo lực, game, phim, mạng xã hội) dạng tích chọn từng nhóm + khu từ khóa riêng tự thêm; form hiện tổng số từ khóa hiệu lực. Phần Dashboard của tính năng chính đã xây xong trước đó ít phút; phần extension/Service vẫn đang chạy.
+
+## [2026-11-27 15:12 +07] ChaMuse
+Báo cáo hoàn thành tính năng kiểm duyệt từ khóa tìm kiếm: chặn tìm kiếm chứa từ cấm trên Google/Bing/DuckDuckGo/Yahoo/Cốc Cốc (hiện trang "Tìm kiếm bị chặn", đối chiếu cả khi gõ không dấu), ghi mọi lượt tìm (kể cả lượt bị chặn) vào mục "Từ khóa tìm kiếm" trong Báo cáo tuần. 6 nhóm chủ đề tích chọn — em tách thêm nhóm Cờ bạc/cá cược riêng khỏi nhóm người lớn theo review cho rõ ràng: người lớn 15 từ, cờ bạc 10, bạo lực 18, game 15, phim 13, mạng xã hội 12 (tổng 83 từ mẫu, liệt kê đủ trong tin nhắn để anh duyệt); preset tạo nhanh chỉ tích sẵn nhóm người lớn. Qua 2 vòng review độc lập: đã sửa lỗi lượt bị chặn không vào thống kê (ghi ở thời điểm bắt đầu điều hướng) và trần rule của trình duyệt (áp riêng, tối đa 150 từ ở tầng chặn cứng, phần còn lại lớp dự phòng vẫn bắt). Kiểm chứng: build .NET 0 lỗi, Dashboard tsc sạch, harness migration 19/19, harness extension 49/49. Toàn bộ vẫn ở cây local, giao cùng đợt đẩy đang giữ sau khi anh test xong v0.1.309; khi đó anh cần chạy thêm migration 28 (sau migration 24). Đã đóng gói SafePC-Extension-0.1.11.zip.
