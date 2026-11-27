@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { OfflineBanner, primaryButtonClassName, secondaryButtonClassName } from './ui'
 import NotificationBell from './NotificationBell'
+import PushNotificationToggle from './PushNotificationToggle'
 
 const NAV_ITEMS = [
   { to: '/hom-nay', label: 'Hôm nay' },
@@ -112,6 +113,7 @@ export default function Layout() {
             </span>
           </Link>
           <div className="flex items-center gap-3">
+            {user && <PushNotificationToggle />}
             {user && <NotificationBell />}
             {user ? (
               <>
