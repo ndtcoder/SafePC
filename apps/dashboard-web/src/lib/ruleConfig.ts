@@ -364,21 +364,27 @@ export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
 // Chặn theo danh mục domain (đợt danh mục, PRD §2.8): phụ huynh chọn danh
 // mục trong rule "Chặn website" thay vì gõ từng domain. Dashboard CHỈ
 // mang id + nhãn hiển thị — danh sách domain của từng danh mục nằm DUY
-// NHẤT trong Agent (SafePC.Agent.Service/DomainCategoryLists.cs), Agent
-// mở rộng danh mục thành domain lúc xuất domain_rules.json. Dashboard
-// không mang danh sách hay số lượng domain, để không lệch với Agent.
+// NHẤT trong Agent (SafePC.Agent.Service/DomainCategoryLists.cs, dữ liệu
+// nhúng từ CategoryData/*.txt), Agent mở rộng danh mục thành domain lúc
+// xuất domain_rules.json. Dashboard không mang danh sách hay số lượng
+// domain, để không lệch với Agent.
+// Đợt nhập list công khai 27/11/2026: mở rộng từ 3 lên 6 danh mục (thêm
+// violence/games/movies), dữ liệu Agent nhập từ StevenBlack (MIT), UT1
+// Blocklist (CC BY-SA 4.0) và Block List Project (Unlicense) — xem
+// docs/10-DATA-SOURCES.md. Dashboard chỉ cần biết id + nhãn + mô tả.
 // HỢP ĐỒNG LIÊN DỰ ÁN: id phải khớp đúng DomainCategoryLists phía Agent
 // và lý do "category-<id>" phía extension (blocked.js). Thêm danh mục
-// mới thì thêm ở cả ba nơi, theo thứ tự chuẩn adult -> gambling -> social.
+// mới thì thêm ở cả ba nơi, theo thứ tự chuẩn
+// adult -> gambling -> violence -> games -> movies -> social.
 // ---------------------------------------------------------------------------
 
 /** Id danh mục chặn. Phải khớp đúng DomainCategoryLists.OrderedIds phía Agent. */
-export type DomainCategoryId = 'adult' | 'gambling' | 'social'
+export type DomainCategoryId = 'adult' | 'gambling' | 'violence' | 'games' | 'movies' | 'social'
 
 export interface DomainCategoryOption {
   value: DomainCategoryId
   label: string
-  /** Mô tả ngắn hiển thị dưới nhãn, gồm ví dụ website trong danh mục (phải là domain có thật trong danh sách hạt giống của Agent). */
+  /** Mô tả ngắn hiển thị dưới nhãn, gồm ví dụ website trong danh mục (phải là domain có thật trong danh sách của Agent). */
   description: string
 }
 
@@ -393,6 +399,24 @@ export const DOMAIN_CATEGORIES: DomainCategoryOption[] = [
     value: 'gambling',
     label: 'Cờ bạc, cá cược',
     description: 'Các website cá cược, casino trực tuyến phổ biến (ví dụ: Bet365, 188Bet).',
+  },
+  {
+    value: 'violence',
+    label: 'Bạo lực',
+    description:
+      'Các website cổ vũ bạo lực, thù hận, cực đoan và hướng dẫn chế tạo vũ khí, chất nổ.',
+  },
+  {
+    value: 'games',
+    label: 'Game',
+    description:
+      'Các website/nền tảng game trực tuyến (ví dụ: Steam, Roblox, Poki). Lưu ý: nhóm này gồm cả nền tảng game hợp lệ — chỉ bật khi phụ huynh chủ động chọn.',
+  },
+  {
+    value: 'movies',
+    label: 'Phim',
+    description:
+      'Các website xem, nghe và tải nội dung video, phim trực tuyến (ví dụ: Netflix, Twitch). Lưu ý: nhóm này gồm cả dịch vụ xem phim hợp lệ — chỉ bật khi phụ huynh chủ động chọn.',
   },
   {
     value: 'social',
@@ -1374,8 +1398,21 @@ export function buildSafeSearchConfig(draft: SafeSearchDraft): SafeSearchConfig 
 // lưu dạng chữ thường.
 // ---------------------------------------------------------------------------
 
-/** Số từ khóa tối đa trong một quy tắc chặn từ khóa tìm kiếm. */
+/** Số từ khóa RIÊNG (phụ huynh tự thêm) tối đa trong một quy tắc chặn từ khóa tìm kiếm. */
 export const MAX_SEARCH_KEYWORDS = 200
+
+/**
+ * Tổng số từ khóa HIỆU LỰC (nhóm đã chọn + từ riêng) tối đa trong một quy
+ * tắc. Nâng 200 -> 400 ngày 27/11/2026 khi nhóm 'adult' được bổ sung từ
+ * danh sách công khai: phía extension, rule DNR xử lý 150 từ khóa đầu
+ * tiên (150 x 5 công cụ = 750 rule, dưới trần regex của Chrome), phần
+ * còn lại do tab watcher đối chiếu trên TOÀN BỘ danh sách hiệu lực nên
+ * trần cao hơn vẫn được thi hành đầy đủ — chỉ khác cơ chế chặn (DNR
+ * chặn trước điều hướng, watcher chặn ngay khi phát hiện điều hướng).
+ * Phía Agent (DomainRulesPublisher) không đặt trần riêng cho
+ * searchGuard nên không cần nâng đồng bộ.
+ */
+export const MAX_EFFECTIVE_SEARCH_KEYWORDS = 400
 
 /** Độ dài tối đa của một từ khóa (ký tự). */
 export const MAX_SEARCH_KEYWORD_LENGTH = 60
@@ -1403,6 +1440,19 @@ export interface KeywordGroup {
  * gốc đã TÁCH thành nhóm riêng 'gambling' theo review 27/11/2026 (nhãn
  * nhóm phải nói đúng nội dung — khớp cách tách danh mục domain
  * adult/gambling/social ở phía Agent).
+ *
+ * Bổ sung từ danh sách công khai (27/11/2026, xem docs/10-DATA-SOURCES.md):
+ * nhóm 'adult' được bổ sung chọn lọc từ LDNOOBW (List of Dirty, Naughty,
+ * Obscene and Otherwise Bad Words — bản gốc của Shutterstock, CC BY 4.0;
+ * bản V2 CC0 trên HuggingFace bị giới hạn truy cập tại thời điểm nhập
+ * nên dùng bản gốc kèm ghi công). TIÊU CHÍ LỌC RẤT CHẶT vì extension đối
+ * chiếu theo CHUỖI CON (substring) trên cụm tìm kiếm đã bỏ dấu: chỉ lấy
+ * từ/cụm mà nghĩa tình dục/tục tĩu là nghĩa DUY NHẤT, bỏ mọi từ đa nghĩa
+ * và bỏ cả từ ngắn nguy hiểm dù đúng nghĩa (ví dụ "anal" nằm trong
+ * "analysis", "địt" bỏ dấu thành "dit" nằm trong "credit") để tránh
+ * chặn nhầm bài học của con. Các nhóm gambling/games/movies/social
+ * KHÔNG có danh sách công khai đáng tin (là cụm từ theo ngữ cảnh) nên
+ * giữ nguyên danh sách biên tập tay.
  */
 export const KEYWORD_GROUPS: KeywordGroup[] = [
   {
@@ -1410,7 +1460,7 @@ export const KEYWORD_GROUPS: KeywordGroup[] = [
     id: 'adult',
     label: 'Nội dung người lớn (16+/18+)',
     description:
-      'Danh sách mẫu gốc của SafePC: nội dung người lớn (16+/18+), song ngữ Anh/Việt.',
+      'Danh sách mẫu gốc của SafePC + bổ sung chọn lọc từ danh sách công khai LDNOOBW: nội dung người lớn (16+/18+), song ngữ Anh/Việt.',
     keywords: [
       // Nội dung người lớn — tiếng Anh
       'porn',
@@ -1430,6 +1480,70 @@ export const KEYWORD_GROUPS: KeywordGroup[] = [
       'sex video',
       'clip nóng',
       'trang web đen',
+      // Bổ sung từ LDNOOBW (27/11/2026) — chỉ từ/cụm đơn nghĩa tình dục
+      // rõ ràng, đã qua kiểm tra chặn nhầm theo chuỗi con (xem ghi chú
+      // ở đầu KEYWORD_GROUPS). Tiếng Anh:
+      'bestiality',
+      'bdsm',
+      'blowjob',
+      'blow job',
+      'bondage',
+      'bukkake',
+      'camgirl',
+      'creampie',
+      'cumshot',
+      'cunnilingus',
+      'deepthroat',
+      'dildo',
+      'doggy style',
+      'double penetration',
+      'ecchi',
+      'erotic',
+      'fellatio',
+      'futanari',
+      'gangbang',
+      'gang bang',
+      'group sex',
+      'handjob',
+      'hand job',
+      'incest',
+      'jailbait',
+      'livesex',
+      'masturbate',
+      'masturbation',
+      'milf',
+      'nsfw',
+      'orgasm',
+      'orgy',
+      'paedophile',
+      'pedophile',
+      'phone sex',
+      'porno',
+      'pornography',
+      'sexcam',
+      'shemale',
+      'strip club',
+      'threesome',
+      'topless',
+      'upskirt',
+      'vibrator',
+      'voyeur',
+      'yaoi',
+      'zoophilia',
+      // Bổ sung tiếng Việt (27/11/2026) — cụm tường minh, không đa nghĩa:
+      'phim con heo',
+      'phim cấp 3',
+      'phim cấp ba',
+      'mại dâm',
+      'gái mại dâm',
+      'gái gọi',
+      'sex việt',
+      'phim sex việt',
+      'video sex',
+      'ảnh sex',
+      'truyện sex',
+      'web sex',
+      'chat sex',
     ],
   },
   {
@@ -1479,6 +1593,19 @@ export const KEYWORD_GROUPS: KeywordGroup[] = [
       'buy a gun',
       'kill someone',
       'school shooting',
+      // Bổ sung (27/11/2026): 'how to kill' + 'how to murder' từ
+      // LDNOOBW, còn lại là cụm tường minh cùng tiêu chí lọc như nhóm
+      // 'adult' (đơn nghĩa, an toàn với đối chiếu chuỗi con).
+      'how to kill',
+      'how to murder',
+      'build a bomb',
+      'mass shooting',
+      'chế tạo vũ khí',
+      'đâm người',
+      'chém người',
+      'đánh bom',
+      'tự thiêu',
+      'cách tự tử',
     ],
   },
   {
@@ -1648,8 +1775,8 @@ export function validateSearchKeywordsDraft(draft: SearchKeywordsDraft): string 
   if (effective.length === 0) {
     return 'Hãy chọn ít nhất một nhóm từ khóa hoặc thêm ít nhất một từ khóa riêng.'
   }
-  if (effective.length > MAX_SEARCH_KEYWORDS) {
-    return `Tổng số từ khóa sẽ bị chặn là ${effective.length}, vượt quá tối đa ${MAX_SEARCH_KEYWORDS} từ khóa trong một quy tắc. Hãy bỏ chọn một nhóm hoặc xóa bớt từ khóa riêng.`
+  if (effective.length > MAX_EFFECTIVE_SEARCH_KEYWORDS) {
+    return `Tổng số từ khóa sẽ bị chặn là ${effective.length}, vượt quá tối đa ${MAX_EFFECTIVE_SEARCH_KEYWORDS} từ khóa trong một quy tắc. Hãy bỏ chọn một nhóm hoặc xóa bớt từ khóa riêng.`
   }
   return null
 }
