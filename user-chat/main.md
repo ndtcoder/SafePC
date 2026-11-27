@@ -4290,3 +4290,12 @@ Chỉ dùng nguồn sạch (MIT/CC/Unlicense) — em khuyên phương án này
 
 ## [2026-11-27 19:33 +07] ChaMuse
 Đợt danh sách HOÀN TẤT: reviewer độc lập APPROVED (tự đếm lại 18.339 domain khớp manifest, 54/54 hạt giống, 0 trùng, 0 domain bảo vệ lọt, chạy lại mọi cổng xanh; 2 MINOR không chặn: lát cắt dự phòng slice cuối hàm background.js là mẫu cũ từ trước + từ "milf"/"orgy" có rủi ro chuỗi con ~0). Đã đẩy 9 commit lên develop (head 2bf66a2, 31 commit ahead main). CI: run #349 (cổng Agent) XANH — Tray 19/19, IPC 13/13, bản cài v0.1.349 tải được (95,1 MB); run #350 Dashboard XANH. Đã ghi v0.1.349 vào danh sách build thành công và đính kèm extension 0.1.12 cho anh.
+
+## [2026-11-27 21:26 +07] anh Tiến
+Thêm ý tưởng SafePC:
+1. Check giờ mở máy luôn so sánh giờ internet với giờ UTC+7 trên internet time (phụ huynh set timezone này) để đề phòng con chỉnh giờ/timezone
+2. khi tạo rule cấm theo giờ, cấm domain thì đồng thời tạo rule theo dõi nếu con vi phạm các rule này (do app ko chặn được hoặc cha mẹ cho phép tạm thời, hoặc rule cấm bị disabled) thì record lại để lên báo cáo tổng hợp. Chỉ dừng record nếu rule bị edit (đổi thông số mới thì record theo thông số mới) hoặc bị xóa thì ko record nữa.
+Em thảo luận và hoàn thiện ý tưởng và ghi vào docs để thực hiện
+
+## [2026-11-27 21:3x +07] ChaMuse
+Đã thảo luận + hoàn thiện cả hai ý tưởng và ghi vào docs (PRD §2.14 giờ tin cậy + §2.15 theo dõi khi luật không chặn; ROADMAP thêm mục đợt triển khai; AMENDMENTS A-17/A-18), đang đẩy commit docs lên develop. Ý 1 hoàn thiện: giờ tin cậy = giờ server + TickCount64 quy đổi múi giờ gia đình phụ huynh đặt — chỉnh giờ/múi giờ đều không lách được, lệch >120s vẫn báo clock_drift; giới hạn trung thực: qua khởi động lại chưa có mạng chỉ có offset cuối. Ý 2 hoàn thiện: theo dõi là mặt tích hợp của luật (mặc định bật, tắt được theo luật), 3 ngữ cảnh tách rõ (luật tắt / cho phép tạm thời — trung tính không gọi vi phạm / không chặn được), ghi gộp kèm bản chụp tên+mode nên sửa luật ghi theo thông số mới, xóa thì dừng; lên Báo cáo tuần, không push tức thời; không thu dữ liệu mới.
