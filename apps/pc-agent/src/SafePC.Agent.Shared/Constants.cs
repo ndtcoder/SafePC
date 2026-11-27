@@ -60,6 +60,15 @@ public static class AgentConstants
     /// <summary>Tên Named Pipe cho IPC giữa Service (server) và Tray App (client).</summary>
     public const string IpcPipeName = "SafePCAgentPipe";
 
+    /// <summary>
+    /// Trang chat của con trên Dashboard (tính năng nhắn tin con ↔ phụ huynh,
+    /// migration 29). Service cấp phiên qua RPC rồi dựng URL đầy đủ dạng
+    /// <c>ChatPageUrl + "#t=" + token phiên</c> — token nằm trong fragment
+    /// (sau #) nên không đi qua server khi trình duyệt tải trang; trang tự
+    /// đọc fragment rồi mở kênh chat bằng token đó.
+    /// </summary>
+    public const string ChatPageUrl = "https://safe-pc.vercel.app/nhan-tin";
+
     /// <summary>Kích thước tối đa của một file log local trước khi xoay vòng (10MB, theo docs/03).</summary>
     public const long MaxLogFileBytes = 10L * 1024 * 1024;
 

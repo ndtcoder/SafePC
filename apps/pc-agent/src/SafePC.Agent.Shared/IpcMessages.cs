@@ -37,6 +37,29 @@ public static class IpcMessageTypes
 
     /// <summary>Service -> Tray: trả lời <see cref="PinVerifyRequest"/>.</summary>
     public const string PinVerifyResponse = "pin-verify-response";
+
+    /// <summary>Tray -> Service: con bấm "Nhắn tin với bố mẹ", xin Service cấp phiên chat (RPC migration 29) và trả URL trang chat. Payload KHÔNG mang SID — Service lấy SID từ bản tin hello của đúng kết nối pipe đã hỏi.</summary>
+    public const string ChatOpenRequest = "chat-open-request";
+
+    /// <summary>Service -> Tray: trả lời <see cref="ChatOpenRequest"/> — URL trang chat đầy đủ (kèm token phiên trong fragment) hoặc mã lỗi trong <see cref="ChatOpenErrors"/>.</summary>
+    public const string ChatOpenResponse = "chat-open-response";
+}
+
+/// <summary>
+/// Mã lỗi trong câu trả lời mở chat (<see cref="IpcMessageTypes.ChatOpenResponse"/>).
+/// Tray dịch từng mã sang câu chữ thân thiện cho con; mã lạ/không có thì
+/// Tray rơi về câu lỗi chung. Không mã nào mang dữ liệu nhạy cảm.
+/// </summary>
+public static class ChatOpenErrors
+{
+    /// <summary>Máy chưa ghép nối với hồ sơ con nào (chưa có device token).</summary>
+    public const string NotPaired = "not_paired";
+
+    /// <summary>Server chưa có RPC cấp phiên chat (migration 29 chưa áp).</summary>
+    public const string ChatNotEnabled = "chat_not_enabled";
+
+    /// <summary>Lỗi khác (mất mạng, server từ chối, kết quả không hợp lệ...).</summary>
+    public const string Failed = "failed";
 }
 
 /// <summary>
@@ -160,3 +183,21 @@ public sealed record PinVerifyRequestPayload(string Pin, string RequestId);
 /// <c>RequestId</c> vọng lại id của câu hỏi.
 /// </summary>
 public sealed record PinVerifyResponsePayload(bool Verified, bool LockedOut, int RemainingAttempts, bool PinConfigured, string RequestId);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.ChatOpenRequest"/>: chỉ mang id để
+/// Tray đối chiếu câu trả lời. CỐ Ý không mang SID hay thông tin tài khoản —
+/// Service lấy SID của phiên từ bản tin hello của đúng kết nối pipe đã gửi
+/// câu hỏi (quyền quyết định phía server, không tin payload).
+/// </summary>
+public sealed record ChatOpenRequestPayload(string RequestId);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.ChatOpenResponse"/>.
+/// <c>Ok</c> true thì <c>Url</c> là URL trang chat đầy đủ (token phiên nằm
+/// trong fragment của URL — chỉ đi trên pipe nội bộ máy tới đúng Tray đã
+/// hỏi, KHÔNG bao giờ ghi log ở cả hai phía). <c>Ok</c> false thì
+/// <c>Error</c> là một mã trong <see cref="ChatOpenErrors"/> và
+/// <c>Url</c> null. <c>RequestId</c> vọng lại id của câu hỏi.
+/// </summary>
+public sealed record ChatOpenResponsePayload(bool Ok, string? Url, string? Error, string RequestId);
