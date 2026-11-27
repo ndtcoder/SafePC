@@ -35,8 +35,13 @@ export async function fetchDeviceChildAccounts(
 }
 
 // ---------------------------------------------------------------------------
-// Tài khoản Windows mà Tray đã "nhìn thấy" — THIẾT KẾ migration 25
-// (đợt sau, CHƯA triển khai; chỉ thiết kế, không code phần Service).
+// Tài khoản Windows mà Tray đã "nhìn thấy" — migration 25 ĐÃ VIẾT
+// (backend/supabase/migrations/20261121100000_sprint5_seen_accounts.sql,
+// theo đúng thiết kế dưới đây; áp sau migration 24). Phía Service ĐÃ
+// NỐI: SupabaseApiClient.ReportSeenAccountAsync, Service gọi ở điểm
+// hello của mỗi phiên Tray (throttle 10 phút/SID trong bộ nhớ). Tới
+// khi migration 25 được ÁP trên server, hàm dưới trả available: false
+// và giao diện hiện ghi chú thay vì danh sách.
 //
 // Vấn đề: danh sách tài khoản Tray-nhìn-thấy hiện chỉ nằm trong bộ nhớ
 // của Service (phiên hello: SessionId / UserName / IsAdmin / SID), chưa
@@ -67,8 +72,9 @@ export async function fetchDeviceChildAccounts(
 //   Dashboard (đã viết sẵn trong đợt này): đọc thẳng bảng qua RLS như
 //   mọi bảng khác, không cần RPC đọc riêng.
 //
-// Tới khi migration 25 + bản Agent mới chưa có, hàm dưới trả
-// available: false và giao diện hiện ghi chú thay vì danh sách.
+// (Thiết kế trên đã thành migration 25 ở file ghi ở đầu mục này, kèm
+// lịch cron dọn hàng quá 30 ngày không thấy lại — nhánh "có thể dọn
+// bằng cron" của thiết kế.)
 // ---------------------------------------------------------------------------
 
 /**
