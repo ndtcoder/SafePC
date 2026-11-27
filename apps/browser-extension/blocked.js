@@ -22,6 +22,9 @@ const REASONS = {
   // DomainCategoryLists phía Agent ("category-<id>").
   "category-adult": "Trang web này thuộc danh mục nội dung người lớn, đã bị chặn theo quy tắc của phụ huynh.",
   "category-gambling": "Trang web này thuộc danh mục cờ bạc, cá cược, đã bị chặn theo quy tắc của phụ huynh.",
+  "category-violence": "Trang web này thuộc danh mục bạo lực, đã bị chặn theo quy tắc của phụ huynh.",
+  "category-games": "Trang web này thuộc danh mục game, đã bị chặn theo quy tắc của phụ huynh.",
+  "category-movies": "Trang web này thuộc danh mục phim, đã bị chặn theo quy tắc của phụ huynh.",
   "category-social": "Trang web này thuộc danh mục mạng xã hội, đã bị chặn theo quy tắc của phụ huynh.",
   // Kiểm duyệt từ khóa tìm kiếm (0.1.11): URL trang chặn chỉ mang
   // reason này — KHÔNG mang cụm từ đã tìm. Tiêu đề cũng đổi thành

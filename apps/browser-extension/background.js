@@ -122,7 +122,18 @@ const MAX_PENDING_BLOCKED = 200;
 // Trần hàng đợi cụm từ tìm kiếm chưa gửi (0.1.11): mỗi lượt tìm là một
 // mẫu rời rạc {engine, term, blocked}; quá trần thì bỏ mẫu cũ nhất.
 const MAX_PENDING_SEARCH = 200;
-const MAX_DNR_RULES = 4500;
+// Trần TỔNG rule DNR sinh ra trong một lần dựng (gồm cả nhóm search
+// <= 750 rule và nhóm SafeSearch <= 3 rule — hai nhóm đó áp bằng lời
+// gọi updateDynamicRules riêng nhưng vẫn nằm trong cùng tổng này vì
+// việc cắt trần diễn ra trên toàn bộ mảng trước khi tách nhóm). Chrome
+// bảo đảm tối thiểu 30.000 dynamic rules cho mọi extension, nên trần
+// 10.000 còn xa mới chạm giới hạn đó. Nâng 4.500 -> 10.000 ở 0.1.12
+// (đợt danh mục domain từ list công khai): mỗi domain chặn tốn 2 rule
+// (redirect + block) nên 4.500 chỉ đủ ~2.250 domain ở tầng request.
+// Domain KHÔNG vào được DNR vẫn bị tab watcher thi hành đầy đủ ở tầng
+// điều hướng (đánh giá trên toàn bộ rules.blocked) — xem ngân sách
+// dựng cặp rule chặn domain ở cuối buildDnrRules.
+const MAX_DNR_RULES = 10000;
 // Ngân sách rule regex DNR cho chặn từ khóa tìm kiếm (0.1.11, sửa theo
 // review 27/11/2026): Chrome giới hạn 1000 rule regex trong bộ rule
 // động; mỗi từ khóa tốn 5 rule (một cho mỗi công cụ tìm kiếm). Chỉ dựng
@@ -543,12 +554,12 @@ function normalizeDomainSet(rawList) {
   return domains;
 }
 
-// Thứ tự chuẩn của danh mục chặn (0.1.8) — khớp đúng
-// DomainCategoryLists.OrderedIds phía Agent: một domain thuộc hai danh
-// mục thì hiện lý do của danh mục đứng trước. Id lạ (Agent mới hơn
-// extension) thì bỏ qua, domain đó vẫn bị chặn với lý do "blocked"
+// Thứ tự chuẩn của danh mục chặn (0.1.8; mở rộng 6 danh mục ở 0.1.12) —
+// khớp đúng DomainCategoryLists.OrderedIds phía Agent: một domain thuộc
+// hai danh mục thì hiện lý do của danh mục đứng trước. Id lạ (Agent mới
+// hơn extension) thì bỏ qua, domain đó vẫn bị chặn với lý do "blocked"
 // chung — fail-open, không bao giờ hiện lý do mà blocked.js không có.
-const CATEGORY_REASON_ORDER = ["adult", "gambling", "social"];
+const CATEGORY_REASON_ORDER = ["adult", "gambling", "violence", "games", "movies", "social"];
 
 // Map domain -> lý do theo danh mục ("category-<id>") từ
 // rules.blockedCategories = { "<id>": [domain, ...], ... }. Hàm thuần,
@@ -584,6 +595,10 @@ function buildDnrRules(rules, usageSeconds, now) {
   const nowMs = now.getTime();
   const rulesOut = [];
   let nextId = 1;
+  // Hàng đợi cặp rule chặn domain (xem ghi chú NGÂN SÁCH ở vòng lặp
+  // `blocked`): chỉ dựng ở cuối hàm, trong ngân sách MAX_DNR_RULES còn
+  // lại sau mọi loại rule khác.
+  const blockedDnrQueue = [];
 
   const tempBlock = unexpiredTempDomains(rules.tempBlock, nowMs);
   const tempAllow = unexpiredTempDomains(rules.tempAllow, nowMs);
@@ -678,11 +693,42 @@ function buildDnrRules(rules, usageSeconds, now) {
     // buildCategoryReasonMap), ngược lại lý do "blocked" chung. Một
     // domain chỉ có đúng một cặp rule nên không phụ thuộc luật hòa của
     // trình duyệt khi domain vừa gõ tay vừa thuộc danh mục.
+    // NGÂN SÁCH (0.1.12, đợt danh mục từ list công khai — tổng domain
+    // các danh mục ~18.000, mỗi domain 2 rule nên KHÔNG thể dựng cặp
+    // rule cho tất cả): các cặp rule KHÔNG dựng ngay ở đây mà xếp hàng
+    // vào blockedDnrQueue, dựng ở cuối buildDnrRules trong ngân sách
+    // còn lại sau khi mọi loại rule khác (chặn theo giờ, giới hạn,
+    // SafeSearch, focus/allowlist — các loại tab watcher KHÔNG thi
+    // hành thay được) đã có chỗ. Thứ tự hàng đợi: domain phụ huynh gõ
+    // tay trước (ý định rõ nhất), rồi domain danh mục theo thứ tự ưu
+    // tiên danh mục. Domain không vào được hàng đợi DNR vẫn bị tab
+    // watcher chặn ở tầng điều hướng trên toàn bộ `blocked`.
     const categoryReasons = buildCategoryReasonMap(rules);
+    const categoryDomainSet = new Set(categoryReasons.keys());
+    const queuedDomains = new Set();
     for (const domain of blocked) {
-      const reason = categoryReasons.get(domain) || "blocked";
-      rulesOut.push(redirectRule(nextId++, PRIORITY.blocked, domain, reason));
-      rulesOut.push(blockRule(nextId++, PRIORITY.blocked, domain));
+      if (!categoryDomainSet.has(domain)) {
+        blockedDnrQueue.push({ domain, reason: "blocked" });
+        queuedDomains.add(domain);
+      }
+    }
+    const byCategory =
+      rules.blockedCategories && typeof rules.blockedCategories === "object" && !Array.isArray(rules.blockedCategories)
+        ? rules.blockedCategories
+        : {};
+    for (const category of CATEGORY_REASON_ORDER) {
+      const raw = byCategory[category];
+      if (!Array.isArray(raw)) continue;
+      for (const item of raw) {
+        const domain = normalizeDomain(item);
+        if (domain && blocked.has(domain) && categoryDomainSet.has(domain) && !queuedDomains.has(domain)) {
+          // Lý do lấy từ buildCategoryReasonMap (danh mục ưu tiên cao
+          // nhất của domain này) — không tự suy từ vòng lặp, để khớp
+          // đúng lý do phía tab watcher cho cùng một domain.
+          blockedDnrQueue.push({ domain, reason: categoryReasons.get(domain) });
+          queuedDomains.add(domain);
+        }
+      }
     }
     // Mẫu URL (batch 4): rules.urlPatterns = ["host/path", ...] từ
     // DomainRulesPublisher (chỉ mode block_domains). Cùng nhánh
@@ -779,6 +825,30 @@ function buildDnrRules(rules, usageSeconds, now) {
     // Chế độ allowlist: chỉ các domain trong danh sách mới mở được.
     for (const domain of allowlist) rulesOut.push(allowRule(nextId++, PRIORITY.allowlistAllow, domain));
     addBlockAll("allowlist", PRIORITY.blockAllRedirect, PRIORITY.blockAll);
+  }
+
+  // Dựng cặp rule chặn domain trong ngân sách còn lại (0.1.12): mỗi
+  // domain 2 rule; khi hàng đợi dài hơn ngân sách, phần còn lại KHÔNG
+  // có rule ở tầng request nhưng vẫn bị tab watcher chặn ở tầng điều
+  // hướng (watcher đánh giá trên toàn bộ rules.blocked, kể cả lý do
+  // theo danh mục) — cùng mẫu "DNR cho phần đầu, watcher cho toàn bộ"
+  // như chặn từ khóa tìm kiếm. Ghi warn để chẩn đoán thấy rõ.
+  if (blockedDnrQueue.length > 0) {
+    let addedDomains = 0;
+    for (const item of blockedDnrQueue) {
+      if (rulesOut.length + 2 > MAX_DNR_RULES) break;
+      rulesOut.push(redirectRule(nextId++, PRIORITY.blocked, item.domain, item.reason));
+      rulesOut.push(blockRule(nextId++, PRIORITY.blocked, item.domain));
+      addedDomains++;
+    }
+    if (addedDomains < blockedDnrQueue.length) {
+      console.warn(
+        "[SafePC] Danh sách chặn có " + blockedDnrQueue.length +
+        " domain, vượt ngân sách rule DNR: chỉ dựng rule tầng request cho " + addedDomains +
+        " domain đầu (ưu tiên domain gõ tay rồi danh mục); " + (blockedDnrQueue.length - addedDomains) +
+        " domain còn lại vẫn bị tab watcher thi hành ở tầng điều hướng.",
+      );
+    }
   }
 
   if (rulesOut.length > MAX_DNR_RULES) {
