@@ -197,6 +197,58 @@ public sealed class WebVisitRecord
 }
 
 /// <summary>
+/// Một cụm từ tìm kiếm trên công cụ tìm kiếm, khớp bảng <c>search_terms</c>
+/// (migration 28). Đây là kênh dữ liệu DUY NHẤT mang cụm từ tìm kiếm:
+/// phụ huynh quyết định ngày 27/11/2026 (kiểu Microsoft Family Safety)
+/// rằng riêng cụm từ trên các công cụ tìm kiếm (Google, Bing,
+/// DuckDuckGo, Yahoo, Cốc Cốc) được trích ra để chặn theo từ khóa cấm
+/// và thống kê vào Báo cáo tuần — mọi URL khác vẫn bỏ query như cũ.
+/// <see cref="Engine"/> là id ngắn của công cụ ("google", "coccoc"...),
+/// <see cref="Term"/> là cụm từ GỐC đã giải mã, trần 200 ký tự,
+/// <see cref="Blocked"/> = lượt tìm bị chặn vì chứa từ khóa cấm.
+/// family_id/device_id/child_id do server suy ra từ device đã xác thực
+/// (child theo <see cref="WindowsSid"/> qua ánh xạ migration 24,
+/// fallback con mặc định của máy), không gửi kèm.
+/// </summary>
+public sealed class SearchTermRecord
+{
+    [JsonPropertyName("engine")]
+    public string Engine { get; set; } = string.Empty;
+
+    [JsonPropertyName("term")]
+    public string Term { get; set; } = string.Empty;
+
+    [JsonPropertyName("blocked")]
+    public bool Blocked { get; set; }
+
+    /// <summary>SID của tài khoản Windows đã tìm kiếm (Sprint 5) — như
+    /// <see cref="WebVisitRecord.WindowsSid"/>.</summary>
+    [JsonPropertyName("windows_sid")]
+    public string? WindowsSid { get; set; }
+}
+
+/// <summary>
+/// Kết quả RPC <c>safepc_mint_chat_session</c> (migration 29): phiên chat
+/// của con với phụ huynh. <see cref="Token"/> là token phiên (sống 12 giờ,
+/// chỉ mang trong URL trang chat dạng fragment — Service đưa cho đúng Tray
+/// đã hỏi qua IPC nội bộ máy; KHÔNG bao giờ ghi log token này).
+/// <see cref="ExpiresAt"/> là thời điểm hết hạn server cấp,
+/// <see cref="ChildId"/> là hồ sơ con mà phiên thuộc về (server suy ra từ
+/// thiết bị + SID của phiên Tray).
+/// </summary>
+public sealed class ChatSessionMintResult
+{
+    [JsonPropertyName("token")]
+    public string Token { get; set; } = string.Empty;
+
+    [JsonPropertyName("expires_at")]
+    public DateTimeOffset ExpiresAt { get; set; }
+
+    [JsonPropertyName("child_id")]
+    public Guid ChildId { get; set; }
+}
+
+/// <summary>
 /// Một hàng ánh xạ thiết bị ↔ hồ sơ con ↔ tài khoản Windows (bảng
 /// <c>device_child_accounts</c>, migration 24, Sprint 5): tài khoản Windows
 /// có SID này trên máy này là hồ sơ con <c>ChildId</c>. Agent tải danh sách
