@@ -53,15 +53,38 @@ Chức năng chính (khóa/mở máy từ xa) đã kiểm chứng trên máy th�
 
 ### Sprint 5 — Nhiều con dùng chung một máy (phương án 2: một phiên active) ⏳
 
-Trạng thái: đã chốt hướng đi ngày 20/11/2026, chưa bắt đầu code. Chi tiết ngữ nghĩa xem PRD §2.11. Nguyên tắc: chỉ phiên console đang hoạt động mới bị thi hành luật; mỗi con vẫn có thể có nhiều máy (dùng chung hoặc riêng), quản lý theo hồ sơ từng con.
+Trạng thái: backend đợt 1 đã đẩy (head bdfc640, CI #317 code xanh — chỉ bước upload artifact đỏ do hết hạn mức lưu trữ); đợt Dashboard review xong (APPROVED) + migration 27 review xong (APPROVED), cả hai đều chỉ trong cây local, đang chờ anh test xong v0.1.309 mới đẩy (Vercel auto-deploy main). Chi tiết ngữ nghĩa xem PRD §2.11. Nguyên tắc: chỉ phiên console đang hoạt động mới bị thi hành luật; mỗi con vẫn có thể có nhiều máy (dùng chung hoặc riêng), quản lý theo hồ sơ từng con.
 
 - [ ] Mô hình dữ liệu + migration: bảng ánh xạ thiết bị ↔ hồ sơ con ↔ tài khoản Windows (lưu theo SID — Tray gửi thêm SID trong bản tin hello); `commands` thêm `child_id`; watermark chống lệnh cũ tách theo (thiết bị, con); usage ghi theo (thiết bị, tài khoản Windows) rồi suy ra hồ sơ con; NativeHost gắn thêm username/SID vào mỗi dòng `web_usage.jsonl` và `domain_requests.jsonl`.
 - [ ] Service nhận biết phiên console + đổi bộ luật khi đổi phiên (cơ chế phát hiện đổi phiên: Service `OnSessionChange` / `WTSGetActiveConsoleSessionId` / hello từ phiên mới — chốt lúc triển khai): chỉ thi hành luật của con đang active; phiên nền hiện trạng thái tạm dừng và không tính giờ; ghi lại `domain_rules.json` theo con đang active. Đường giết app giữ nguyên (đã theo phiên).
 - [ ] Lệnh gắn theo con + hoãn khi chưa active: khóa/mở/ghi đè mang `child_id`; lệnh cho con chưa active thì hoãn tới khi con lên console; Dashboard hiện "sẽ áp dụng khi con đăng nhập".
 - [ ] Dashboard gắn tài khoản Windows + lệnh theo con: trang thiết bị liệt kê các con gắn với máy kèm tài khoản Windows; gắn/gỡ bằng cách chọn từ danh sách tài khoản Tray đã "nhìn thấy" (không gõ tay); lệnh khóa/mở/duyệt yêu cầu chọn đúng con trên đúng máy.
+- [ ] Đồng bộ trạng thái lúc gắn thêm con (phương án (a) đã chốt 21/11/2026): migration 27 (RPC `safepc_sync_enforcement_state_to_device`, tái dùng khối sao chép migration 21) + Dashboard gọi sau khi gắn (best-effort khi migration chưa áp).
 - [ ] Kiểm thử máy thật với 2 tài khoản con + chuyển đổi nhanh (fast user switching); CI không mô phỏng được đa phiên.
 
-Đã chốt 20/11/2026: tài khoản Standard chưa gắn thì không quản lý nhưng hiện cảnh báo lên Dashboard (xem PRD §2.11). Đồng bộ trạng thái khi gắn thêm con vào máy chung: chưa chốt cơ chế (chèn bản sao kiểu migration 21 lúc tạo ánh xạ, hay Service suy ra lúc phiên của con lên console — xem PRD §2.11).
+Đã chốt 20/11/2026: tài khoản Standard chưa gắn thì không quản lý nhưng hiện cảnh báo lên Dashboard (xem PRD §2.11). Đồng bộ trạng thái khi gắn thêm con vào máy chung: ĐÃ CHỐT phương án (a) ngày 21/11/2026 — migration 27, RPC `safepc_sync_enforcement_state_to_device`, Dashboard gọi sau khi gắn (best-effort khi migration chưa áp) — xem PRD §2.11.
+
+### Kiểm duyệt từ khóa tìm kiếm (yêu cầu của anh Tiến 27/11/2026) 🔨
+
+Trạng thái: đã xây ở cây local ngày 27/11/2026 (Dashboard + extension + backend), chờ đẩy cùng đợt sau khi anh test xong v0.1.309 (giống đợt Dashboard Sprint 5 + migration 27 đang giữ). Chi tiết xem PRD §2.12 và AMENDMENTS A-14.
+
+- [x] Rule website mode `block_search_keywords` (config `{"keywords": [...]}` theo từng hồ sơ con): Dashboard có form tích chọn nhóm từ khóa theo chủ đề + editor chip cho từ khóa riêng + mẫu sẵn một chạm; backend phát `searchGuard.blockedKeywords` qua domain_rules.json; extension chặn trên Google, Bing, DuckDuckGo, Yahoo, Cốc Cốc và hiện trang cảnh báo.
+- [x] Bổ sung nhóm từ khóa theo chủ đề (anh yêu cầu 27/11/2026 14:51): 6 nhóm mẫu (Nội dung người lớn 16+/18+, Cờ bạc / cá cược, Bạo lực, Game, Phim, Mạng xã hội — nhóm cờ bạc tách riêng khỏi nhóm người lớn theo review 27/11/2026) để phụ huynh tích chọn cả nhóm + từ khóa riêng; config v2 lưu thêm `groups`/`customKeywords`, `keywords` vẫn là danh sách hiệu lực duy nhất; mẫu sẵn bật sẵn nhóm Nội dung người lớn (16+/18+).
+- [x] Thống kê từ khóa đã tìm vào Báo cáo tuần: bảng `search_terms` (migration 28) + mục "Từ khóa tìm kiếm" trên trang Báo cáo (cụm từ × công cụ, tổng lượt + lượt bị chặn nổi bật, lọc text, tối đa 50 dòng).
+- [x] Cập nhật ranh giới riêng tư: chỉ cụm từ trên công cụ tìm kiếm mới được lưu (giữ 90 ngày); URL khác vẫn bỏ query — đã ghi vào PRD §2.12, Chính sách riêng tư (trang công khai + docs/09) và AMENDMENTS A-14.
+- [ ] Anh chạy tay migration 28 qua SQL Editor — SAU migration 24 và 27 (migration 28 cần chạy tay sau migration 24/27, cùng đợt áp của Sprint 5).
+- [ ] Đẩy GitHub cùng đợt sau test v0.1.309 + kiểm chứng trên máy thật (tìm kiếm vướng từ khóa bị chặn + hiện cảnh báo; thống kê khớp trên Báo cáo tuần).
+
+### Nhắn tin con ↔ phụ huynh trong SafePC (yêu cầu của anh Tiến 27/11/2026) 🔨
+
+Trạng thái: đã xây ở cây local ngày 27/11/2026 (migration 29 + Dashboard; móc nối Agent do builder Agent phụ trách theo hợp đồng RPC của migration 29), chờ đẩy cùng đợt sau khi anh test xong v0.1.309. Chi tiết xem PRD §2.13 và AMENDMENTS A-15. Mục đích: con liên lạc với bố mẹ ngay trong SafePC, khỏi dùng ứng dụng nhắn tin bên ngoài gây xao lãng; đường dùng app bên thứ ba (Telegram/WhatsApp) với danh bạ được phép KHÔNG khả thi vì các app đó không cho bên ngoài kiểm soát danh bạ. V1 chỉ tin nhắn chữ, làm trước trên web; gọi thoại/video để giai đoạn Android.
+
+- [x] Backend migration 29: bảng `messages` (RLS: gia đình đọc, phụ huynh tự gửi, con chỉ ghi qua RPC) + bảng `chat_sessions` (token phiên 12 giờ, chỉ lưu hash, không policy cho user thường) + RPC mint/fetch/send/mark_read theo token phiên, RPC phụ huynh mark_read + revoke phiên; mở rộng RPC xóa dữ liệu con (migration 15) thêm messages + chat_sessions.
+- [x] Dashboard: tab "Nhắn tin" trong hồ sơ con (polling 5 giây, trạng thái Đã xem/Đã gửi) + trang chat của con `/nhan-tin` ngoài RequireAuth (chỉ 3 RPC theo token phiên) + mục "Tin nhắn" trong xuất dữ liệu con (phiên nhắn tin không xuất — thông tin xác thực).
+- [x] Cập nhật ranh giới riêng tư: lưu NỘI DUNG tin nhắn của kênh hai chiều trong sản phẩm (cả hai phía đều là người tham gia) — đã ghi vào PRD §2.13, Chính sách riêng tư (trang công khai + docs/09) và AMENDMENTS A-15; ranh giới không đọc nội dung chat ở ứng dụng khác giữ nguyên.
+- [ ] Móc nối Agent: mục mở nhắn tin trong menu khay → Service gọi `safepc_mint_chat_session` bằng token thiết bị (kèm SID của phiên) → mở trình duyệt tới `/nhan-tin#t=<token>` (builder Agent phụ trách).
+- [ ] Anh chạy tay migration 29 qua SQL Editor — SAU migration 24 (RPC mint cần bảng ánh xạ thiết bị ↔ con của Sprint 5).
+- [ ] Đẩy GitHub cùng đợt sau test v0.1.309 + kiểm chứng trên máy thật (con mở chat từ khay, hai phía nhắn qua lại, trạng thái đã xem khớp, thu hồi phiên thì trang con báo hết hạn).
 
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
