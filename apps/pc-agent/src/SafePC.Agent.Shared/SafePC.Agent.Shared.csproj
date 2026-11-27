@@ -11,4 +11,20 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Dữ liệu domain theo danh mục chặn (đợt nhập list công khai
+         27/11/2026): 6 file text sinh tự động bởi
+         tools/import-category-lists/import.mjs từ StevenBlack (MIT),
+         UT1 Blocklist (CC BY-SA 4.0) và Block List Project (Unlicense).
+         Nhúng vào DLL để Service đọc qua DomainCategoryLists mà không
+         phụ thuộc file rời lúc cài đặt. LogicalName cố định để code nạp
+         không lệ thuộc RootNamespace mặc định. -->
+    <EmbeddedResource Include="CategoryData\adult.txt" LogicalName="SafePC.Agent.Shared.CategoryData.adult.txt" />
+    <EmbeddedResource Include="CategoryData\gambling.txt" LogicalName="SafePC.Agent.Shared.CategoryData.gambling.txt" />
+    <EmbeddedResource Include="CategoryData\violence.txt" LogicalName="SafePC.Agent.Shared.CategoryData.violence.txt" />
+    <EmbeddedResource Include="CategoryData\games.txt" LogicalName="SafePC.Agent.Shared.CategoryData.games.txt" />
+    <EmbeddedResource Include="CategoryData\movies.txt" LogicalName="SafePC.Agent.Shared.CategoryData.movies.txt" />
+    <EmbeddedResource Include="CategoryData\social.txt" LogicalName="SafePC.Agent.Shared.CategoryData.social.txt" />
+  </ItemGroup>
+
 </Project>
