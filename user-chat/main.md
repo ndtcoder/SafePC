@@ -4176,3 +4176,15 @@ My ơi hồ sơ hai tên miền Tino đã đủ cho em đóng vấn đề này g
 
 ## [2026-11-26 20:32 +07] TraMuse
 Dạ, em đóng việc giấy tờ Tino luôn: hồ sơ của cả ndt.ap.vn và myhome.ap.vn đã đủ theo xác nhận của anh tối nay — em đã ghi vào danh sách việc của anh là đã xong và sẽ không nhắc lại việc này nữa.
+
+## [2026-11-27 14:36 +07] Anh Tiến
+chuyển đoạn chat về Myhome ở Main chat này về side chat MyHome
+
+## [2026-11-27 14:36 +07] ChaMuse
+Đã chuyển xong — toàn bộ đoạn MyHome ở chat chính (nhắc CRON_SECRET 2 lần hôm nay + câu hỏi duyệt P3-2 chưa trả lời) đã sang chat MyHome tiếp quản. Từ giờ việc MyHome trao đổi ở chat MyHome; chat chính để dành cho SafePC và chuyện chung.
+
+## [2026-11-27 14:40 +07] Anh Tiến
+SafePC: A muốn tính năng kiểm duyệt cả từ khóa tìm kiếm như Family safety. Nếu cụm từ tìm kiếm có vướng từ khóa bị cấm thì sẽ ko cho tìm kiếm, hiện cảnh báo. Cả thống kê/tóm tắt các từ khóa đã tìm kiếm vào report (như web history)
+
+## [2026-11-27 14:47 +07] ChaMuse
+Nhận việc và đã khởi động xây: chặn tìm kiếm chứa từ cấm (5 công cụ Google/Bing/DuckDuckGo/Yahoo/Cốc Cốc, hiện trang cảnh báo) + ghi nhận mọi lượt tìm và thống kê vào Báo cáo tuần như lịch sử web; danh sách từ cấm theo từng hồ sơ con, có danh sách mẫu để anh sửa. Có ghi rõ đây là quyết định nới ranh giới riêng tư của anh (chỉ cụm từ trên công cụ tìm kiếm mới được lưu, giữ 90 ngày). Hai builder đang làm song song (extension/Service/migration và Dashboard/tài liệu), xong em cho review độc lập rồi báo cáo; cả đợt giao cùng nhịp đẩy sau khi anh test xong v0.1.309.
