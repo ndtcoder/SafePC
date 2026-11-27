@@ -1,7 +1,12 @@
 import { useState } from 'react'
 import {
   DOMAIN_CATEGORIES,
+  KEYWORD_GROUPS,
+  MAX_SEARCH_KEYWORD_LENGTH,
+  MAX_SEARCH_KEYWORDS,
   WEEKDAY_OPTIONS,
+  effectiveSearchKeywords,
+  normalizeSearchKeyword,
   parseWebsiteEntriesInput,
   type AllowlistByTimeDraft,
   type AppAllowlistByTimeDraft,
@@ -15,8 +20,10 @@ import {
   type DomainTimeLimitDraft,
   type FocusDraft,
   type ForcedBreakDraft,
+  type KeywordGroupId,
   type ListKind,
   type SafeSearchDraft,
+  type SearchKeywordsDraft,
   type TimeKind,
   type TimeRangeValue,
   type TimeWindowDraft,
@@ -699,6 +706,194 @@ export function SafeSearchForm({
         />
         Bật chế độ hạn chế của YouTube (Restricted Mode)
       </label>
+    </div>
+  )
+}
+
+/**
+ * Form chặn từ khóa tìm kiếm (v2 — nhóm chủ đề): khu 1 là 6 NHÓM TỪ KHÓA
+ * CÓ SẴN theo chủ đề, tích chọn cả nhóm (KEYWORD_GROUPS ở
+ * lib/ruleConfig.ts); khu 2 là editor chip cho TỪ KHÓA RIÊNG của phụ
+ * huynh (Enter hoặc nút Thêm để thêm, nút × để xóa từng từ). Dòng tổng
+ * kết cuối form đếm danh sách hiệu lực thật (hợp nhất nhóm + từ riêng)
+ * bằng `effectiveSearchKeywords` nên luôn khớp thứ sẽ lưu. Từ khóa riêng
+ * được chuẩn hoá ngay khi thêm (trim + chữ thường, khớp validate/build
+ * ở lib/ruleConfig.ts); lỗi nhập (trùng, quá dài, đầy danh sách) hiện
+ * ngay dưới ô nhập thay vì chờ tới lúc lưu.
+ */
+export function SearchKeywordsForm({
+  draft,
+  onChange,
+}: {
+  draft: SearchKeywordsDraft
+  onChange: (draft: SearchKeywordsDraft) => void
+}) {
+  const [input, setInput] = useState('')
+  const [inputError, setInputError] = useState<string | null>(null)
+
+  const toggleGroup = (groupId: KeywordGroupId, checked: boolean) => {
+    const groups = checked
+      ? [...draft.groups, groupId]
+      : draft.groups.filter((id) => id !== groupId)
+    // Giữ thứ tự chuẩn của KEYWORD_GROUPS để draft/config luôn ổn định.
+    onChange({
+      ...draft,
+      groups: KEYWORD_GROUPS.map((g) => g.id).filter((id) => groups.includes(id)),
+    })
+  }
+
+  const addKeyword = (raw: string) => {
+    const keyword = normalizeSearchKeyword(raw)
+    if (keyword === '') return
+    if (keyword.length > MAX_SEARCH_KEYWORD_LENGTH) {
+      setInputError(
+        `Từ khóa “${keyword}” quá dài (tối đa ${MAX_SEARCH_KEYWORD_LENGTH} ký tự). Hãy rút gọn rồi thêm lại.`,
+      )
+      return
+    }
+    if (draft.customKeywords.includes(keyword)) {
+      setInputError(`Từ khóa “${keyword}” đã có trong danh sách từ khóa riêng.`)
+      return
+    }
+    if (draft.customKeywords.length >= MAX_SEARCH_KEYWORDS) {
+      setInputError(
+        `Danh sách từ khóa riêng đã đủ ${MAX_SEARCH_KEYWORDS} từ. Hãy xóa bớt trước khi thêm.`,
+      )
+      return
+    }
+    setInputError(null)
+    setInput('')
+    onChange({ ...draft, customKeywords: [...draft.customKeywords, keyword] })
+  }
+
+  const removeKeyword = (keyword: string) => {
+    setInputError(null)
+    onChange({ ...draft, customKeywords: draft.customKeywords.filter((item) => item !== keyword) })
+  }
+
+  const effectiveCount = effectiveSearchKeywords(draft.groups, draft.customKeywords).length
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Khi con tìm kiếm trên Google, Bing, DuckDuckGo, Yahoo hoặc Cốc Cốc mà cụm từ tìm kiếm chứa
+        một từ khóa bị cấm, lượt tìm kiếm đó bị chặn và trình duyệt hiện trang cảnh báo của SafePC.
+        Mọi cụm từ đã tìm (kể cả lượt bị chặn) được ghi lại để phụ huynh xem trong Báo cáo tuần; dữ
+        liệu giữ 90 ngày.
+      </p>
+
+      <fieldset>
+        <legend className="mb-1 text-sm font-medium text-slate-700">
+          Nhóm từ khóa có sẵn — tích để áp dụng cả nhóm
+        </legend>
+        <div className="space-y-2">
+          {KEYWORD_GROUPS.map((group) => {
+            const preview =
+              group.keywords.length <= 3
+                ? group.keywords.join(', ')
+                : `${group.keywords.slice(0, 3).join(', ')}, … và ${group.keywords.length - 3} từ khác`
+            return (
+              <label
+                key={group.id}
+                className="flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg border border-slate-200 p-3"
+              >
+                <input
+                  type="checkbox"
+                  checked={draft.groups.includes(group.id)}
+                  onChange={(e) => toggleGroup(group.id, e.target.checked)}
+                  className={`${checkboxClassName} mt-0.5`}
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-800">
+                    {group.label} ({group.keywords.length} từ khóa)
+                  </span>
+                  <span className="mt-0.5 block text-sm text-slate-600">{group.description}</span>
+                  <span className="mt-0.5 block text-xs text-slate-500">{preview}</span>
+                </span>
+              </label>
+            )
+          })}
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Các nhóm là danh sách mẫu do SafePC gợi ý — phụ huynh tự cân nhắc theo gia đình mình; bỏ
+          tích một nhóm là gỡ toàn bộ từ khóa của nhóm đó khỏi danh sách bị cấm.
+        </p>
+      </fieldset>
+
+      <div>
+        <span className="mb-1 block text-sm font-medium text-slate-700">
+          Từ khóa riêng của phụ huynh ({draft.customKeywords.length}/{MAX_SEARCH_KEYWORDS})
+        </span>
+        {draft.customKeywords.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            Chưa có từ khóa riêng nào. Gõ từ khóa vào ô dưới đây để thêm từ ngoài các nhóm có sẵn.
+          </p>
+        ) : (
+          <ul className="flex flex-wrap gap-2" aria-label="Danh sách từ khóa riêng">
+            {draft.customKeywords.map((keyword) => (
+              <li
+                key={keyword}
+                className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 py-1 pl-3 pr-1 text-sm text-red-800"
+              >
+                <span className="break-all">{keyword}</span>
+                <button
+                  type="button"
+                  onClick={() => removeKeyword(keyword)}
+                  aria-label={`Xóa từ khóa ${keyword}`}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-red-700 hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="search-keyword-input" className="mb-1 block text-sm font-medium text-slate-700">
+          Thêm từ khóa riêng
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="search-keyword-input"
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                // Enter trong ô này chỉ thêm từ khóa, không gửi cả form quy tắc.
+                e.preventDefault()
+                addKeyword(input)
+              }
+            }}
+            placeholder="Ví dụ: cá cược"
+            maxLength={MAX_SEARCH_KEYWORD_LENGTH + 20}
+            className={inputClassName}
+          />
+          <button
+            type="button"
+            onClick={() => addKeyword(input)}
+            className={`${secondaryButtonClassName} shrink-0`}
+          >
+            Thêm
+          </button>
+        </div>
+        {inputError && (
+          <p role="alert" className="mt-1 text-sm text-red-600">
+            {inputError}
+          </p>
+        )}
+        <p className="mt-1 text-xs text-slate-500">
+          Mỗi từ khóa tối đa {MAX_SEARCH_KEYWORD_LENGTH} ký tự; không phân biệt hoa/thường (hệ thống
+          tự chuyển thành chữ thường). Từ khóa riêng trùng với từ trong nhóm đã chọn chỉ tính một
+          lần trong tổng số.
+        </p>
+      </div>
+
+      <p className="rounded-lg bg-slate-50 p-3 text-sm font-medium text-slate-800" aria-live="polite">
+        Tổng số từ khóa sẽ bị chặn: {effectiveCount}
+      </p>
     </div>
   )
 }

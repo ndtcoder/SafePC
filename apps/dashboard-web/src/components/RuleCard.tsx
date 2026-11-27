@@ -24,6 +24,7 @@ export function RuleCard({
   rule,
   category,
   enforcing,
+  enforcingStale = false,
   expanded,
   toggling,
   confirmingDelete,
@@ -38,6 +39,8 @@ export function RuleCard({
   rule: Rule
   category: RuleCategoryKey
   enforcing: boolean
+  /** Snapshot thi hành đã quá cũ (hơn 5 phút): highlight bớt đậm + gắn nhãn "Dữ liệu cũ". */
+  enforcingStale?: boolean
   expanded: boolean
   toggling: boolean
   confirmingDelete: boolean
@@ -56,7 +59,7 @@ export function RuleCard({
   return (
     <div
       className={`rounded-xl border border-l-4 bg-white shadow-sm ${theme.borderL} ${
-        enforcing ? 'ring-2 ring-indigo-200' : ''
+        enforcing && !enforcingStale ? 'ring-2 ring-indigo-200' : ''
       }`}
     >
       <div className="flex items-center gap-2 px-3 py-2">
@@ -78,7 +81,7 @@ export function RuleCard({
           <span className="min-w-0 flex-1">
             <span
               className={`block truncate text-sm text-slate-900 ${
-                enforcing ? 'font-bold' : 'font-semibold'
+                enforcing && !enforcingStale ? 'font-bold' : 'font-semibold'
               }`}
             >
               {displayName}
@@ -94,8 +97,12 @@ export function RuleCard({
           </span>
         )}
         {enforcing && (
-          <span className="shrink-0 rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800">
-            Đang thi hành
+          <span
+            className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
+              enforcingStale ? 'bg-amber-100 text-amber-800' : 'bg-indigo-100 text-indigo-800'
+            }`}
+          >
+            {enforcingStale ? 'Đang thi hành · Dữ liệu cũ' : 'Đang thi hành'}
           </span>
         )}
         <button
