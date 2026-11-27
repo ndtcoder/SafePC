@@ -15,6 +15,9 @@ public sealed record OutboxItem(long Id, string PayloadJson);
 /// sid) để không gộp giờ của hai con dùng chung app.</summary>
 public sealed record UsageSummary(string AppName, string? ExePathHash, long SampleCount, DateTimeOffset FirstSampledAt, DateTimeOffset LastSampledAt, string? Sid = null);
 
+/// <summary>Một dòng quan sát luật-không-chặn đang chờ đẩy trong hàng đợi cục bộ (migration 31): id hàng đợi + con mà dòng thuộc về + bản ghi đã gộp.</summary>
+public sealed record RuleObservationOutboxItem(long Id, Guid ChildId, RuleObservationRecord Record);
+
 /// <summary>
 /// Lưu trữ local SQLite cho Service (offline-first, docs/02-ARCHITECTURE.md mục 4.2):
 /// - Bảng <c>outbox</c>: usage batch chưa gửi, retry với backoff.
@@ -75,7 +78,34 @@ public sealed class OutboxStore
                 type TEXT NOT NULL,
                 config_json TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                name TEXT,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS monitor_rules_cache (
+                id TEXT PRIMARY KEY,
+                family_id TEXT NOT NULL,
+                child_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                name TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rule_observations_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                child_id TEXT NOT NULL,
+                rule_id TEXT,
+                rule_name TEXT NOT NULL,
+                rule_mode TEXT NOT NULL,
+                target TEXT NOT NULL,
+                context TEXT NOT NULL,
+                day TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 0,
+                total_seconds INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                windows_sid TEXT,
+                UNIQUE (child_id, rule_id, day, target, context)
             );
             CREATE TABLE IF NOT EXISTS usage_samples (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +144,9 @@ public sealed class OutboxStore
         await EnsureOverrideCommandCreatedAtColumnAsync(connection, ct);
         await EnsureOverrideChildIdColumnAsync(connection, ct);
         await EnsureUsageSamplesSidColumnAsync(connection, ct);
+        // Migration 31: cột name cho rules_cache của DB đã tồn tại
+        // (bản chụp tên luật cho dòng theo dõi luật không chặn).
+        await EnsureRulesCacheNameColumnAsync(connection, ct);
 
         // Sprint 5 đợt 1 (sửa MAJOR-1): di trú bảng active_override từ 1 hàng
         // duy nhất sang một hàng theo con — chạy sau các Ensure ở trên để
@@ -127,6 +160,32 @@ public sealed class OutboxStore
         // file này (Tray chỉ nói chuyện qua IPC), nên khóa không ảnh hưởng
         // luồng chạy. Best-effort, thất bại thì DB vẫn dùng được.
         AclHelper.RestrictFileToSystemAndAdmins(_dbFilePath);
+    }
+
+    /// <summary>Thêm cột <c>name</c> vào bảng <c>rules_cache</c> nếu chưa có (migration 31: bản chụp tên luật).</summary>
+    private static async Task EnsureRulesCacheNameColumnAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        bool hasColumn = false;
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA table_info(rules_cache);";
+            await using var reader = await pragma.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (reader.GetString(1) == "name")
+                {
+                    hasColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasColumn)
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE rules_cache ADD COLUMN name TEXT;";
+            await alter.ExecuteNonQueryAsync(ct);
+        }
     }
 
     /// <summary>Thêm cột <c>domains_json</c> vào bảng <c>active_override</c> nếu chưa có.</summary>
@@ -501,7 +560,20 @@ public sealed class OutboxStore
     }
 
     /// <summary>Thay toàn bộ cache rules bằng danh sách mới tải về.</summary>
-    public async Task SaveRulesAsync(IReadOnlyList<Rule> rules, CancellationToken ct)
+    public Task SaveRulesAsync(IReadOnlyList<Rule> rules, CancellationToken ct)
+        => SaveRulesToTableAsync("rules_cache", rules, ct);
+
+    /// <summary>
+    /// Thay toàn bộ cache luật-chỉ-theo-dõi (luật cấm ĐANG TẮT còn bật
+    /// mặt theo dõi, migration 31) bằng danh sách mới tải về — cùng
+    /// hình dạng bảng với rules_cache nhưng là tập riêng: luật tắt
+    /// không bao giờ được lẫn vào cache thi hành.
+    /// </summary>
+    public Task SaveMonitorRulesAsync(IReadOnlyList<Rule> rules, CancellationToken ct)
+        => SaveRulesToTableAsync("monitor_rules_cache", rules, ct);
+
+    /// <summary>Ghi rules vào một bảng cache (xóa sạch + chèn lại trong một giao dịch). Tên bảng chỉ đến từ hai hằng nội bộ phía trên.</summary>
+    private async Task SaveRulesToTableAsync(string table, IReadOnlyList<Rule> rules, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(rules);
 
@@ -514,7 +586,7 @@ public sealed class OutboxStore
             await using (var delete = connection.CreateCommand())
             {
                 delete.Transaction = transaction;
-                delete.CommandText = "DELETE FROM rules_cache;";
+                delete.CommandText = "DELETE FROM " + table + ";";
                 await delete.ExecuteNonQueryAsync(ct);
             }
 
@@ -522,16 +594,17 @@ public sealed class OutboxStore
             {
                 await using var insert = connection.CreateCommand();
                 insert.Transaction = transaction;
-                insert.CommandText = """
-                    INSERT INTO rules_cache (id, family_id, child_id, type, config_json, enabled, updated_at)
-                    VALUES ($id, $familyId, $childId, $type, $config, $enabled, $now);
-                    """;
+                insert.CommandText =
+                    "INSERT INTO " + table
+                    + " (id, family_id, child_id, type, config_json, enabled, name, updated_at)"
+                    + " VALUES ($id, $familyId, $childId, $type, $config, $enabled, $name, $now);";
                 insert.Parameters.AddWithValue("$id", rule.Id.ToString());
                 insert.Parameters.AddWithValue("$familyId", rule.FamilyId.ToString());
                 insert.Parameters.AddWithValue("$childId", rule.ChildId.ToString());
                 insert.Parameters.AddWithValue("$type", rule.Type);
                 insert.Parameters.AddWithValue("$config", rule.Config.GetRawText());
                 insert.Parameters.AddWithValue("$enabled", rule.Enabled ? 1 : 0);
+                insert.Parameters.AddWithValue("$name", (object?)rule.Name ?? DBNull.Value);
                 insert.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
                 await insert.ExecuteNonQueryAsync(ct);
             }
@@ -546,7 +619,15 @@ public sealed class OutboxStore
     }
 
     /// <summary>Đọc rules từ cache local (dùng khi offline hoặc trước khi tải mới).</summary>
-    public async Task<IReadOnlyList<Rule>> GetCachedRulesAsync(CancellationToken ct)
+    public Task<IReadOnlyList<Rule>> GetCachedRulesAsync(CancellationToken ct)
+        => GetRulesFromTableAsync("rules_cache", ct);
+
+    /// <summary>Đọc luật-chỉ-theo-dõi từ cache local (migration 31).</summary>
+    public Task<IReadOnlyList<Rule>> GetCachedMonitorRulesAsync(CancellationToken ct)
+        => GetRulesFromTableAsync("monitor_rules_cache", ct);
+
+    /// <summary>Đọc toàn bộ một bảng cache rules. Tên bảng chỉ đến từ hai hằng nội bộ phía trên.</summary>
+    private async Task<IReadOnlyList<Rule>> GetRulesFromTableAsync(string table, CancellationToken ct)
     {
         var rules = new List<Rule>();
 
@@ -554,7 +635,7 @@ public sealed class OutboxStore
         await connection.OpenAsync(ct);
 
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, family_id, child_id, type, config_json, enabled FROM rules_cache;";
+        command.CommandText = "SELECT id, family_id, child_id, type, config_json, enabled, name FROM " + table + ";";
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -568,10 +649,123 @@ public sealed class OutboxStore
                 Type = reader.GetString(3),
                 Config = config,
                 Enabled = reader.GetInt32(5) != 0,
+                Name = reader.IsDBNull(6) ? null : reader.GetString(6),
             });
         }
 
         return rules;
+    }
+
+    /// <summary>
+    /// Gộp một quan sát luật-không-chặn vào hàng đợi cục bộ
+    /// (rule_observations_outbox, migration 31): cùng khóa (con,
+    /// luật, ngày, đối tượng, ngữ cảnh) thì CỘNG DỒN số lần + tổng
+    /// giây và mở rộng khoảng first/last seen — đúng khóa gộp phía
+    /// server trừ rule_name (server gộp theo tên bản chụp; phía máy
+    /// giữ theo rule_id chính xác hơn, hai mẫu trùng tên khác id vẫn
+    /// tách hàng ở đây và được RPC phía server gộp tiếp theo tên).
+    /// Ngày do người gọi tính theo giờ tin cậy + múi giờ gia đình.
+    /// </summary>
+    public async Task AddRuleObservationAsync(Guid childId, RuleObservationRecord record, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO rule_observations_outbox
+                (child_id, rule_id, rule_name, rule_mode, target, context, day,
+                 occurrence_count, total_seconds, first_seen_at, last_seen_at, windows_sid)
+            VALUES
+                ($childId, $ruleId, $ruleName, $ruleMode, $target, $context, $day,
+                 $count, $seconds, $first, $last, $sid)
+            ON CONFLICT (child_id, rule_id, day, target, context) DO UPDATE SET
+                rule_name = excluded.rule_name,
+                rule_mode = excluded.rule_mode,
+                occurrence_count = occurrence_count + excluded.occurrence_count,
+                total_seconds = total_seconds + excluded.total_seconds,
+                first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
+                windows_sid = coalesce(excluded.windows_sid, windows_sid);
+            """;
+        command.Parameters.AddWithValue("$childId", childId.ToString());
+        command.Parameters.AddWithValue("$ruleId", record.RuleId is Guid rid ? rid.ToString() : DBNull.Value);
+        command.Parameters.AddWithValue("$ruleName", record.RuleName);
+        command.Parameters.AddWithValue("$ruleMode", record.RuleMode);
+        command.Parameters.AddWithValue("$target", record.Target);
+        command.Parameters.AddWithValue("$context", record.Context);
+        command.Parameters.AddWithValue("$day", record.Day);
+        command.Parameters.AddWithValue("$count", record.OccurrenceCount);
+        command.Parameters.AddWithValue("$seconds", record.TotalSeconds);
+        command.Parameters.AddWithValue("$first", record.FirstSeenAt.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$last", record.LastSeenAt.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$sid", (object?)record.WindowsSid ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Đọc tối đa <paramref name="limit"/> dòng quan sát đang chờ đẩy (kèm id hàng đợi để xóa sau khi đẩy thành công).</summary>
+    public async Task<IReadOnlyList<RuleObservationOutboxItem>> GetPendingRuleObservationsAsync(int limit, CancellationToken ct)
+    {
+        var items = new List<RuleObservationOutboxItem>();
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, child_id, rule_id, rule_name, rule_mode, target, context, day,
+                   occurrence_count, total_seconds, first_seen_at, last_seen_at, windows_sid
+            FROM rule_observations_outbox
+            ORDER BY id
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var record = new RuleObservationRecord
+            {
+                RuleId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2)),
+                RuleName = reader.GetString(3),
+                RuleMode = reader.GetString(4),
+                Target = reader.GetString(5),
+                Context = reader.GetString(6),
+                Day = reader.GetString(7),
+                OccurrenceCount = (int)reader.GetInt64(8),
+                TotalSeconds = (int)reader.GetInt64(9),
+                FirstSeenAt = DateTimeOffset.Parse(reader.GetString(10), CultureInfo.InvariantCulture),
+                LastSeenAt = DateTimeOffset.Parse(reader.GetString(11), CultureInfo.InvariantCulture),
+                WindowsSid = reader.IsDBNull(12) ? null : reader.GetString(12),
+            };
+            items.Add(new RuleObservationOutboxItem(
+                reader.GetInt64(0),
+                Guid.Parse(reader.GetString(1)),
+                record));
+        }
+
+        return items;
+    }
+
+    /// <summary>Xóa các dòng quan sát đã đẩy thành công khỏi hàng đợi cục bộ.</summary>
+    public async Task DeleteRuleObservationsAsync(IReadOnlyList<long> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+
+        foreach (long id in ids)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM rule_observations_outbox WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync(ct);
+        }
     }
 
     /// <summary>
@@ -1105,17 +1299,35 @@ public sealed class OutboxStore
     }
 
     /// <summary>
+    /// Cửa sổ UTC của một "ngày thi hành": nửa đêm của ngày chứa
+    /// <paramref name="dayInZone"/> theo offset của chính nó, tới nửa
+    /// đêm hôm sau. Từ đợt giờ tin cậy (PRD §2.14) người gọi truyền
+    /// giờ tin cậy đã quy đổi múi giờ gia đình (TrustedClock.FamilyNow)
+    /// nên ngày thi hành không còn phụ thuộc đồng hồ/múi giờ máy.
+    /// </summary>
+    private static (string From, string To) DayWindowUtc(DateTimeOffset dayInZone)
+    {
+        var midnight = new DateTimeOffset(dayInZone.Date, dayInZone.Offset);
+        string from = midnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        string to = midnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        return (from, to);
+    }
+
+    /// <summary>
     /// Ước lượng thời gian đã dùng "hôm nay" theo NGÀY ĐỊA PHƯƠNG của máy con
     /// (quy tắc daily_limit tính theo giờ local) = số mẫu trong [nửa đêm
     /// local hôm nay, nửa đêm local ngày mai) x 15 giây/mẫu. Mẫu lưu theo giờ
     /// UTC nên ranh giới ngày local được đổi sang UTC trước khi so sánh chuỗi.
+    /// Bản không tham số giữ cho người gọi cũ (ngày theo giờ máy); đường
+    /// thi hành luật dùng bản có tham số với giờ tin cậy.
     /// </summary>
-    public async Task<TimeSpan> GetUsageTodayAsync(CancellationToken ct)
+    public Task<TimeSpan> GetUsageTodayAsync(CancellationToken ct)
+        => GetUsageTodayAsync(DateTimeOffset.Now, ct);
+
+    /// <summary>Như <see cref="GetUsageTodayAsync(CancellationToken)"/> nhưng ranh giới ngày lấy theo <paramref name="dayInZone"/> (giờ tin cậy quy đổi múi giờ gia đình).</summary>
+    public async Task<TimeSpan> GetUsageTodayAsync(DateTimeOffset dayInZone, CancellationToken ct)
     {
-        DateTimeOffset localNow = DateTimeOffset.Now;
-        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
-        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
-        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        (string from, string to) = DayWindowUtc(dayInZone);
 
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
@@ -1136,14 +1348,15 @@ public sealed class OutboxStore
     /// (xem <see cref="UsageScope"/>). Cùng ranh giới ngày địa phương như
     /// <see cref="GetUsageTodayAsync"/>.
     /// </summary>
-    public async Task<TimeSpan> GetUsageTodayForChildAsync(UsageScope scope, CancellationToken ct)
+    public Task<TimeSpan> GetUsageTodayForChildAsync(UsageScope scope, CancellationToken ct)
+        => GetUsageTodayForChildAsync(scope, DateTimeOffset.Now, ct);
+
+    /// <summary>Như <see cref="GetUsageTodayForChildAsync(UsageScope, CancellationToken)"/> nhưng ranh giới ngày lấy theo <paramref name="dayInZone"/> (giờ tin cậy quy đổi múi giờ gia đình).</summary>
+    public async Task<TimeSpan> GetUsageTodayForChildAsync(UsageScope scope, DateTimeOffset dayInZone, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(scope);
 
-        DateTimeOffset localNow = DateTimeOffset.Now;
-        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
-        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
-        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        (string from, string to) = DayWindowUtc(dayInZone);
 
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
@@ -1203,12 +1416,13 @@ public sealed class OutboxStore
     /// chuẩn hóa cả hai phía bằng <see cref="ExeNames"/> khi so khớp với
     /// config quy tắc (config ghi "game.exe").
     /// </summary>
-    public async Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayAsync(CancellationToken ct)
+    public Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayAsync(CancellationToken ct)
+        => GetUsageByAppTodayAsync(DateTimeOffset.Now, ct);
+
+    /// <summary>Như <see cref="GetUsageByAppTodayAsync(CancellationToken)"/> nhưng ranh giới ngày lấy theo <paramref name="dayInZone"/> (giờ tin cậy quy đổi múi giờ gia đình).</summary>
+    public async Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayAsync(DateTimeOffset dayInZone, CancellationToken ct)
     {
-        DateTimeOffset localNow = DateTimeOffset.Now;
-        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
-        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
-        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        (string from, string to) = DayWindowUtc(dayInZone);
 
         var usage = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
 
@@ -1239,14 +1453,15 @@ public sealed class OutboxStore
     /// Thời gian đã dùng "hôm nay" của MỘT con theo từng app (Sprint 5) —
     /// cùng phạm vi SID như <see cref="GetUsageTodayForChildAsync"/>.
     /// </summary>
-    public async Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayForChildAsync(UsageScope scope, CancellationToken ct)
+    public Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayForChildAsync(UsageScope scope, CancellationToken ct)
+        => GetUsageByAppTodayForChildAsync(scope, DateTimeOffset.Now, ct);
+
+    /// <summary>Như <see cref="GetUsageByAppTodayForChildAsync(UsageScope, CancellationToken)"/> nhưng ranh giới ngày lấy theo <paramref name="dayInZone"/> (giờ tin cậy quy đổi múi giờ gia đình).</summary>
+    public async Task<IReadOnlyDictionary<string, TimeSpan>> GetUsageByAppTodayForChildAsync(UsageScope scope, DateTimeOffset dayInZone, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(scope);
 
-        DateTimeOffset localNow = DateTimeOffset.Now;
-        var localMidnight = new DateTimeOffset(localNow.Date, localNow.Offset);
-        string from = localMidnight.UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
-        string to = localMidnight.AddDays(1).UtcDateTime.ToString("o", CultureInfo.InvariantCulture);
+        (string from, string to) = DayWindowUtc(dayInZone);
 
         var usage = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
 

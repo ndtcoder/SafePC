@@ -45,6 +45,15 @@ public sealed class HeartbeatResult
     /// </summary>
     [JsonPropertyName("exit_pin_hash")]
     public string? ExitPinHash { get; set; }
+
+    /// <summary>
+    /// Múi giờ gia đình (tên IANA, cột families.timezone — migration 31
+    /// bổ sung vào kết quả heartbeat). Null khi server chưa áp
+    /// migration 31 → Agent giữ mặc định 'Asia/Ho_Chi_Minh' (giờ tin
+    /// cậy, PRD §2.14).
+    /// </summary>
+    [JsonPropertyName("family_timezone")]
+    public string? FamilyTimezone { get; set; }
 }
 
 /// <summary>Trạng thái một lần đẩy cụm từ tìm kiếm lên server (migration 28).</summary>
@@ -67,6 +76,29 @@ public sealed class SearchTermsPushResult
 {
     [JsonPropertyName("inserted")]
     public int Inserted { get; set; }
+
+    [JsonPropertyName("skipped")]
+    public int Skipped { get; set; }
+}
+
+/// <summary>Trạng thái một lần đẩy dòng theo dõi luật lên server (migration 31) — cùng ngữ nghĩa <see cref="SearchTermsPushStatus"/>.</summary>
+public enum RuleObservationsPushStatus
+{
+    /// <summary>Server đã nhận batch (kết quả accepted/skipped đi kèm).</summary>
+    Sent,
+
+    /// <summary>Lỗi mạng/server/chưa ghép nối — giữ dữ liệu, chu kỳ sau gửi lại.</summary>
+    Failed,
+
+    /// <summary>RPC chưa có trên server (migration 31 chưa áp — PostgREST trả 404/PGRST202).</summary>
+    RpcMissing,
+}
+
+/// <summary>Kết quả RPC <c>safepc_push_rule_observations</c>: số dòng đã ghi/gộp + số mẫu bị bỏ qua phía server.</summary>
+public sealed class RuleObservationsPushResult
+{
+    [JsonPropertyName("accepted")]
+    public int Accepted { get; set; }
 
     [JsonPropertyName("skipped")]
     public int Skipped { get; set; }
@@ -314,6 +346,39 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Tải luật CẤM ĐANG TẮT còn bật mặt theo dõi của MỘT con trên máy
+    /// này (migration 31, RPC <c>safepc_fetch_device_monitor_rules</c>)
+    /// — tập luật CHỈ để đối chiếu ghi nhận (PRD §2.15), không bao giờ
+    /// thi hành. <paramref name="childId"/> null = con mặc định của
+    /// máy. Trả về null khi chưa sẵn sàng, lỗi mạng, HOẶC RPC chưa có
+    /// trên server (migration 31 chưa áp — PostgREST trả 404 và
+    /// <see cref="PostRpcAsync{T}"/> gộp thành null): nơi gọi PHẢI giữ
+    /// nguyên cache theo dõi cũ khi nhận null, đúng quy ước của
+    /// <see cref="FetchRulesForChildAsync"/>. Danh sách rỗng (không
+    /// null) nghĩa là server báo con này không có luật tắt nào cần
+    /// theo dõi.
+    /// </summary>
+    public async Task<IReadOnlyList<Rule>?> FetchMonitorRulesAsync(Guid? childId, CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Fetch monitor rules bỏ qua: " + reason + ".");
+            return null;
+        }
+
+        List<Rule>? rules = await PostRpcAsync<List<Rule>>(
+            "safepc_fetch_device_monitor_rules",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_child_id = childId,
+            },
+            ct);
+        return rules;
+    }
+
+    /// <summary>
     /// Tải ánh xạ (hồ sơ con ↔ tài khoản Windows) của máy này (Sprint 5, RPC
     /// migration 24 <c>safepc_fetch_device_child_accounts</c>). Trả về null
     /// khi chưa sẵn sàng, lỗi mạng, HOẶC RPC chưa có trên server (migration
@@ -546,6 +611,96 @@ public sealed class SupabaseApiClient
             {
                 LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
                 return (SearchTermsPushStatus.Failed, null);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gửi một batch dòng theo dõi luật-không-chặn đã gộp phía máy lên
+    /// bảng rule_observations (migration 31, RPC
+    /// <c>safepc_push_rule_observations</c>). Mỗi mẫu mang rule_id +
+    /// bản chụp tên/mode + đối tượng + ngữ cảnh + ngày (giờ tin cậy,
+    /// múi giờ gia đình) + SID để server phân giải con như các RPC
+    /// Sprint 5; server upsert cộng dồn theo (con, ngày, đối tượng,
+    /// ngữ cảnh, tên luật). Cùng mẫu gọi HTTP trực tiếp như
+    /// <see cref="SendSearchTermsAsync"/> để phân biệt RPC chưa áp
+    /// (404/PGRST202) với lỗi thường.
+    /// </summary>
+    public async Task<(RuleObservationsPushStatus Status, RuleObservationsPushResult? Result)> SendRuleObservationsAsync(
+        IReadOnlyList<RuleObservationRecord> records, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        if (records.Count == 0)
+        {
+            return (RuleObservationsPushStatus.Sent, new RuleObservationsPushResult());
+        }
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Gửi rule observations bỏ qua: " + reason + ". Dữ liệu giữ lại để gửi sau.");
+            return (RuleObservationsPushStatus.Failed, null);
+        }
+
+        const string function = "safepc_push_rule_observations";
+        string url = _baseUrl + "/rest/v1/rpc/" + function;
+        string json = JsonSerializer.Serialize(new
+        {
+            p_device_id = creds.DeviceId,
+            p_token_hash = Hashing.HashSecret(creds.Token),
+            p_observations = records,
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogThrottled(function, "Không nối được tới server (" + function + ").", ex);
+            return (RuleObservationsPushStatus.Failed, null);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                string body = string.Empty;
+                try
+                {
+                    body = await response.Content.ReadAsStringAsync(ct);
+                }
+                catch (HttpRequestException)
+                {
+                    // Body lỗi không đọc được: phân loại theo mã HTTP ở dưới.
+                }
+
+                if ((int)response.StatusCode == 404 || body.Contains("PGRST202", StringComparison.Ordinal))
+                {
+                    LogThrottled(function, "RPC " + function + " chưa có trên server (migration 31 chưa áp).");
+                    return (RuleObservationsPushStatus.RpcMissing, null);
+                }
+
+                LogThrottled(function, "Server từ chối " + function + " (HTTP " + (int)response.StatusCode + ").");
+                return (RuleObservationsPushStatus.Failed, null);
+            }
+
+            try
+            {
+                RuleObservationsPushResult? result = await response.Content.ReadFromJsonAsync<RuleObservationsPushResult>(JsonOptions, ct);
+                return result is null
+                    ? (RuleObservationsPushStatus.Failed, null)
+                    : (RuleObservationsPushStatus.Sent, result);
+            }
+            catch (JsonException ex)
+            {
+                LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
+                return (RuleObservationsPushStatus.Failed, null);
             }
         }
     }

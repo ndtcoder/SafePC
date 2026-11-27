@@ -63,6 +63,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly DomainRulesPublisher _publisher;
     private readonly ForegroundState _foregroundState;
     private readonly TrayQueryState _queryState;
+    private readonly TrustedClock _clock;
 
     // Chống spam yêu cầu xin mở domain: domain đã gửi thành công thì không
     // gửi lại trong 5 phút (xem DomainRequestThrottle).
@@ -73,6 +74,37 @@ public sealed class AgentWorker : BackgroundService
     // công trở lại, để vòng flush 5 phút không spam log (xem
     // FlushSearchTermsAsync).
     private bool _searchTermsRpcMissingWarned;
+
+    // Như trên cho RPC đẩy dòng theo dõi luật (migration 31 chưa áp).
+    private bool _observationsRpcMissingWarned;
+
+    // Migration 31: hồ sơ con mà cache luật-chỉ-theo-dõi
+    // (monitor_rules_cache) hiện thuộc về (null = chưa biết/chưa có).
+    // Đối chiếu quan sát app/web chỉ chạy cho đúng con chủ của cache.
+    private Guid? _monitorRulesChildId;
+
+    // Migration 31: bộ gộp quan sát LUẬT GIỜ phía tick (khóa: con |
+    // luật | ngày | ngữ cảnh). Mỗi tick khớp cộng 15 giây; một "đợt"
+    // khớp liên tục chỉ tính 1 lần (cờ Active) — số lần trong báo cáo
+    // là số đợt dùng máy thuộc diện luật, không phải số tick.
+    private readonly Dictionary<string, TimeObservationEntry> _timeObservations = new();
+    private DateTime _lastObservationFlushUtc = DateTime.MinValue;
+
+    /// <summary>Bộ gộp một khóa quan sát luật giờ trong bộ nhớ tick (migration 31).</summary>
+    private sealed class TimeObservationEntry
+    {
+        public required Rule RuleSnapshot { get; init; }
+        public required Guid ChildId { get; init; }
+        public required string? Sid { get; init; }
+        public required string Day { get; init; }
+        public required string Context { get; init; }
+        public required string Target { get; set; }
+        public int Count { get; set; }
+        public long Seconds { get; set; }
+        public DateTimeOffset First { get; set; }
+        public DateTimeOffset Last { get; set; }
+        public bool Active { get; set; }
+    }
 
     // Denylist kill (tên đã chuẩn hóa bằng ExeNames, so khớp không phân biệt
     // hoa thường): tiến trình hệ thống + chính các exe của SafePC — không bao
@@ -344,7 +376,8 @@ public sealed class AgentWorker : BackgroundService
         TokenStore tokens,
         DomainRulesPublisher publisher,
         ForegroundState foregroundState,
-        TrayQueryState queryState)
+        TrayQueryState queryState,
+        TrustedClock clock)
     {
         _log = log;
         _outbox = outbox;
@@ -355,6 +388,7 @@ public sealed class AgentWorker : BackgroundService
         _publisher = publisher;
         _foregroundState = foregroundState;
         _queryState = queryState;
+        _clock = clock;
 
         // Thi hành app NGAY khi nhận báo cáo foreground mới (18/11/2026):
         // handler chỉ kích hoạt fire-and-forget, không bao giờ chặn thread
@@ -376,12 +410,39 @@ public sealed class AgentWorker : BackgroundService
             _log.Error("Không khởi tạo được SQLite outbox.", ex);
         }
 
+        // Giờ tin cậy (migration 31, PRD §2.14): nạp offset + múi giờ
+        // gia đình của lần đồng bộ cuối đã lưu bền — sau khởi động lại
+        // mà chưa có mạng, Service thi hành theo offset này (trạng
+        // thái "chưa kiểm chứng" cho tới heartbeat thành công đầu
+        // tiên). Lỗi đọc thì giữ offset 0/mặc định (fail-open như các
+        // trạng thái khởi động khác).
+        try
+        {
+            string? offsetText = await _outbox.GetStateAsync(StateKeys.TrustedClockOffsetMs, stoppingToken);
+            if (offsetText is not null
+                && long.TryParse(offsetText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long offsetMs))
+            {
+                _clock.SetPersistedOffset(TimeSpan.FromMilliseconds(offsetMs));
+            }
+
+            string? zoneText = await _outbox.GetStateAsync(StateKeys.TrustedClockTimezone, stoppingToken);
+            _clock.SetTimeZoneId(zoneText);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đọc trạng thái giờ tin cậy lúc khởi động lỗi.", ex);
+        }
+
         // Lịch sử thi hành (migration 10): khởi tạo _lastBreakActive từ
         // trạng thái bền để Service khởi động lại giữa giờ nghỉ không ghi
         // trùng sự kiện break_started. BreakEndsAt còn hiệu lực nghĩa là
         // giờ nghỉ này đã bắt đầu trước khi process này chạy (sự kiện đã
         // ghi rồi). Lỗi đọc thì fail-open (giữ false): cùng lắm ghi trùng
         // một sự kiện, không chặn khởi động.
+        // Khối này nằm SAU đoạn nạp TrustedClock ở trên và so bằng
+        // _clock.UtcNow (giờ tin cậy) thay cho DateTimeOffset.Now:
+        // BreakEndsAt được ghi theo giờ tin cậy, so bằng đồng hồ hệ
+        // thống có thể lệch hẳn khi con đã chỉnh giờ máy.
         // Lưu ý: _lockSent KHÔNG khởi tạo tương tự — khóa do quy tắc
         // không có trạng thái bền "đã gửi khóa" (ForcedLock bền chỉ dùng
         // cho khóa do phụ huynh, mà lock_started không ghi cho khóa đó),
@@ -393,7 +454,7 @@ public sealed class AgentWorker : BackgroundService
             string? breakEndsAtText = await _outbox.GetStateAsync(StateKeys.BreakEndsAt, stoppingToken);
             if (breakEndsAtText is not null
                 && DateTimeOffset.TryParse(breakEndsAtText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset breakEndsAt)
-                && DateTimeOffset.Now < breakEndsAt)
+                && _clock.UtcNow < breakEndsAt)
             {
                 _lastBreakActive = true;
             }
@@ -456,19 +517,52 @@ public sealed class AgentWorker : BackgroundService
                 HeartbeatResult? result = await _api.SendHeartbeatAsync(_lockSent ? "locked" : "online", ct);
                 if (result is not null)
                 {
-                    // Chống chỉnh đồng hồ (docs/02-ARCHITECTURE.md mục 4.4):
-                    // so sánh giờ máy với giờ server; lệch quá 5 phút thì ghi
-                    // log cảnh báo và báo phụ huynh bằng tamper event
-                    // clock_drift (tối đa 1 lần/giờ). Engine vẫn thi hành
-                    // theo giờ máy + cache rules khi mất mạng.
-                    TimeSpan drift = result.ServerTime - DateTimeOffset.UtcNow;
-                    if (Math.Abs(drift.TotalMinutes) > 5)
+                    // Giờ tin cậy (migration 31, PRD §2.14): cập nhật
+                    // mốc đồng bộ (giờ server + TickCount64) và múi giờ
+                    // gia đình TRƯỚC mọi việc khác trong chu kỳ — từ
+                    // đây vòng tick thi hành luật theo giờ tin cậy quy
+                    // đổi múi giờ gia đình, đồng hồ/múi giờ của máy con
+                    // không còn ảnh hưởng. Lưu bền offset + múi giờ để
+                    // sau khởi động lại chưa có mạng vẫn bám lần đồng
+                    // bộ cuối (trạng thái chưa kiểm chứng).
+                    TimeSpan syncOffset = _clock.UpdateFromServer(result.ServerTime);
+                    _clock.SetTimeZoneId(result.FamilyTimezone);
+                    try
                     {
-                        _log.Warning("Đồng hồ máy lệch " + drift.TotalMinutes.ToString("F1", CultureInfo.InvariantCulture) + " phút so với giờ server (ngưỡng 5 phút).");
+                        await _outbox.SetStateAsync(
+                            StateKeys.TrustedClockOffsetMs,
+                            ((long)syncOffset.TotalMilliseconds).ToString(CultureInfo.InvariantCulture),
+                            ct);
+                        if (result.FamilyTimezone is not null)
+                        {
+                            await _outbox.SetStateAsync(StateKeys.TrustedClockTimezone, result.FamilyTimezone, ct);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _log.Error("Lưu trạng thái giờ tin cậy lỗi.", ex);
+                    }
+
+                    // Chống chỉnh đồng hồ (docs/02-ARCHITECTURE.md mục
+                    // 4.4 + PRD §2.14): lệch giữa đồng hồ máy và giờ
+                    // tin cậy quá 120 giây thì ghi log cảnh báo và báo
+                    // phụ huynh bằng tamper event clock_drift (tối đa
+                    // 1 lần/giờ — cùng đường throttle cũ; ngưỡng đổi từ
+                    // 5 phút xuống 120 giây theo PRD §2.14). Payload
+                    // giữ drift_minutes (tương thích ngược phía đọc cũ)
+                    // và thêm drift_seconds.
+                    TimeSpan drift = _clock.Drift;
+                    if (Math.Abs(drift.TotalSeconds) > 120)
+                    {
+                        _log.Warning("Đồng hồ máy lệch " + drift.TotalMinutes.ToString("F1", CultureInfo.InvariantCulture) + " phút so với giờ tin cậy (ngưỡng 120 giây).");
                         await PushThrottledTamperEventAsync(
                             StateKeys.TamperClockDriftLastSent,
                             "clock_drift",
-                            JsonSerializer.SerializeToElement(new { drift_minutes = Math.Round(drift.TotalMinutes, 1) }),
+                            JsonSerializer.SerializeToElement(new
+                            {
+                                drift_minutes = Math.Round(drift.TotalMinutes, 1),
+                                drift_seconds = (long)drift.TotalSeconds,
+                            }),
                             ct);
                     }
 
@@ -685,6 +779,25 @@ public sealed class AgentWorker : BackgroundService
         if (rules.Count != before)
         {
             _log.Info("Đã đồng bộ rules từ server cho con " + (_rulesChildId?.ToString("D") ?? "(chưa rõ)") + ": " + rules.Count + " rules (trước đó " + before + ").");
+        }
+
+        // Luật-chỉ-theo-dõi của cùng con (migration 31): tải kèm mỗi
+        // lần đồng bộ rules. RPC chưa có trên server (migration 31
+        // chưa áp) hoặc lỗi mạng → null → GIỮ NGUYÊN cache theo dõi cũ
+        // (không xóa — mất mạng không được làm mất khả năng ghi nhận,
+        // và server cũ thì tính năng này chỉ đơn giản chưa có dữ liệu
+        // mới). Danh sách rỗng là trạng thái hợp lệ (con không còn
+        // luật tắt nào cần theo dõi) → lưu rỗng.
+        IReadOnlyList<Rule>? monitorRules = await _api.FetchMonitorRulesAsync(childId, ct);
+        if (monitorRules is not null)
+        {
+            int monitorBefore = (await _outbox.GetCachedMonitorRulesAsync(ct)).Count;
+            await _outbox.SaveMonitorRulesAsync(monitorRules, ct);
+            _monitorRulesChildId = childId ?? defaultChildId;
+            if (monitorRules.Count != monitorBefore)
+            {
+                _log.Info("Đã đồng bộ luật theo dõi (đang tắt) cho con " + (_monitorRulesChildId?.ToString("D") ?? "(chưa rõ)") + ": " + monitorRules.Count + " rules (trước đó " + monitorBefore + ").");
+            }
         }
 
         // Rules mới có thể đổi quy tắc website: xuất bản lại file domain
@@ -1294,6 +1407,12 @@ public sealed class AgentWorker : BackgroundService
                         DateTimeOffset watermark = summary.Max(s => s.LastSampledAt);
                         await _outbox.SetStateAsync(StateKeys.UsagePushedUntil, watermark.ToString("o", CultureInfo.InvariantCulture), ct);
                         _log.Info("Đã gửi usage lên server: " + records.Count + " nhóm app.");
+
+                        // Đối chiếu quan sát luật-không-chặn trên đúng
+                        // các nhóm app vừa gửi (migration 31): chỉ ghi
+                        // khi usage đã lên server thành công để một
+                        // nhóm không bị đếm hai lần ở hai chu kỳ.
+                        await RecordAppObservationsAsync(summary, ct);
                     }
                 }
 
@@ -1306,6 +1425,10 @@ public sealed class AgentWorker : BackgroundService
                 // và bỏ qua mềm như các RPC tùy chọn khác — không được
                 // chặn chu kỳ sau.
                 await FlushSearchTermsAsync(ct);
+
+                // Cùng chu kỳ: đẩy dòng theo dõi luật-không-chặn đã gộp
+                // trong outbox cục bộ (migration 31). Hàm tự bắt lỗi.
+                await FlushRuleObservationsAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -1452,6 +1575,11 @@ public sealed class AgentWorker : BackgroundService
                 return;
             }
         }
+
+        // Đối chiếu quan sát luật-không-chặn trên đúng các lượt vừa
+        // gửi (migration 31) TRƯỚC khi cắt file: chỉ ghi nhận khi
+        // lượt thăm đã lên server, để không đếm trùng ở chu kỳ sau.
+        await RecordWebObservationsAsync(visits, ct);
 
         await TruncateConsumedWebUsageAsync(path, consumedLength, ct);
         _log.Info("Đã gửi web usage lên server: " + visits.Count + " lượt thăm.");
@@ -1748,6 +1876,690 @@ public sealed class AgentWorker : BackgroundService
         }
     }
 
+    // ================= Theo dõi khi luật không chặn (migration 31) =================
+    // Ba đường ghi nhận dùng chung các helper dưới đây; mọi đường đều
+    // tự bắt lỗi (ghi nhận là phụ — không bao giờ được làm hỏng luồng
+    // usage/web/tick chính) và đều gộp vào rule_observations_outbox
+    // qua AddRuleObservationAsync. Ngày của dòng luôn tính theo GIỜ
+    // TIN CẬY quy đổi múi giờ gia đình (TrustedClock) tại thời điểm
+    // của mẫu đầu tiên trong đợt gộp.
+
+    /// <summary>Phân giải hồ sơ con cho một mẫu theo SID: ánh xạ SID→con trước, không có thì con mặc định của máy; null khi không suy ra được con nào.</summary>
+    private static Guid? ResolveObservationChild(string? sid, IReadOnlyList<ChildAccountLink> links, Guid? defaultChildId)
+    {
+        if (sid is not null)
+        {
+            foreach (ChildAccountLink link in links)
+            {
+                if (string.Equals(link.WindowsSid, sid, StringComparison.Ordinal))
+                {
+                    return link.ChildId;
+                }
+            }
+        }
+
+        return defaultChildId;
+    }
+
+    /// <summary>Gộp một quan sát vào outbox cục bộ: dựng bản ghi với bản chụp tên/mode của luật và ngày theo giờ tin cậy.</summary>
+    private async Task AddObservationAsync(
+        Guid childId, Rule rule, string target, string context,
+        int count, int seconds, DateTimeOffset first, DateTimeOffset last, string? sid,
+        CancellationToken ct)
+    {
+        var record = new RuleObservationRecord
+        {
+            RuleId = rule.Id,
+            RuleName = RuleObservationMatcher.SnapshotName(rule),
+            RuleMode = RuleObservationMatcher.ModeOf(rule),
+            Target = target,
+            Context = context,
+            Day = _clock.ToFamily(first).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            OccurrenceCount = count,
+            TotalSeconds = seconds,
+            FirstSeenAt = first,
+            LastSeenAt = last,
+            WindowsSid = sid,
+        };
+        await _outbox.AddRuleObservationAsync(childId, record, ct);
+    }
+
+    /// <summary>
+    /// Đối chiếu các nhóm usage app vừa gửi thành công với luật app:
+    /// (a) luật app_block/app_block_by_time ĐANG TẮT trong cache
+    /// monitor của đúng con chủ cache → rule_disabled; (b) luật
+    /// app_block ĐANG BẬT của con chủ cache thi hành, khi con đang có
+    /// ghi đè allow_app còn bao phủ thời điểm mẫu và ghi đè đó nêu
+    /// đúng app này → temp_allowed. Giới hạn đã biết: ghi đè app lưu
+    /// local chỉ còn HÀNG HIỆN TẠI của con (lệnh mới thay lệnh cũ),
+    /// nên mẫu cũ hơn thời điểm ghi đè hiện tại bắt đầu không đối
+    /// chiếu được — chỉ ghi nhận khi thời điểm mẫu nằm SAU mốc lệnh
+    /// tạo ghi đè (CommandCreatedAt), tránh khẳng định sai.
+    /// </summary>
+    private async Task RecordAppObservationsAsync(IReadOnlyList<UsageSummary> summary, CancellationToken ct)
+    {
+        try
+        {
+            if (summary.Count == 0)
+            {
+                return;
+            }
+
+            IReadOnlyList<ChildAccountLink> links = await GetChildAccountsAsync(ct);
+            Guid? defaultChildId = await GetDefaultChildIdAsync(ct);
+            IReadOnlyList<Rule> monitorRules = await _outbox.GetCachedMonitorRulesAsync(ct);
+            IReadOnlyList<Rule> enabledRules = await _outbox.GetCachedRulesAsync(ct);
+
+            var monitorAppRules = new List<Rule>();
+            foreach (Rule rule in monitorRules)
+            {
+                if (rule.Type == RuleTypes.App && RuleObservationMatcher.ObserveEnabled(rule))
+                {
+                    monitorAppRules.Add(rule);
+                }
+            }
+
+            var enabledAppBlockRules = new List<Rule>();
+            foreach (Rule rule in enabledRules)
+            {
+                if (rule.Type == RuleTypes.App && rule.Enabled
+                    && RuleObservationMatcher.ModeOf(rule) == "app_block")
+                {
+                    enabledAppBlockRules.Add(rule);
+                }
+            }
+
+            if (monitorAppRules.Count == 0 && enabledAppBlockRules.Count == 0)
+            {
+                return;
+            }
+
+            // Ghi đè allow_app hiện tại theo con (đọc một lần cho các
+            // con liên quan, cache trong từ điển của chu kỳ này).
+            var overrideByChild = new Dictionary<Guid, TemporaryOverride?>();
+
+            async Task<TemporaryOverride?> GetOverrideAsync(Guid childId)
+            {
+                if (!overrideByChild.TryGetValue(childId, out TemporaryOverride? ov))
+                {
+                    ov = await _outbox.GetActiveOverrideForChildAsync(childId, defaultChildId, ct);
+                    overrideByChild[childId] = ov;
+                }
+
+                return ov;
+            }
+
+            int recorded = 0;
+            foreach (UsageSummary item in summary)
+            {
+                Guid? childId = ResolveObservationChild(item.Sid, links, defaultChildId);
+                if (childId is null)
+                {
+                    continue;
+                }
+
+                int durationSec = (int)(item.SampleCount * AgentConstants.ForegroundSampleInterval.TotalSeconds);
+                DateTimeOffset familyFirst = _clock.ToFamily(item.FirstSampledAt);
+
+                if (_monitorRulesChildId is not null && childId.Value == _monitorRulesChildId.Value)
+                {
+                    foreach (Rule rule in monitorAppRules)
+                    {
+                        if (RuleObservationMatcher.AppRuleMatches(rule, item.AppName, familyFirst))
+                        {
+                            string target = ExeNames.Normalize(item.AppName) ?? item.AppName;
+                            await AddObservationAsync(childId.Value, rule, target,
+                                RuleObservationMatcher.ContextRuleDisabled,
+                                1, durationSec, item.FirstSampledAt, item.LastSampledAt, item.Sid, ct);
+                            recorded++;
+                        }
+                    }
+                }
+
+                if (_rulesChildId is not null && childId.Value == _rulesChildId.Value && enabledAppBlockRules.Count > 0)
+                {
+                    TemporaryOverride? ov = await GetOverrideAsync(childId.Value);
+                    if (ov is not null
+                        && ov.Action == OverrideActions.AllowApp
+                        && ov.Apps is not null
+                        && ov.ExpiresAt > item.FirstSampledAt
+                        && (ov.CommandCreatedAt is null || ov.CommandCreatedAt.Value <= item.FirstSampledAt))
+                    {
+                        bool appAllowed = false;
+                        foreach (string allowed in ov.Apps)
+                        {
+                            if (ExeNames.Matches(allowed, item.AppName))
+                            {
+                                appAllowed = true;
+                                break;
+                            }
+                        }
+
+                        if (appAllowed)
+                        {
+                            foreach (Rule rule in enabledAppBlockRules)
+                            {
+                                bool listed = false;
+                                foreach (string exe in RuleObservationMatcher.RuleApps(rule))
+                                {
+                                    if (ExeNames.Matches(exe, item.AppName))
+                                    {
+                                        listed = true;
+                                        break;
+                                    }
+                                }
+
+                                if (listed)
+                                {
+                                    string target = ExeNames.Normalize(item.AppName) ?? item.AppName;
+                                    await AddObservationAsync(childId.Value, rule, target,
+                                        RuleObservationMatcher.ContextTempAllowed,
+                                        1, durationSec, item.FirstSampledAt, item.LastSampledAt, item.Sid, ct);
+                                    recorded++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (recorded > 0)
+            {
+                _log.Info("Đã ghi nhận " + recorded + " quan sát luật app không chặn vào outbox.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đối chiếu quan sát luật app lỗi (bỏ qua, không ảnh hưởng usage).", ex);
+        }
+    }
+
+    /// <summary>
+    /// Extension có đang "mất dấu" theo đúng bằng chứng đường cảnh báo
+    /// extension_missing dùng (CheckExtensionHeartbeatAsync): file
+    /// heartbeat thiếu hoặc cũ hơn 15 phút VÀ extension TỪNG sống
+    /// trên máy này (đã có mốc ExtensionHeartbeatLastReported). Khác
+    /// đường cảnh báo ở điều kiện "trình duyệt vừa foreground": lượt
+    /// thăm web đang đối chiếu tự nó đã là bằng chứng trình duyệt vừa
+    /// được dùng.
+    /// </summary>
+    private async Task<bool> IsExtensionMissingAsync(CancellationToken ct)
+    {
+        try
+        {
+            string? everReported = await _outbox.GetStateAsync(StateKeys.ExtensionHeartbeatLastReported, ct);
+            if (everReported is null)
+            {
+                return false;
+            }
+
+            DateTimeOffset? seenAt = await ReadExtensionHeartbeatAsync(ct);
+            return seenAt is null || DateTimeOffset.UtcNow - seenAt.Value > TimeSpan.FromMinutes(15);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Kiểm tra trạng thái extension cho quan sát luật lỗi.", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Đối chiếu các lượt thăm web vừa gửi thành công (chỉ lượt KHÔNG
+    /// bị chặn — lượt bị chặn là luật đã thi hành, không thuộc diện
+    /// theo dõi) với luật website:
+    /// (a) luật block_domains/block_domains_by_time ĐANG TẮT trong
+    /// cache monitor của đúng con chủ cache → rule_disabled;
+    /// (b) luật ĐANG BẬT của con chủ cache thi hành có khớp lượt thăm:
+    /// domain nằm trong ghi đè allow_domain đang hiệu lực (chính là
+    /// tập tempAllow publisher đã xuất bản) → temp_allowed; ngược
+    /// lại, nếu extension đang mất dấu theo heartbeat (IsExtension-
+    /// MissingAsync) → unenforceable. Nhãn này là SUY LUẬN theo
+    /// heartbeat extension tại thời điểm đối chiếu, KHÔNG phải bằng
+    /// chứng tuyệt đối: một lượt thăm được flush muộn (extension vừa
+    /// quay lại, hoặc heartbeat chưa kịp cập nhật) có thể bị gắn
+    /// nhãn oan. Sai lệch đó chỉ ảnh hưởng NHÃN trên báo cáo tuần —
+    /// không ảnh hưởng thi hành, không sinh cảnh báo can thiệp.
+    /// Đây là đường suy luận duy nhất khả thi trong kiến trúc hiện
+    /// tại. temp_allowed xét TRƯỚC unenforceable: domain đã
+    /// được phụ huynh cho phép tạm thời thì lượt thăm có lời giải
+    /// thích trực tiếp, không cần tới giả thuyết extension.
+    /// </summary>
+    private async Task RecordWebObservationsAsync(IReadOnlyList<WebVisitRecord> visits, CancellationToken ct)
+    {
+        try
+        {
+            IReadOnlyList<ChildAccountLink> links = await GetChildAccountsAsync(ct);
+            Guid? defaultChildId = await GetDefaultChildIdAsync(ct);
+            IReadOnlyList<Rule> monitorRules = await _outbox.GetCachedMonitorRulesAsync(ct);
+            IReadOnlyList<Rule> enabledRules = await _outbox.GetCachedRulesAsync(ct);
+
+            var monitorWebRules = new List<Rule>();
+            foreach (Rule rule in monitorRules)
+            {
+                if (rule.Type == RuleTypes.Website && RuleObservationMatcher.ObserveEnabled(rule)
+                    && RuleObservationMatcher.ModeOf(rule) is "block_domains" or "block_domains_by_time")
+                {
+                    monitorWebRules.Add(rule);
+                }
+            }
+
+            var enabledWebRules = new List<Rule>();
+            foreach (Rule rule in enabledRules)
+            {
+                if (rule.Type == RuleTypes.Website && rule.Enabled
+                    && RuleObservationMatcher.ModeOf(rule) is "block_domains" or "block_domains_by_time")
+                {
+                    enabledWebRules.Add(rule);
+                }
+            }
+
+            if (monitorWebRules.Count == 0 && enabledWebRules.Count == 0)
+            {
+                return;
+            }
+
+            bool extensionMissing = enabledWebRules.Count > 0 && await IsExtensionMissingAsync(ct);
+            var overrideByChild = new Dictionary<Guid, TemporaryOverride?>();
+
+            async Task<TemporaryOverride?> GetOverrideAsync(Guid childId)
+            {
+                if (!overrideByChild.TryGetValue(childId, out TemporaryOverride? ov))
+                {
+                    ov = await _outbox.GetActiveOverrideForChildAsync(childId, defaultChildId, ct);
+                    overrideByChild[childId] = ov;
+                }
+
+                return ov;
+            }
+
+            int recorded = 0;
+            foreach (WebVisitRecord visit in visits)
+            {
+                if (visit.Blocked)
+                {
+                    continue;
+                }
+
+                Guid? childId = ResolveObservationChild(visit.WindowsSid, links, defaultChildId);
+                if (childId is null)
+                {
+                    continue;
+                }
+
+                DateTimeOffset familyVisitedAt = _clock.ToFamily(visit.VisitedAt);
+
+                if (_monitorRulesChildId is not null && childId.Value == _monitorRulesChildId.Value)
+                {
+                    foreach (Rule rule in monitorWebRules)
+                    {
+                        if (RuleObservationMatcher.DomainRuleMatches(rule, visit.Domain, visit.Path, familyVisitedAt))
+                        {
+                            await AddObservationAsync(childId.Value, rule, visit.Domain,
+                                RuleObservationMatcher.ContextRuleDisabled,
+                                1, visit.DurationSec, visit.VisitedAt, visit.VisitedAt, visit.WindowsSid, ct);
+                            recorded++;
+                        }
+                    }
+                }
+
+                if (_rulesChildId is not null && childId.Value == _rulesChildId.Value && enabledWebRules.Count > 0)
+                {
+                    // Domain được cho phép tạm thời còn hiệu lực tại
+                    // thời điểm thăm? Ghi đè hiện tại của con phải là
+                    // allow_domain, chưa hết hạn tại thời điểm thăm,
+                    // và (như phía app) chỉ khẳng định cho lượt thăm
+                    // sau mốc lệnh tạo ghi đè.
+                    bool tempAllowed = false;
+                    TemporaryOverride? ov = await GetOverrideAsync(childId.Value);
+                    if (ov is not null
+                        && ov.Action == OverrideActions.AllowDomain
+                        && ov.Domains is not null
+                        && ov.ExpiresAt > visit.VisitedAt
+                        && (ov.CommandCreatedAt is null || ov.CommandCreatedAt.Value <= visit.VisitedAt))
+                    {
+                        string? normalizedHost = DomainRulesPublisher.NormalizeDomain(visit.Domain);
+                        if (normalizedHost is not null)
+                        {
+                            foreach (string raw in ov.Domains)
+                            {
+                                string? allowed = DomainRulesPublisher.NormalizeDomain(raw);
+                                if (allowed is not null && RuleObservationMatcher.HostMatchesDomain(normalizedHost, allowed))
+                                {
+                                    tempAllowed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    foreach (Rule rule in enabledWebRules)
+                    {
+                        if (!RuleObservationMatcher.DomainRuleMatches(rule, visit.Domain, visit.Path, familyVisitedAt))
+                        {
+                            continue;
+                        }
+
+                        if (tempAllowed)
+                        {
+                            await AddObservationAsync(childId.Value, rule, visit.Domain,
+                                RuleObservationMatcher.ContextTempAllowed,
+                                1, visit.DurationSec, visit.VisitedAt, visit.VisitedAt, visit.WindowsSid, ct);
+                            recorded++;
+                        }
+                        else if (extensionMissing)
+                        {
+                            await AddObservationAsync(childId.Value, rule, visit.Domain,
+                                RuleObservationMatcher.ContextUnenforceable,
+                                1, visit.DurationSec, visit.VisitedAt, visit.VisitedAt, visit.WindowsSid, ct);
+                            recorded++;
+                        }
+                    }
+                }
+            }
+
+            if (recorded > 0)
+            {
+                _log.Info("Đã ghi nhận " + recorded + " quan sát luật web không chặn vào outbox.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đối chiếu quan sát luật web lỗi (bỏ qua, không ảnh hưởng web usage).", ex);
+        }
+    }
+
+    /// <summary>
+    /// Đẩy dòng theo dõi luật đã gộp trong outbox cục bộ lên server
+    /// (RPC migration 31), theo mẫu FlushSearchTermsAsync: gửi thành
+    /// công mới xóa khỏi hàng đợi; RPC chưa áp thì cảnh báo MỘT lần
+    /// rồi giữ dữ liệu; lỗi thường thì giữ dữ liệu lặng lẽ (log đã
+    /// throttle trong API client). Tự bắt lỗi để không bao giờ làm
+    /// hỏng vòng flush usage.
+    /// </summary>
+    private async Task FlushRuleObservationsAsync(CancellationToken ct)
+    {
+        try
+        {
+            IReadOnlyList<RuleObservationOutboxItem> pending = await _outbox.GetPendingRuleObservationsAsync(500, ct);
+            if (pending.Count == 0)
+            {
+                return;
+            }
+
+            var records = new List<RuleObservationRecord>(pending.Count);
+            var ids = new List<long>(pending.Count);
+            foreach (RuleObservationOutboxItem item in pending)
+            {
+                records.Add(item.Record);
+                ids.Add(item.Id);
+            }
+
+            (RuleObservationsPushStatus status, RuleObservationsPushResult? result) =
+                await _api.SendRuleObservationsAsync(records, ct);
+            switch (status)
+            {
+                case RuleObservationsPushStatus.Sent:
+                    await _outbox.DeleteRuleObservationsAsync(ids, ct);
+                    _observationsRpcMissingWarned = false;
+                    _log.Info("Đã gửi rule observations lên server: " + records.Count + " dòng gộp"
+                        + (result is not null ? " (server nhận " + result.Accepted + ", bỏ qua " + result.Skipped + ")." : "."));
+                    break;
+
+                case RuleObservationsPushStatus.RpcMissing:
+                    if (!_observationsRpcMissingWarned)
+                    {
+                        _observationsRpcMissingWarned = true;
+                        _log.Warning("RPC safepc_push_rule_observations chưa có trên server (migration 31 chưa áp) — giữ " + records.Count + " dòng quan sát luật trong outbox, sẽ gửi lại khi migration được áp.");
+                    }
+
+                    break;
+
+                default:
+                    // Failed: giữ dữ liệu, chu kỳ sau thử lại.
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đẩy rule observations lỗi (giữ dữ liệu trong outbox).", ex);
+        }
+    }
+
+    /// <summary>
+    /// Đối chiếu LUẬT GIỜ + FOCUS của lần kiểm tra này cho mặt theo
+    /// dõi (migration 31), gộp trong bộ nhớ rồi xả xuống outbox:
+    /// - Luật giờ ĐANG TẮT (cache monitor của đúng con đang active)
+    ///   mà nếu bật sẽ khóa tại thời điểm này (RuleEngine.
+    ///   FindWouldLockTimeRules) → rule_disabled.
+    /// - Luật giờ ĐANG BẬT sẽ khóa nhưng ghi đè MỞ KHÓA TẠM THỜI
+    ///   đang che (đúng ngữ nghĩa unlock của PRD: chỉ hoãn khóa giờ
+    ///   giấc) → temp_allowed.
+    /// - Luật focus ĐANG TẮT mà hiện đang trong khung tập trung và
+    ///   app foreground không thuộc allowedApps của luật → rule_
+    ///   disabled, đối tượng là app đang dùng.
+    /// Chỉ ghi khi máy ĐANG DÙNG ĐƯỢC (quyết định cuối không phải
+    /// Lock): đang khóa thì con không dùng máy, không có gì thuộc
+    /// diện "không chặn mà vẫn dùng". Mỗi đợt khớp liên tục tính 1
+    /// lần (cờ Active trong bộ gộp), cộng 15 giây/tick như mẫu
+    /// foreground; bộ gộp xả xuống outbox khi đợt kết thúc hoặc mỗi
+    /// 5 phút. Đối tượng: tên app foreground mới nhất (báo cáo còn
+    /// tươi ≤ 90 giây của phiên console), không có thì "Máy tính".
+    /// </summary>
+    private async Task RecordTimeObservationsAsync(
+        IReadOnlyList<Rule> rules,
+        TimeSpan usedToday,
+        TemporaryOverride? activeOverride,
+        RuleDecision decision,
+        DateTimeOffset now,
+        ActiveContext active,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (active.ChildId is null)
+            {
+                return;
+            }
+
+            Guid childId = active.ChildId.Value;
+            string day = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            string? foregroundExe = null;
+            IReadOnlyList<ForegroundReport> fresh = _foregroundState.TryGetFreshReports(TimeSpan.FromSeconds(90));
+            ForegroundReport? report = null;
+            foreach (ForegroundReport candidate in fresh)
+            {
+                if (active.ConsoleSessionId is not null && candidate.Payload.SessionId == active.ConsoleSessionId.Value)
+                {
+                    report = candidate;
+                    break;
+                }
+
+                if (report is null || candidate.ReceivedAt > report.ReceivedAt)
+                {
+                    report = candidate;
+                }
+            }
+
+            if (report is not null)
+            {
+                foregroundExe = report.Payload.ExeName ?? report.Payload.AppName;
+            }
+
+            string target = foregroundExe ?? "Máy tính";
+            var matchedKeys = new HashSet<string>(StringComparer.Ordinal);
+
+            if (decision.Kind != RuleDecisionKind.Lock)
+            {
+                // (a) Luật giờ đang tắt của đúng con đang active.
+                if (_monitorRulesChildId is not null && _monitorRulesChildId.Value == childId)
+                {
+                    IReadOnlyList<Rule> monitorRules = await _outbox.GetCachedMonitorRulesAsync(ct);
+                    var monitorTimeRules = new List<Rule>();
+                    var monitorFocusRules = new List<Rule>();
+                    foreach (Rule rule in monitorRules)
+                    {
+                        if (!RuleObservationMatcher.ObserveEnabled(rule))
+                        {
+                            continue;
+                        }
+
+                        if (rule.Type is RuleTypes.Bedtime or RuleTypes.TimeWindow or RuleTypes.DailyLimit)
+                        {
+                            monitorTimeRules.Add(rule);
+                        }
+                        else if (rule.Type == RuleTypes.Website
+                            && RuleObservationMatcher.ModeOf(rule) == "focus")
+                        {
+                            monitorFocusRules.Add(rule);
+                        }
+                    }
+
+                    foreach (Rule rule in _ruleEngine.FindWouldLockTimeRules(monitorTimeRules, usedToday, now))
+                    {
+                        TouchTimeObservation(matchedKeys, childId, rule,
+                            RuleObservationMatcher.ContextRuleDisabled, day, target, active.ConsoleSessionSid, now);
+                    }
+
+                    // Focus đang tắt: trong khung tập trung mà app
+                    // foreground không được phép → thuộc diện luật.
+                    // Không có báo cáo foreground tươi thì không quy
+                    // được app nào đang dùng → bỏ qua (không suy đoán).
+                    if (foregroundExe is not null)
+                    {
+                        foreach (Rule rule in monitorFocusRules)
+                        {
+                            Dictionary<int, List<(TimeOnly Start, TimeOnly End)>>? windows =
+                                RuleObservationMatcher.ParseWindows(rule.Config);
+                            if (windows is null || !RuleObservationMatcher.IsInWindows(windows, now.DateTime))
+                            {
+                                continue;
+                            }
+
+                            bool allowed = false;
+                            foreach (string exe in RuleObservationMatcher.RuleApps(rule, "allowedApps"))
+                            {
+                                if (ExeNames.Matches(exe, foregroundExe))
+                                {
+                                    allowed = true;
+                                    break;
+                                }
+                            }
+
+                            if (!allowed)
+                            {
+                                TouchTimeObservation(matchedKeys, childId, rule,
+                                    RuleObservationMatcher.ContextRuleDisabled, day,
+                                    ExeNames.Normalize(foregroundExe) ?? foregroundExe,
+                                    active.ConsoleSessionSid, now);
+                            }
+                        }
+                    }
+                }
+
+                // (b) Luật giờ đang bật bị ghi đè unlock che mất.
+                if (activeOverride is not null
+                    && activeOverride.Action == OverrideActions.Unlock
+                    && activeOverride.ExpiresAt > now)
+                {
+                    foreach (Rule rule in _ruleEngine.FindWouldLockTimeRules(rules, usedToday, now))
+                    {
+                        TouchTimeObservation(matchedKeys, childId, rule,
+                            RuleObservationMatcher.ContextTempAllowed, day, target, active.ConsoleSessionSid, now);
+                    }
+                }
+            }
+
+            // Đợt nào không còn khớp ở tick này thì kết thúc đợt; xả
+            // bộ gộp xuống outbox khi có đợt kết thúc hoặc đủ 5 phút.
+            bool anyEnded = false;
+            foreach (KeyValuePair<string, TimeObservationEntry> pair in _timeObservations)
+            {
+                if (pair.Value.Active && !matchedKeys.Contains(pair.Key))
+                {
+                    pair.Value.Active = false;
+                    anyEnded = true;
+                }
+            }
+
+            bool due = DateTime.UtcNow - _lastObservationFlushUtc >= TimeSpan.FromMinutes(5);
+            if (anyEnded || due)
+            {
+                await FlushTimeObservationsAsync(ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("Đối chiếu quan sát luật giờ lỗi (bỏ qua, không ảnh hưởng thi hành).", ex);
+        }
+    }
+
+    /// <summary>Chạm một khóa quan sát luật giờ trong bộ gộp của tick: bắt đầu đợt mới thì +1 lần; đang trong đợt thì chỉ cộng giây + cập nhật mốc cuối/đối tượng.</summary>
+    private void TouchTimeObservation(
+        HashSet<string> matchedKeys,
+        Guid childId,
+        Rule rule,
+        string context,
+        string day,
+        string target,
+        string? sid,
+        DateTimeOffset now)
+    {
+        string key = childId.ToString("D") + "|" + rule.Id.ToString("D") + "|" + day + "|" + context;
+        matchedKeys.Add(key);
+        if (!_timeObservations.TryGetValue(key, out TimeObservationEntry? entry))
+        {
+            entry = new TimeObservationEntry
+            {
+                RuleSnapshot = rule,
+                ChildId = childId,
+                Sid = sid,
+                Day = day,
+                Context = context,
+                Target = target,
+            };
+            _timeObservations[key] = entry;
+        }
+
+        if (!entry.Active)
+        {
+            entry.Active = true;
+            entry.Count++;
+            entry.First = now;
+        }
+
+        entry.Seconds += (long)AgentConstants.ForegroundSampleInterval.TotalSeconds;
+        entry.Last = now;
+        entry.Target = target;
+    }
+
+    /// <summary>Xả bộ gộp quan sát luật giờ xuống outbox cục bộ: entry còn đang khớp thì giữ lại phần trạng thái đợt (đã trừ phần vừa xả), entry đã kết thúc thì xóa.</summary>
+    private async Task FlushTimeObservationsAsync(CancellationToken ct)
+    {
+        _lastObservationFlushUtc = DateTime.UtcNow;
+        var removeKeys = new List<string>();
+        foreach (KeyValuePair<string, TimeObservationEntry> pair in _timeObservations)
+        {
+            TimeObservationEntry entry = pair.Value;
+            if (entry.Count > 0 || entry.Seconds > 0)
+            {
+                await AddObservationAsync(entry.ChildId, entry.RuleSnapshot, entry.Target, entry.Context,
+                    entry.Count, (int)Math.Min(entry.Seconds, int.MaxValue), entry.First, entry.Last, entry.Sid, ct);
+                entry.Count = 0;
+                entry.Seconds = 0;
+            }
+
+            if (!entry.Active)
+            {
+                removeKeys.Add(pair.Key);
+            }
+        }
+
+        foreach (string key in removeKeys)
+        {
+            _timeObservations.Remove(key);
+        }
+    }
+
     private async Task RuleCheckLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -1881,10 +2693,18 @@ public sealed class AgentWorker : BackgroundService
 
                 IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
 
+                // Giờ tin cậy (migration 31, PRD §2.14): MỌI đánh giá
+                // của lần kiểm tra này dùng giờ tin cậy quy đổi múi
+                // giờ gia đình — ranh giới ngày của usedToday, thời
+                // điểm đánh giá luật giờ giấc/nghỉ bắt buộc, so hạn
+                // ghi đè, mốc khóa có độ trễ. Chỉnh giờ/múi giờ trên
+                // máy con không còn ảnh hưởng thi hành.
+                DateTimeOffset now = _clock.FamilyNow;
+
                 // Sprint 5: chỉ tính giờ dùng của con đang active (mẫu
                 // usage gắn với SID của con; mẫu không rõ phiên chỉ tính
                 // cho con mặc định — xem ActiveChildResolver.ScopeForChild).
-                TimeSpan usedToday = await _outbox.GetUsageTodayForChildAsync(active.Scope, ct);
+                TimeSpan usedToday = await _outbox.GetUsageTodayForChildAsync(active.Scope, now, ct);
 
                 // Đọc ghi đè tạm thời ở mỗi lần kiểm tra: hết hạn thì tự
                 // vô hiệu (kể cả sau khi Service khởi động lại), không cần
@@ -1892,7 +2712,6 @@ public sealed class AgentWorker : BackgroundService
                 // Sprint 5: ghi đè theo con đang active (hàng legacy không
                 // gắn con thuộc về con mặc định).
                 TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideForChildAsync(active.ChildId, active.DefaultChildId, ct);
-                DateTimeOffset now = DateTimeOffset.Now;
 
                 // Ghi đè đổi (áp dụng/hết hạn/bị thay) thì xuất bản lại file
                 // domain: GetActiveOverrideForChildAsync xóa hàng hết hạn khi đọc,
@@ -2144,7 +2963,8 @@ public sealed class AgentWorker : BackgroundService
                 (List<string> reasons, List<string> ruleIds) = DeriveEnforcementReasons(decision, rules, breakActive, forcedLock, activeOverride, now);
                 string? lockedBy = DeriveLockedBy(decision, breakActive, forcedLock, activeOverride, now);
                 (string snapshotJson, string snapshotSignature) = BuildEnforcementSnapshot(
-                    decision, lockedBy, reasons, ruleIds, appBlocks, HasEnabledWebsiteRule(rules), focusActive, now);
+                    decision, lockedBy, reasons, ruleIds, appBlocks, HasEnabledWebsiteRule(rules), focusActive, now,
+                    (int)_clock.Drift.TotalSeconds, _clock.IsVerified);
                 lock (_enforcementGate)
                 {
                     _pendingEnforcementJson = snapshotJson;
@@ -2192,6 +3012,12 @@ public sealed class AgentWorker : BackgroundService
                 _queryState.UpdateDecision(displayDecision, now, activeBonusMinutes, active.ChildId);
 
                 LogRuleDecisionIfDue(decision, ruleIds, usedToday, activeOverride);
+
+                // Theo dõi khi luật không chặn — phần luật GIỜ + focus
+                // (migration 31): đối chiếu trạng thái vừa đánh giá với
+                // luật giờ đang tắt và với ghi đè mở khóa tạm thời.
+                // Hàm tự bắt lỗi, không ảnh hưởng thi hành.
+                await RecordTimeObservationsAsync(rules, usedToday, activeOverride, decision, now, active, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -2687,7 +3513,9 @@ public sealed class AgentWorker : BackgroundService
                 IReadOnlyList<Rule> rules = await _outbox.GetCachedRulesAsync(ct);
                 // Sprint 5: ghi đè app theo con đang active.
                 TemporaryOverride? activeOverride = await _outbox.GetActiveOverrideForChildAsync(active.ChildId, active.DefaultChildId, ct);
-                DateTimeOffset now = DateTimeOffset.Now;
+                // Giờ tin cậy (migration 31): thi hành ngay cũng theo
+                // giờ tin cậy quy đổi múi giờ gia đình như vòng tick.
+                DateTimeOffset now = _clock.FamilyNow;
                 await RunAndCacheAppEnforcementAsync(GetParsedAppRules(rules), now, activeOverride, active, ct);
 
                 // Breadcrumb chống spam (tối đa 1 dòng/15 phút): đủ để log
@@ -2806,13 +3634,18 @@ public sealed class AgentWorker : BackgroundService
             return (false, new List<string>());
         }
 
-        DateTime local = now.LocalDateTime;
+        // now do người gọi truyền đã biểu diễn theo múi giờ gia đình
+        // (giờ tin cậy, migration 31) nên đọc thẳng phần DateTime —
+        // cùng quy ước với RuleEngine (trước đây LocalDateTime của
+        // DateTimeOffset.Now cho cùng kết quả).
+        DateTime local = now.DateTime;
         (bool focusActive, _) = EvaluateFocusState(parsed, local);
 
         // Sprint 5: hạn mức app tính trên giờ dùng của con đang active
         // (mẫu gắn với SID của con; mẫu không rõ phiên chỉ tính cho con
         // mặc định) — giờ của con kia không làm con này hết hạn mức.
-        IReadOnlyDictionary<string, TimeSpan> usageByApp = await _outbox.GetUsageByAppTodayForChildAsync(active.Scope, ct);
+        // Ranh giới ngày theo now (giờ tin cậy, múi giờ gia đình).
+        IReadOnlyDictionary<string, TimeSpan> usageByApp = await _outbox.GetUsageByAppTodayForChildAsync(active.Scope, now, ct);
         Dictionary<string, TimeSpan> normalizedUsage = NormalizeUsageByApp(usageByApp);
 
         // App đang chịu thi hành chặn trong lần này (không cần foreground):
@@ -3756,12 +4589,15 @@ public sealed class AgentWorker : BackgroundService
                 UsageScope targetScope = targetChild == active.ChildId
                     ? active.Scope
                     : ActiveChildResolver.ScopeForChild(targetChild, active.DefaultChildId, active.Links);
-                TimeSpan usedToday = await _outbox.GetUsageTodayForChildAsync(targetScope, ct);
+                // Giờ tin cậy (migration 31): đánh giá lại sau ghi đè
+                // cũng theo giờ tin cậy + ranh giới ngày gia đình.
+                DateTimeOffset familyNow = _clock.FamilyNow;
+                TimeSpan usedToday = await _outbox.GetUsageTodayForChildAsync(targetScope, familyNow, ct);
                 TemporaryOverride? currentOverride = await _outbox.GetActiveOverrideForChildAsync(targetChild, active.DefaultChildId, ct);
                 bool forcedLock = await _outbox.GetForcedLockAsync(targetChild, active.DefaultChildId, ct);
                 (RuleDecision currentDecision, _) = await EvaluateLockDecisionAsync(
                     currentRules, usedToday, currentOverride, forcedLock,
-                    GetParsedAppRules(currentRules), DateTimeOffset.Now, targetScope, ct);
+                    GetParsedAppRules(currentRules), familyNow, targetScope, ct);
                 currentKind = currentDecision.Kind;
                 if (currentKind != RuleDecisionKind.Allowed)
                 {
@@ -4003,7 +4839,9 @@ public sealed class AgentWorker : BackgroundService
         List<string> appBlocks,
         bool domainRulesActive,
         bool focusActive,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        int clockDriftSeconds,
+        bool clockVerified)
     {
         string decisionText = decision.Kind switch
         {
@@ -4023,13 +4861,27 @@ public sealed class AgentWorker : BackgroundService
             appBlocks = cappedBlocks,
             domainRulesActive,
             focusActive,
+            // Giờ tin cậy (migration 31, PRD §2.14): độ lệch đồng hồ
+            // máy so với giờ tin cậy (giây, dương = máy chạy trước) +
+            // cờ đã đồng bộ giờ server trong phiên chạy này. Dashboard
+            // cảnh báo trên thẻ thiết bị khi |lệch| > 120 giây; bản
+            // Dashboard cũ bỏ qua hai trường lạ này.
+            clockDriftSeconds,
+            clockVerified,
         };
         string json = JsonSerializer.Serialize(payload);
+        // Chữ ký chỉ đổi theo XÔ lệch thô (ổn định trong 5 phút, đổi
+        // dấu khi vượt ngưỡng) — đưa độ lệch giây thô vào chữ ký sẽ
+        // làm snapshot đổi mỗi lần kiểm tra và gửi thừa liên tục.
+        string driftBucket = Math.Abs(clockDriftSeconds) <= 120
+            ? "ok"
+            : (clockDriftSeconds > 0 ? "drift+" : "drift-") + (Math.Abs(clockDriftSeconds) / 300);
         string signature = decisionText + "|" + (lockedBy ?? "-")
             + "|" + string.Join(",", reasons)
             + "|" + string.Join(",", ruleIds)
             + "|" + string.Join(",", cappedBlocks)
-            + "|" + domainRulesActive + "|" + focusActive;
+            + "|" + domainRulesActive + "|" + focusActive
+            + "|" + driftBucket + "|" + clockVerified;
         return (json, signature);
     }
 

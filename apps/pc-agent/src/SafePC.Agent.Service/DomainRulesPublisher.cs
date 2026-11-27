@@ -151,7 +151,8 @@ public sealed class DomainRulesPublisher
                 + file.DomainLimits.Count + " giới hạn theo domain, "
                 + "tempAllow " + file.TempAllow.Count + ", tempBlock " + file.TempBlock.Count + ", "
                 + (file.Focus is null ? "không có focus" : "focus " + file.Focus.AllowedDomains.Count + " domain cho phép") + ", "
-                + (file.SearchGuard is null ? "không có searchGuard" : "searchGuard " + file.SearchGuard.BlockedKeywords.Count + " từ khóa cấm") + ".");
+                + (file.SearchGuard is null ? "không có searchGuard" : "searchGuard " + file.SearchGuard.BlockedKeywords.Count + " từ khóa cấm") + ", "
+                + (file.MonitorRules is null ? "không có monitorRules" : "monitorRules " + file.MonitorRules.Count + " luật theo dõi") + ".");
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -452,7 +453,116 @@ public sealed class DomainRulesPublisher
             }
         }
 
+        // monitorRules (migration 31, PRD §2.15): luật cấm ĐANG TẮT
+        // còn bật mặt theo dõi của con đang active, lấy từ cache
+        // monitor riêng (KHÔNG lẫn cache thi hành). Extension KHÔNG
+        // thi hành các luật này — mục này chỉ để mọi phía đọc cùng một
+        // bản mô tả luật (id/tên/mode/apps/domains/categories/
+        // urlPatterns); việc đối chiếu mẫu sử dụng do Service làm
+        // thẳng trên cache (RuleObservationMatcher). Luật đang BẬT
+        // không vào đây: ngữ cảnh temp_allowed đối chiếu thẳng trên
+        // cache thi hành + trạng thái ghi đè. null khi không có luật
+        // theo dõi nào (khóa JSON bị bỏ hẳn như các mục tùy chọn
+        // khác, extension cũ không thấy khóa lạ).
+        file.MonitorRules = await BuildMonitorRulesAsync(ct);
+
         return file;
+    }
+
+    /// <summary>
+    /// Dựng mục monitorRules từ cache luật-chỉ-theo-dõi: chỉ các mode
+    /// cấm thuộc phạm vi PRD §2.15 (app_block/app_block_by_time cho
+    /// type app; block_domains/block_domains_by_time/focus cho type
+    /// website) và mặt theo dõi còn bật (config.observe vắng mặt =
+    /// bật; RPC phía server đã lọc sẵn, ở đây lọc lại phòng thủ cho
+    /// cache cũ). Danh mục giữ NGUYÊN id (không mở rộng domain hạt
+    /// giống — phía đối chiếu tự mở rộng khi cần); sắp xếp ổn định
+    /// theo ruleId để chuỗi JSON so sánh không đổi giữa các lần.
+    /// </summary>
+    private async Task<List<MonitorRuleEntry>?> BuildMonitorRulesAsync(CancellationToken ct)
+    {
+        IReadOnlyList<Rule> monitorRules = await _outbox.GetCachedMonitorRulesAsync(ct);
+        if (monitorRules.Count == 0)
+        {
+            return null;
+        }
+
+        var entries = new List<MonitorRuleEntry>();
+        foreach (Rule rule in monitorRules)
+        {
+            if (rule.Config.ValueKind != JsonValueKind.Object
+                || !RuleObservationMatcher.ObserveEnabled(rule))
+            {
+                continue;
+            }
+
+            string mode = RuleObservationMatcher.ModeOf(rule);
+            var entry = new MonitorRuleEntry
+            {
+                RuleId = rule.Id.ToString("D"),
+                Name = rule.Name ?? string.Empty,
+                Mode = mode,
+            };
+
+            if (rule.Type == RuleTypes.App && mode is "app_block" or "app_block_by_time")
+            {
+                var apps = new HashSet<string>(StringComparer.Ordinal);
+                if (rule.Config.TryGetProperty("apps", out JsonElement appsElement)
+                    && appsElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement appElement in appsElement.EnumerateArray())
+                    {
+                        string? exe = TryGetString(appElement, "exe");
+                        if (exe is not null && ExeNames.Normalize(exe) is string normalizedExe)
+                        {
+                            apps.Add(normalizedExe);
+                        }
+                    }
+                }
+
+                entry.Apps = apps.OrderBy(a => a, StringComparer.Ordinal).ToList();
+            }
+            else if (rule.Type == RuleTypes.Website && mode is "block_domains" or "block_domains_by_time" or "focus")
+            {
+                var domains = new HashSet<string>(StringComparer.Ordinal);
+                AddRuleDomains(domains, rule.Config);
+                entry.Domains = domains.OrderBy(d => d, StringComparer.Ordinal).ToList();
+
+                var patterns = new HashSet<string>(StringComparer.Ordinal);
+                AddRuleUrlPatterns(patterns, rule.Config);
+                entry.UrlPatterns = patterns.OrderBy(p => p, StringComparer.Ordinal).ToList();
+
+                var categories = new List<string>();
+                if (rule.Config.TryGetProperty("categories", out JsonElement categoriesElement)
+                    && categoriesElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement categoryElement in categoriesElement.EnumerateArray())
+                    {
+                        if (categoryElement.ValueKind == JsonValueKind.String
+                            && categoryElement.GetString() is string categoryId)
+                        {
+                            categories.Add(categoryId);
+                        }
+                    }
+                }
+
+                entry.Categories = categories;
+            }
+            else
+            {
+                continue;
+            }
+
+            entries.Add(entry);
+        }
+
+        if (entries.Count == 0)
+        {
+            return null;
+        }
+
+        entries.Sort((a, b) => string.CompareOrdinal(a.RuleId, b.RuleId));
+        return entries;
     }
 
     /// <summary>Đọc mảng <c>domains</c> trong config rule, chuẩn hóa và thêm vào tập đích.</summary>
@@ -609,7 +719,7 @@ public sealed class DomainRulesPublisher
     /// hợp lệ hoặc thiếu đường dẫn (kể cả một mình "/" — hãy dùng rule
     /// domain trần cho cả domain). Khớp với chuẩn hóa phía Dashboard.
     /// </summary>
-    private static string? NormalizeUrlPattern(string? raw)
+    internal static string? NormalizeUrlPattern(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -803,7 +913,7 @@ public sealed class DomainRulesPublisher
     /// khác nhau, extension khớp bằng hậu tố nên rule "youtube.com" vẫn chặn
     /// được cả hai.
     /// </summary>
-    private static string? NormalizeDomain(string? raw)
+    internal static string? NormalizeDomain(string? raw)
     {
         string? candidate = ToCandidate(raw);
         return candidate is not null && IsValidDomain(candidate) ? candidate : null;
@@ -1139,6 +1249,49 @@ internal sealed class DomainRulesFile
     [JsonPropertyName("searchGuard")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SearchGuardEntry? SearchGuard { get; set; }
+
+    /// <summary>
+    /// Mục monitorRules (migration 31): luật cấm đang TẮT còn bật mặt
+    /// theo dõi của con đang active. Null = bỏ khóa khỏi JSON
+    /// (WhenWritingNull, cùng mẫu các mục tùy chọn khác). Extension
+    /// KHÔNG thi hành các luật này; Service đối chiếu mẫu sử dụng
+    /// thẳng trên cache monitor (xem RuleObservationMatcher), mục này
+    /// là bản mô tả dùng chung trong file đã xuất bản.
+    /// </summary>
+    [JsonPropertyName("monitorRules")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<MonitorRuleEntry>? MonitorRules { get; set; }
+}
+
+/// <summary>
+/// Một luật trong mục monitorRules của domain_rules.json (migration
+/// 31): định danh + bản chụp tên/mode + các đối tượng luật nhắm tới.
+/// Apps đã chuẩn hóa bằng ExeNames.Normalize; Domains/UrlPatterns
+/// chuẩn hóa như các mục chặn; Categories giữ nguyên id danh mục
+/// (phía đối chiếu tự mở rộng qua DomainCategoryLists).
+/// </summary>
+internal sealed class MonitorRuleEntry
+{
+    [JsonPropertyName("ruleId")]
+    public string RuleId { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = string.Empty;
+
+    [JsonPropertyName("apps")]
+    public List<string> Apps { get; set; } = new();
+
+    [JsonPropertyName("domains")]
+    public List<string> Domains { get; set; } = new();
+
+    [JsonPropertyName("categories")]
+    public List<string> Categories { get; set; } = new();
+
+    [JsonPropertyName("urlPatterns")]
+    public List<string> UrlPatterns { get; set; } = new();
 }
 
 /// <summary>Kiểm duyệt từ khóa tìm kiếm: danh sách từ khóa cấm (đã chuẩn hóa) cho extension thi hành.</summary>

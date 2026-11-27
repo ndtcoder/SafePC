@@ -23,7 +23,13 @@ public sealed record RuleDecision(RuleDecisionKind Kind, string Reason, int Minu
 /// rồi giới hạn ngày. Trong các quyết định cảnh báo, ngưỡng gần nhất (ít
 /// phút còn lại nhất) thắng.
 ///
-/// Mọi giờ giấc đều theo GIỜ ĐỊA PHƯƠNG của máy con. Quy ước thứ: số 0-6
+/// Thời gian: tham số <c>now</c> phải là thời điểm ĐÃ biểu diễn theo
+/// múi giờ dùng để thi hành — từ đợt giờ tin cậy (PRD §2.14, migration
+/// 31) AgentWorker luôn truyền giờ tin cậy quy đổi múi giờ GIA ĐÌNH
+/// (TrustedClock.FamilyNow), và engine đọc phần DateTime của nó
+/// nguyên trạng (trước đây đọc LocalDateTime của giờ máy — hai cách
+/// cho cùng kết quả khi người gọi truyền DateTimeOffset.Now, nên
+/// hành vi với người gọi cũ không đổi). Quy ước thứ: số 0-6
 /// khớp <see cref="DayOfWeek"/> của C# và <c>Date.getDay()</c> của JS
 /// (0 = Chủ nhật, 6 = Thứ 7) — xem packages/shared-types.
 ///
@@ -109,7 +115,7 @@ public sealed class RuleEngine
             }
         }
 
-        DateTime local = now.LocalDateTime;
+        DateTime local = now.DateTime;
 
         foreach (Rule rule in rules)
         {
@@ -196,7 +202,7 @@ public sealed class RuleEngine
             ? activeOverride.Minutes
             : 0;
 
-        DateTime local = now.LocalDateTime;
+        DateTime local = now.DateTime;
         int weekday = (int)local.DayOfWeek;
         int? remaining = null;
         void Consider(int minutes)
@@ -321,6 +327,97 @@ public sealed class RuleEngine
         }
 
         return nearest;
+    }
+
+    /// <summary>
+    /// Tìm các luật GIỜ trong danh sách truyền vào mà NẾU đang bật thì
+    /// tại thời điểm này sẽ khóa máy — dùng cho mặt theo dõi khi luật
+    /// không chặn (PRD §2.15): luật đang tắt (ngữ cảnh rule_disabled)
+    /// hoặc luật đang bật nhưng bị ghi đè mở khóa tạm thời che mất
+    /// (ngữ cảnh temp_allowed). KHÁC <see cref="Evaluate"/>: hàm này
+    /// coi MỌI luật truyền vào là đang bật (không đọc cờ Enabled —
+    /// người gọi truyền đúng tập cần xét: luật-tắt-theo-dõi hoặc luật
+    /// đang bật), không xét ghi đè/khóa cưỡng chế, và trả về TỪNG
+    /// luật khớp thay vì một quyết định gộp. Ngữ nghĩa từng loại bám
+    /// đúng các helper thi hành: bedtime dùng IsInBedtime; daily_limit
+    /// dùng GetDailyLimitMinutes + so usedToday như CheckDailyLimit
+    /// (không cộng bonus — bonus là cho phép tạm thời, thuộc phía
+    /// người gọi); time_window theo ngữ nghĩa HỢP của CheckTimeWindows:
+    /// nếu tập truyền vào có ít nhất một luật khung giờ và thời điểm
+    /// nằm ngoài MỌI khung của MỌI luật khung giờ trong tập thì TẤT
+    /// CẢ luật khung giờ trong tập đều "sẽ khóa" (một luật khung giờ
+    /// đơn lẻ không tự quyết được, vì luật khác có thể cho phép).
+    /// <paramref name="now"/> theo cùng quy ước giờ thi hành như
+    /// Evaluate (đã quy đổi múi giờ gia đình theo giờ tin cậy).
+    /// </summary>
+    public IReadOnlyList<Rule> FindWouldLockTimeRules(
+        IReadOnlyList<Rule> rules,
+        TimeSpan usedToday,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+
+        DateTime local = now.DateTime;
+        int weekday = (int)local.DayOfWeek;
+        var matches = new List<Rule>();
+        var windowRules = new List<Rule>();
+
+        foreach (Rule rule in rules)
+        {
+            switch (rule.Type)
+            {
+                case RuleTypes.Bedtime:
+                    if (IsInBedtime(rule, local))
+                    {
+                        matches.Add(rule);
+                    }
+
+                    break;
+
+                case RuleTypes.DailyLimit:
+                    int? limit = GetDailyLimitMinutes(rule, weekday);
+                    if (limit is not null && (int)usedToday.TotalMinutes >= limit.Value)
+                    {
+                        matches.Add(rule);
+                    }
+
+                    break;
+
+                case RuleTypes.TimeWindow:
+                    windowRules.Add(rule);
+                    break;
+            }
+        }
+
+        if (windowRules.Count > 0)
+        {
+            // Tái dùng nguyên CheckTimeWindows trên bản sao đã bật cờ:
+            // nó chỉ đọc các luật time_window đang bật trong danh sách
+            // và trả quyết định Lock đúng khi ngoài mọi khung giờ.
+            var asEnabled = new List<Rule>(windowRules.Count);
+            foreach (Rule rule in windowRules)
+            {
+                asEnabled.Add(new Rule
+                {
+                    Id = rule.Id,
+                    FamilyId = rule.FamilyId,
+                    ChildId = rule.ChildId,
+                    Type = rule.Type,
+                    Config = rule.Config,
+                    Enabled = true,
+                    CreatedAt = rule.CreatedAt,
+                    Name = rule.Name,
+                });
+            }
+
+            RuleDecision? decision = CheckTimeWindows(asEnabled, local);
+            if (decision is { Kind: RuleDecisionKind.Lock })
+            {
+                matches.AddRange(windowRules);
+            }
+        }
+
+        return matches;
     }
 
     /// <summary>Giờ bắt đầu/kết thúc giờ ngủ của một rule cho một thứ (hình dạng mới theo thứ, hoặc hình dạng cũ mọi ngày).</summary>

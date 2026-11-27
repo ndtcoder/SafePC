@@ -50,6 +50,7 @@ builder.ConfigureServices((context, services) =>
     services.AddSingleton(new TokenStore(Path.Combine(programData, "device_token.dat")));
     services.AddSingleton(new OutboxStore(Path.Combine(programData, "agent.db")));
     services.AddSingleton<RuleEngine>();
+    services.AddSingleton<TrustedClock>();
     services.AddSingleton<DomainRulesPublisher>();
     services.AddSingleton<ForegroundState>();
     services.AddSingleton<TrayQueryState>();
