@@ -4284,3 +4284,9 @@ Chỉ dùng nguồn sạch (MIT/CC/Unlicense) — em khuyên phương án này
 
 ## [2026-11-27 19:04 +07] ChaMuse
 Đợt push notification ĐÃ ĐẨY LÊN DEVELOP (9 commit 642a343→64760fc, head develop 64760fc, 22 commit ahead main; API GitHub xác nhận A-16 đã có trên develop). Đang kiểm tra CI của commit Dashboard cuối (85377b9). Đợt danh sách 6 nhóm domain + từ khóa ĐÃ KHỞI ĐỘNG xây với nguồn sạch. Tổng hợp bước tay của anh để nhắn tin + push chạy thật: áp migration 25 → 26 → 29 → 30; VAPID + 3 secret + deploy function + VITE_VAPID_PUBLIC_KEY trên Vercel.
+
+## [2026-11-27 19:18 +07] ChaMuse
+Đợt danh sách: builder XÂY XONG ở cây local — tổng 18.339 domain/6 nhóm (adult 8.000, gambling 4.000, violence 296, games 2.500, movies 2.000, social 1.543 — social dưới ngân sách vì gộp tên miền con, đã giải trình); từ khóa adult 15→75, violence 18→28; extension 0.1.12. Builder tự phát hiện + sửa một lỗi tiềm ẩn nghiêm trọng: extension dựng 2 rule/domain và trần cũ 4.500 rule cắt từ cuối mảng có thể làm mất lặng lẽ rule SafeSearch/focus khi bật danh mục lớn — đã nâng trần 10.000 + dựng rule danh mục cuối + watcher bao phủ 100%. Đã giao reviewer độc lập kiểm kỹ điểm này trước khi đẩy.
+
+## [2026-11-27 19:33 +07] ChaMuse
+Đợt danh sách HOÀN TẤT: reviewer độc lập APPROVED (tự đếm lại 18.339 domain khớp manifest, 54/54 hạt giống, 0 trùng, 0 domain bảo vệ lọt, chạy lại mọi cổng xanh; 2 MINOR không chặn: lát cắt dự phòng slice cuối hàm background.js là mẫu cũ từ trước + từ "milf"/"orgy" có rủi ro chuỗi con ~0). Đã đẩy 9 commit lên develop (head 2bf66a2, 31 commit ahead main). CI: run #349 (cổng Agent) XANH — Tray 19/19, IPC 13/13, bản cài v0.1.349 tải được (95,1 MB); run #350 Dashboard XANH. Đã ghi v0.1.349 vào danh sách build thành công và đính kèm extension 0.1.12 cho anh.
