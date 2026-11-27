@@ -108,7 +108,7 @@ Trạng thái: v1 cho Web/PWA đã xây ở cây local ngày 27/11/2026 (migrati
 - [ ] Thông báo email cho phụ huynh (xin thêm giờ, can thiệp, offline bất thường); push để sau cùng Android.
 - [ ] Nhật ký hoạt động (ai đổi rule, khóa/mở, duyệt yêu cầu).
 - [ ] Ngân hàng giờ (thưởng thêm giờ kèm lý do + lịch sử).
-- [ ] Chặn theo danh mục domain từ danh sách công khai.
+- [x] Chặn theo danh mục domain từ danh sách công khai. — Đợt đầu: 3 nhóm với 54 domain hạt giống (xem PRD §2.8). Đợt 27/11/2026 (cây local): 6 nhóm, 18.339 domain nhập từ StevenBlack (MIT) + UT1 Blocklist (CC BY-SA 4.0) + Block List Project (Unlicense) bằng script tools/import-category-lists; kèm bổ sung từ khóa adult/violence và extension 0.1.12. Chi tiết: docs/10-DATA-SOURCES.md.
 - [ ] Mời phụ huynh thứ hai cùng quản lý.
 - [ ] Xuất dữ liệu + xóa toàn bộ dữ liệu của con.
 - [ ] Chuẩn hóa giao diện (trạng thái rỗng/tải/lỗi/mất mạng) + hướng dẫn lần đầu.
