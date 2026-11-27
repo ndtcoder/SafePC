@@ -12,7 +12,7 @@ export default function PrivacyPolicyPage() {
       <div className="mb-6 flex flex-col items-center gap-2 text-center">
         <img src="/icons/icon.svg" alt="Logo SafePC" className="h-14 w-14" />
         <p className="text-xl font-bold tracking-tight text-slate-900">SafePC</p>
-        <p className="text-sm text-slate-600">Chính sách riêng tư — cập nhật 19/11/2026</p>
+        <p className="text-sm text-slate-600">Chính sách riêng tư — cập nhật 27/11/2026</p>
       </div>
       <div className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 text-sm leading-relaxed text-slate-700 shadow-sm sm:p-6">
         <p>
@@ -32,6 +32,21 @@ export default function PrivacyPolicyPage() {
               <strong>Tên miền + đường dẫn web + thời lượng</strong>: đếm giờ web, thi hành
               chặn website, báo cáo tuần. Đã bỏ phần truy vấn và fragment — không lưu link
               đầy đủ, không đọc nội dung trang. Lượt web bị chặn chỉ lưu tên miền.
+            </li>
+            <li>
+              <strong>Cụm từ tìm kiếm trên các công cụ tìm kiếm</strong> (Google, Bing,
+              DuckDuckGo, Yahoo, Cốc Cốc) kèm dấu hiệu bị chặn hay không, giữ 90 ngày: thi
+              hành chặn từ khóa tìm kiếm và thống kê trong báo cáo tuần. Chỉ cụm từ con gõ
+              vào ô tìm kiếm của các công cụ này mới được lưu — phần truy vấn của mọi link
+              khác vẫn bị bỏ như lịch sử web ở trên.
+            </li>
+            <li>
+              <strong>Tin nhắn giữa phụ huynh và con trong SafePC</strong>: nội dung tin nhắn
+              hai chiều trong kênh nhắn tin riêng của gia đình (phụ huynh nhắn trên Dashboard,
+              con nhắn từ máy của con qua SafePC) kèm mốc đã đọc. Đây là kênh liên lạc do cả
+              hai phía chủ động gửi trong sản phẩm — khác với tin nhắn ở ứng dụng khác, mà
+              SafePC không đọc (xem mục 2). Tin nhắn nằm trong file xuất dữ liệu của con và
+              bị xóa khi phụ huynh xóa dữ liệu của con.
             </li>
             <li>
               <strong>Quy tắc phụ huynh đặt, trạng thái máy, yêu cầu của con</strong> và quyết
@@ -80,8 +95,16 @@ export default function PrivacyPolicyPage() {
               hơn mỗi ngày.
             </li>
             <li>
+              <strong>Từ khóa tìm kiếm</strong>: giữ <strong>90 ngày</strong>, tự xóa các hàng
+              cũ hơn mỗi ngày.
+            </li>
+            <li>
               <strong>Mẫu dùng ứng dụng</strong>: mẫu chi tiết giữ 7 ngày; số liệu tổng hợp
               theo ngày giữ 90 ngày.
+            </li>
+            <li>
+              <strong>Tin nhắn trong SafePC</strong>: giữ tới khi phụ huynh xóa dữ liệu của
+              con (không tự hết hạn theo ngày như lịch sử web).
             </li>
             <li>
               <strong>Nhật ký hoạt động / sự kiện can thiệp / yêu cầu</strong>: giữ theo nhu

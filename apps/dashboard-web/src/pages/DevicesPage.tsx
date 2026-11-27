@@ -3,7 +3,25 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
 import { hashPin, isValidPin } from '../lib/pinHash'
-import type { Child, Command, Device, EnforcementSnapshot, Family } from '../lib/types'
+import type { Child, Command, Device, DeviceChildAccount, EnforcementSnapshot, Family, SeenWindowsAccount } from '../lib/types'
+import {
+  accountsForDevice,
+  commandTargetsChild,
+  describeCommandInsertError,
+  describePendingCommand,
+  fetchDeviceChildAccounts,
+  fetchSeenWindowsAccounts,
+  linkChildAccount,
+  overrideActionLabel,
+  pendingCommandLabel,
+  seenAccountsForDevice,
+  shortSid,
+  syncEnforcementStateToDevice,
+  targetChildrenForDevice,
+  unlinkChildAccount,
+  unmappedSeenAccountsForDevice,
+  type LinkSyncOutcome,
+} from '../lib/deviceChildren'
 import {
   deviceStatusLabel,
   enforcementDecisionLabel,
@@ -112,10 +130,24 @@ function extensionStatus(seenAt: string | null | undefined, nowMs: number): {
  * Lệnh unlock trần không tạo ghi đè nên bỏ qua. `commands` phải xếp mới
  * nhất trước và gồm cả lệnh lock_now (đợt sửa 17/11/2026: truy vấn cũ
  * chỉ lấy temporary_override nên lệnh khóa tàng hình với hàm này).
+ *
+ * Sprint 5: `childId` lọc theo con (undefined = mọi con trên máy — dùng
+ * cho đồng hồ đếm ngược chung của trang). Lệnh có child_id chỉ tính cho
+ * đúng con đó; lệnh cũ (child_id null) tính cho con mặc định của máy
+ * (cùng ngữ nghĩa với ShouldApplyCommand phía Service).
  */
-function getActiveUnlock(commands: Command[], deviceId: string, nowMs: number): Date | null {
+function getActiveUnlock(commands: Command[], deviceId: string, nowMs: number, childId?: string, defaultChildId?: string | null): Date | null {
   for (const command of commands) {
     if (command.device_id !== deviceId) continue
+    if (childId !== undefined) {
+      // Chỉ xét lệnh nhắm tới đúng con đang chọn (lệnh cũ không có
+      // child_id thì tính cho con mặc định của máy — cùng ngữ nghĩa
+      // với commandTargetsChild; lệnh chưa có trường child_id vì truy
+      // vấn best-effort chưa có cột thì cũng tính như lệnh cũ).
+      if (!commandTargetsChild(command, childId, defaultChildId ?? null)) {
+        continue
+      }
+    }
     // Lệnh khóa mới nhất đã hủy ghi đè mở khóa phía Service (luật
     // hành-động-sau-thắng) nên không còn mở khóa nữa, dù lệnh ghi đè
     // cũ vẫn nằm trong danh sách và chưa hết hạn.
@@ -164,6 +196,28 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
   // Các lệnh ghi đè tạm thời mới nhất của gia đình, để suy ra máy nào
   // đang được mở khóa tạm thời (cùng mẫu truy vấn với trang Quy tắc).
   const [overrideCommands, setOverrideCommands] = useState<Command[]>([])
+  // Ánh xạ con ↔ tài khoản Windows theo từng máy (bảng
+  // device_child_accounts, migration 24) + tài khoản Windows mà Tray
+  // đã "nhìn thấy" (bảng device_seen_accounts, migration 25 — xem
+  // lib/deviceChildren.ts). Cả hai truy vấn đều best-effort (xem
+  // load()): `*Available` false nghĩa là bảng chưa tồn tại, giao diện
+  // hiện ghi chú thay vì vỡ trang.
+  const [childAccounts, setChildAccounts] = useState<DeviceChildAccount[]>([])
+  const [childAccountsAvailable, setChildAccountsAvailable] = useState(true)
+  const [seenAccounts, setSeenAccounts] = useState<SeenWindowsAccount[]>([])
+  const [seenAccountsAvailable, setSeenAccountsAvailable] = useState(true)
+  // Con đích cho lệnh khóa/mở trên từng máy (mặc định: con mặc định của
+  // máy; phụ huynh đổi được trong thẻ máy). Lệnh luôn mang child_id của
+  // con đã chọn (Sprint 5: lệnh gắn theo từng con).
+  const [targetChildByDevice, setTargetChildByDevice] = useState<Record<string, string>>({})
+  // Form gắn thêm con vào máy (theo từng máy): con chưa gắn + tài khoản
+  // Windows đã thấy nhưng chưa gắn (chọn, không gõ tay).
+  const [linkChildIdByDevice, setLinkChildIdByDevice] = useState<Record<string, string>>({})
+  const [linkSidByDevice, setLinkSidByDevice] = useState<Record<string, string>>({})
+  const [linkingDeviceId, setLinkingDeviceId] = useState<string | null>(null)
+  // Gỡ ánh xạ: bấm 2 lần (cùng mẫu xóa thiết bị) để tránh gỡ nhầm.
+  const [confirmUnlinkKey, setConfirmUnlinkKey] = useState<string | null>(null)
+  const [unlinkingKey, setUnlinkingKey] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [lockingId, setLockingId] = useState<string | null>(null)
@@ -226,7 +280,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
           .select('id, family_id, device_id, type, payload, status, created_at')
           .in('type', ['temporary_override', 'lock_now'])
           .order('created_at', { ascending: false })
-          .limit(50),
+          .limit(200),
       ])
       if (devicesResult.error) throw devicesResult.error
       if (childrenResult.error) throw childrenResult.error
@@ -301,6 +355,36 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       } catch {
         // Chưa có cột → giữ nguyên trạng thái "chưa đặt PIN".
       }
+      // Truy vấn RIÊNG, best-effort: cột commands.child_id chỉ có sau
+      // migration 24. Truy vấn thành công thì thay danh sách lệnh bằng
+      // bản có child_id (để hiển thị mở khóa / lệnh chờ theo từng con);
+      // truy vấn lỗi (cột chưa tồn tại) thì giữ bản đã tải ở trên
+      // (không có child_id — hành vi cũ, lệnh tính cho con mặc định).
+      // KHÔNG gộp cột vào truy vấn chính: cột chưa tồn tại sẽ làm hỏng
+      // cả trang trong khoảng giữa deploy Dashboard và áp migration 24.
+      try {
+        const childCommandsResult = await supabase
+          .from('commands')
+          .select('id, family_id, device_id, child_id, type, payload, status, created_at')
+          .in('type', ['temporary_override', 'lock_now'])
+          .order('created_at', { ascending: false })
+          .limit(200)
+        if (!childCommandsResult.error) {
+          setOverrideCommands((childCommandsResult.data ?? []) as Command[])
+        }
+      } catch {
+        // Chưa có cột → giữ bản lệnh không có child_id.
+      }
+      // Truy vấn RIÊNG, best-effort: bảng device_child_accounts chỉ có
+      // sau migration 24; bảng device_seen_accounts chỉ có sau migration
+      // 25 (xem lib/deviceChildren.ts). Truy vấn lỗi thì coi như chưa có
+      // dữ liệu, giao diện hiện ghi chú, KHÔNG làm hỏng cả trang.
+      const mappingsResult = await fetchDeviceChildAccounts(supabase)
+      setChildAccounts(mappingsResult.accounts)
+      setChildAccountsAvailable(mappingsResult.available)
+      const seenResult = await fetchSeenWindowsAccounts(supabase)
+      setSeenAccounts(seenResult.accounts)
+      setSeenAccountsAvailable(seenResult.available)
       setState('ready')
     } catch (err) {
       setError(toVietnameseError(err))
@@ -313,8 +397,16 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
   }, [load])
 
   // Khi nhúng trong hồ sơ của một con (tab Thiết bị) thì chỉ hiện máy của
-  // con đó; trang độc lập (/thiet-bi) hiện mọi máy như trước.
-  const visibleDevices = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
+  // con đó — máy mà con là hồ sơ mặc định HOẶC đã gắn qua ánh xạ tài
+  // khoản Windows (Sprint 5: máy chung hiện trong hồ sơ của cả hai con);
+  // trang độc lập (/thiet-bi) hiện mọi máy như trước.
+  const visibleDevices = childIdFilter
+    ? devices.filter(
+        (d) =>
+          d.child_id === childIdFilter ||
+          childAccounts.some((a) => a.device_id === d.id && a.child_id === childIdFilter),
+      )
+    : devices
 
   // Mặc định chọn con đầu tiên cho dropdown ghép nối (giống trang Quy tắc).
   // Trong hồ sơ của một con thì luôn ghép cho con đó, không cho đổi.
@@ -400,12 +492,35 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
     }
   }
 
+  /**
+   * Con đích cho lệnh khóa/mở trên một máy: lựa chọn tường minh của phụ
+   * huynh, mặc định là con mặc định của máy (fallback: con gắn đầu tiên).
+   * Trong hồ sơ của một con (tab Thiết bị) thì lệnh luôn nhắm tới con
+   * đó, không cho đổi sang con khác. Máy không có con nào thì trả rỗng
+   * — lệnh không gắn được với con nào.
+   */
+  const targetChildIdForDevice = (device: Device): string => {
+    const targets = targetChildrenForDevice(device, childAccounts)
+    if (childIdFilter) return targets.includes(childIdFilter) ? childIdFilter : ''
+    const chosen = targetChildByDevice[device.id]
+    if (chosen && targets.includes(chosen)) return chosen
+    return targets[0] ?? ''
+  }
+
   const handleLockNow = async (device: Device) => {
     if (!supabase || !user) return
     if (!family) {
       setActionError('Bạn chưa có gia đình. Vui lòng tạo gia đình trước khi gửi lệnh khóa máy.')
       return
     }
+    const targetChildId = targetChildIdForDevice(device)
+    if (!targetChildId) {
+      setActionError(
+        `Máy "${device.hostname}" chưa gán cho hồ sơ con nào nên lệnh khóa không gắn được với con nào. Hãy ghép nối máy cho một con, hoặc gắn tài khoản Windows của con với máy này.`,
+      )
+      return
+    }
+    const targetChildName = childNameById.get(targetChildId) ?? 'con'
     setLockingId(device.id)
     setActionError(null)
     setActionMessage(null)
@@ -414,6 +529,7 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: targetChildId,
         type: 'lock_now',
         payload: { delay_minutes: delayMinutes },
         status: 'pending',
@@ -421,15 +537,15 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       if (insertError) throw insertError
       setActionMessage(
         delayMinutes > 0
-          ? `Đã gửi lệnh khóa máy tới "${device.hostname}" sau ${delayMinutes} phút. Trong lúc chờ, máy con hiện cửa sổ cảnh báo nhỏ để lưu bài làm.`
-          : `Đã gửi lệnh khóa máy tới "${device.hostname}". Agent trên máy con sẽ nhận lệnh khi online (polling/Realtime, Sprint 1).`,
+          ? `Đã gửi lệnh khóa máy cho ${targetChildName} trên máy "${device.hostname}" sau ${delayMinutes} phút. Trong lúc chờ, máy con hiện cửa sổ cảnh báo nhỏ để lưu bài làm. Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`
+          : `Đã gửi lệnh khóa máy cho ${targetChildName} trên máy "${device.hostname}". Agent trên máy con sẽ nhận lệnh khi online (polling 15 giây). Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`,
       )
       // Tải lại như 2 handler mở khóa/hủy ghi đè: lệnh lock_now mới phải
       // vào danh sách commands ngay để getActiveUnlock thôi báo "đang mở
       // khóa" (đợt sửa 17/11/2026).
       await load()
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setLockingId(null)
     }
@@ -441,6 +557,14 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       setActionError('Bạn chưa có gia đình. Vui lòng tạo gia đình trước khi gửi lệnh mở khóa.')
       return
     }
+    const targetChildId = targetChildIdForDevice(device)
+    if (!targetChildId) {
+      setActionError(
+        `Máy "${device.hostname}" chưa gán cho hồ sơ con nào nên lệnh mở khóa không gắn được với con nào. Hãy ghép nối máy cho một con, hoặc gắn tài khoản Windows của con với máy này.`,
+      )
+      return
+    }
+    const targetChildName = childNameById.get(targetChildId) ?? 'con'
     const minutes = unlockMinutesByDevice[device.id] ?? 30
     setSendingUnlockId(device.id)
     setActionError(null)
@@ -450,17 +574,18 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: targetChildId,
         type: 'temporary_override',
         payload: { action: 'unlock', minutes, expires_at: expiresAt.toISOString() },
         status: 'pending',
       })
       if (insertError) throw insertError
       setActionMessage(
-        `Đã gửi lệnh mở khóa tạm thời (${minutes} phút) tới "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; các quy tắc giờ giấc tạm ngưng tới ${formatTimeVi(expiresAt.toISOString())}.`,
+        `Đã gửi lệnh mở khóa tạm thời (${minutes} phút) cho ${targetChildName} trên máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; các quy tắc giờ giấc tạm ngưng tới ${formatTimeVi(expiresAt.toISOString())}. Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`,
       )
       await load()
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setSendingUnlockId(null)
     }
@@ -472,6 +597,14 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       setActionError('Bạn chưa có gia đình. Vui lòng tạo gia đình trước khi gửi lệnh hủy ghi đè.')
       return
     }
+    const targetChildId = targetChildIdForDevice(device)
+    if (!targetChildId) {
+      setActionError(
+        `Máy "${device.hostname}" chưa gán cho hồ sơ con nào nên lệnh hủy ghi đè không gắn được với con nào.`,
+      )
+      return
+    }
+    const targetChildName = childNameById.get(targetChildId) ?? 'con'
     setCancellingUnlockId(device.id)
     setActionError(null)
     setActionMessage(null)
@@ -479,19 +612,124 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: targetChildId,
         type: 'temporary_override',
         payload: { action: 'cancel' },
         status: 'pending',
       })
       if (insertError) throw insertError
       setActionMessage(
-        `Đã gửi lệnh hủy ghi đè tới "${device.hostname}". Các quy tắc bình thường sẽ áp dụng lại như cũ.`,
+        `Đã gửi lệnh hủy ghi đè cho ${targetChildName} trên máy "${device.hostname}". Các quy tắc bình thường sẽ áp dụng lại như cũ. Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`,
+      )
+      await load()
+    } catch (err) {
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
+    } finally {
+      setCancellingUnlockId(null)
+    }
+  }
+
+  // Mô tả kết quả đồng bộ trạng thái lúc gắn (migration 27, phương án (a))
+  // để gắn vào thông báo sau khi gắn thành công.
+  const describeLinkSync = (sync: LinkSyncOutcome, childName: string): string => {
+    if (!sync.synced) {
+      return sync.missingMigration
+        ? 'Trạng thái thi hành của con chưa đồng bộ sang máy này (chưa áp migration 27) — sau khi áp migration 27, hãy gỡ rồi gắn lại tài khoản này để đồng bộ.'
+        : 'Chưa đồng bộ được trạng thái thi hành của con sang máy này — hãy thử gắn lại hoặc kiểm tra lại sau.'
+    }
+    if (sync.locked && sync.overrideAction === 'unlock' && sync.overrideExpiresAt) {
+      return `${childName} đang bị khóa cưỡng chế trên máy khác nhưng đã sao chép lệnh mở tạm tới ${formatTimeVi(sync.overrideExpiresAt)} — trạng thái cuối cùng trên máy này tùy theo lệnh mới nhất của con.`
+    }
+    if (sync.locked) {
+      return `${childName} đang bị khóa cưỡng chế trên máy khác nên máy này cũng sẽ khóa khi ${childName} đăng nhập.`
+    }
+    if (sync.overrideAction) {
+      const detail =
+        sync.overrideMinutes !== null && sync.overrideExpiresAt
+          ? ` (còn ${sync.overrideMinutes} phút, tới ${formatTimeVi(sync.overrideExpiresAt)})`
+          : ''
+      return `Đã đồng bộ trạng thái của ${childName} sang máy này: ${overrideActionLabel(sync.overrideAction)} đang hiệu lực${detail}.`
+    }
+    return `${childName} hiện không có trạng thái khóa/ghi đè nào cần đồng bộ.`
+  }
+
+  const handleLinkChildAccount = async (device: Device) => {
+    if (!supabase || !user || !family) return
+    // Mặc định: con chưa gắn đầu tiên + tài khoản đã thấy nhưng chưa gắn
+    // đầu tiên (ô chọn trong thẻ máy cũng dùng cùng mặc định này).
+    const linkableChildIds = (childIdFilter
+      ? children.filter((c) => c.id === childIdFilter)
+      : children
+    )
+      .map((c) => c.id)
+      .filter((id) => !targetChildrenForDevice(device, childAccounts).includes(id))
+    const unmapped = unmappedSeenAccountsForDevice(device.id, seenAccounts, childAccounts)
+    const childId = linkChildIdByDevice[device.id] ?? linkableChildIds[0] ?? ''
+    const sid = linkSidByDevice[device.id] ?? unmapped[0]?.windows_sid ?? ''
+    if (!childId || !sid) {
+      setActionError('Hãy chọn hồ sơ con và tài khoản Windows cần gắn với máy này.')
+      return
+    }
+    const seen = seenAccountsForDevice(device.id, seenAccounts).find((a) => a.windows_sid === sid)
+    const childName = childNameById.get(childId) ?? 'con'
+    setLinkingDeviceId(device.id)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      await linkChildAccount(supabase, {
+        familyId: family.id,
+        deviceId: device.id,
+        childId,
+        windowsSid: sid,
+        windowsUsername: seen?.windows_username ?? null,
+      })
+      // Đồng bộ trạng thái thi hành lúc gắn (phương án (a), migration 27)
+      // — best-effort: RPC chưa có thì gắn vẫn thành công, chỉ hiện ghi
+      // chú (xem syncEnforcementStateToDevice).
+      const sync = await syncEnforcementStateToDevice(supabase, {
+        deviceId: device.id,
+        childId,
+      })
+      setActionMessage(
+        `Đã gắn tài khoản Windows "${seen?.windows_username ?? sid}" trên máy "${device.hostname}" với hồ sơ ${childName}. ` +
+          describeLinkSync(sync, childName),
+      )
+      // Xóa lựa chọn form gắn của máy này để lần gắn sau không giữ lại
+      // con/tài khoản vừa gắn (đã rời khỏi danh sách lựa chọn).
+      setLinkChildIdByDevice((prev) => {
+        const next = { ...prev }
+        delete next[device.id]
+        return next
+      })
+      setLinkSidByDevice((prev) => {
+        const next = { ...prev }
+        delete next[device.id]
+        return next
+      })
+      await load()
+    } catch (err) {
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
+    } finally {
+      setLinkingDeviceId(null)
+    }
+  }
+
+  const handleUnlinkChildAccount = async (device: Device, account: DeviceChildAccount) => {
+    if (!supabase) return
+    const key = `${device.id}:${account.windows_sid}`
+    setUnlinkingKey(key)
+    setActionError(null)
+    try {
+      await unlinkChildAccount(supabase, { deviceId: device.id, windowsSid: account.windows_sid })
+      setConfirmUnlinkKey(null)
+      setActionMessage(
+        `Đã gỡ tài khoản Windows "${account.windows_username ?? account.windows_sid}" trên máy "${device.hostname}" khỏi hồ sơ ${childNameById.get(account.child_id) ?? 'con'}. Tài khoản này không còn được quản lý trên máy này; các quy tắc và ngân hàng giờ của hồ sơ con vẫn giữ nguyên.`,
       )
       await load()
     } catch (err) {
       setActionError(toVietnameseError(err))
     } finally {
-      setCancellingUnlockId(null)
+      setUnlinkingKey(null)
     }
   }
 
@@ -765,7 +1003,49 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                   : Number.NaN
                 const enforcementStale =
                   !Number.isNaN(enforcementUpdatedMs) && Date.now() - enforcementUpdatedMs > 5 * 60 * 1000
-                const activeUnlockExpiresAt = getActiveUnlock(overrideCommands, device.id, Date.now())
+                // Sprint 5: các con được quản lý trên máy này (mặc định
+                // trước, rồi các con gắn thêm qua ánh xạ) + tài khoản
+                // Windows đã thấy / chưa gắn. Con đích cho lệnh khóa/mở
+                // là lựa chọn của phụ huynh (mặc định: con mặc định).
+                const deviceTargetChildIds = targetChildrenForDevice(device, childAccounts)
+                const targetChildId = targetChildIdForDevice(device)
+                const deviceLinkedAccounts = accountsForDevice(device.id, childAccounts)
+                const deviceUnmappedSeen = unmappedSeenAccountsForDevice(
+                  device.id,
+                  seenAccounts,
+                  childAccounts,
+                )
+                const unmappedStandardAccounts = deviceUnmappedSeen.filter((a) => !a.is_admin)
+                const activeUnlockExpiresAt = getActiveUnlock(
+                  overrideCommands,
+                  device.id,
+                  Date.now(),
+                  targetChildId === '' ? undefined : targetChildId,
+                  device.child_id,
+                )
+                // Lệnh đang pending của máy này (khóa + ghi đè tạm thời,
+                // mới nhất trước — cùng danh sách đã tải cho trạng thái
+                // mở khóa). Hiển thị trạng thái chờ của từng lệnh để phụ
+                // huynh biết lệnh nào chưa tới được con đích.
+                const pendingCommandsForDevice = overrideCommands.filter(
+                  (c) => c.device_id === device.id && c.status === 'pending',
+                )
+                // Lựa chọn cho form gắn thêm con: con chưa gắn trên máy
+                // này + tài khoản đã thấy nhưng chưa gắn (chọn, không gõ
+                // tay). Mặc định là mục đầu tiên của mỗi danh sách.
+                // Ô chọn con đích cho lệnh khóa/mở: trong hồ sơ của một
+                // con thì chỉ có con đó (không cho đổi sang con khác).
+                const pickerChildIds = childIdFilter
+                  ? deviceTargetChildIds.filter((id) => id === childIdFilter)
+                  : deviceTargetChildIds
+                const linkableChildren = (childIdFilter
+                  ? children.filter((c) => c.id === childIdFilter)
+                  : children
+                ).filter((c) => !deviceTargetChildIds.includes(c.id))
+                const effectiveLinkChildId =
+                  linkChildIdByDevice[device.id] ?? linkableChildren[0]?.id ?? ''
+                const effectiveLinkSid =
+                  linkSidByDevice[device.id] ?? deviceUnmappedSeen[0]?.windows_sid ?? ''
                 // Ghi đè mở khóa đang hiệu lực (suy ra từ lệnh mới nhất
                 // trong bảng commands — dữ liệu tươi, tải lại ngay sau mỗi
                 // thao tác) thắng trạng thái khóa cũ: devices.status và
@@ -788,7 +1068,9 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                     <div className="min-w-0">
                       <h2 className="truncate text-base font-semibold text-slate-900">{device.hostname}</h2>
                       <p className="mt-0.5 text-sm text-slate-600">
-                        {device.child_id ? (childNameById.get(device.child_id) ?? 'Chưa gán cho con nào') : 'Chưa gán cho con nào'}
+                        {deviceTargetChildIds.length > 0
+                          ? deviceTargetChildIds.map((id) => childNameById.get(id) ?? 'Không rõ con').join(', ')
+                          : 'Chưa gán cho con nào'}
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-wrap justify-end gap-2">
@@ -879,6 +1161,9 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                         ) : (
                           <span className="text-slate-500">Chưa có dữ liệu thi hành</span>
                         )}
+                        <span className="mt-1 block text-xs text-slate-500">
+                          Trạng thái thi hành của con đang ngồi trên máy — chưa phân biệt được con nào.
+                        </span>
                       </dd>
                     </div>
                     <div className="flex justify-between gap-4">
@@ -887,7 +1172,204 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                     </div>
                   </dl>
                   <div className="mt-4 border-t border-slate-100 pt-4">
+                    <p className="mb-2 text-sm font-medium text-slate-700">Con dùng máy này</p>
+                    {!childAccountsAvailable ? (
+                      <p className="text-sm text-slate-600">
+                        Chưa có dữ liệu gắn con cho máy này — cần áp migration 24 (Sprint 5 đợt 1) rồi tải
+                        lại trang. Tới lúc đó máy chỉ quản lý theo hồ sơ mặc định như trước.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {device.child_id && (
+                          <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                            <span>
+                              <span className="font-medium text-slate-900">
+                                {childNameById.get(device.child_id) ?? 'Không rõ con'}
+                              </span>{' '}
+                              <span className="text-slate-500">— hồ sơ mặc định của máy</span>
+                            </span>
+                            <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800">
+                              Mặc định
+                            </span>
+                          </div>
+                        )}
+                        {deviceLinkedAccounts
+                          .filter((a) => a.child_id !== device.child_id)
+                          .map((account) => {
+                            const unlinkKey = `${device.id}:${account.windows_sid}`
+                            const confirmingUnlink = confirmUnlinkKey === unlinkKey
+                            return (
+                              <div
+                                key={account.id}
+                                className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm"
+                              >
+                                <span className="min-w-0">
+                                  <span className="font-medium text-slate-900">
+                                    {childNameById.get(account.child_id) ?? 'Không rõ con'}
+                                  </span>{' '}
+                                  <span className="break-words text-slate-500">
+                                    — tài khoản Windows {account.windows_username ?? 'không rõ tên'}{' '}
+                                    <span title={account.windows_sid} className="text-xs">
+                                      ({shortSid(account.windows_sid)})
+                                    </span>
+                                  </span>
+                                </span>
+                                {confirmingUnlink ? (
+                                  <span className="flex shrink-0 gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleUnlinkChildAccount(device, account)}
+                                      disabled={unlinkingKey === unlinkKey}
+                                      className={dangerButtonClassName}
+                                    >
+                                      {unlinkingKey === unlinkKey ? 'Đang gỡ…' : 'Xác nhận gỡ'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmUnlinkKey(null)}
+                                      className={secondaryButtonClassName}
+                                    >
+                                      Huỷ
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmUnlinkKey(unlinkKey)}
+                                    className={dangerOutlineButtonClassName}
+                                  >
+                                    Gỡ
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })}
+                        {deviceTargetChildIds.length === 0 && (
+                          <p className="text-sm text-slate-600">
+                            Máy này chưa gán cho hồ sơ con nào. Hãy ghép nối máy cho một con ở cuối trang, hoặc
+                            gắn tài khoản Windows của con với máy này ở dưới.
+                          </p>
+                        )}
+                        {linkableChildren.length > 0 && (
+                          <div className="grid gap-3 pt-1 sm:grid-cols-2">
+                            <Field label="Gắn thêm hồ sơ con" htmlFor={`link-child-${device.id}`}>
+                              <select
+                                id={`link-child-${device.id}`}
+                                value={effectiveLinkChildId}
+                                onChange={(e) =>
+                                  setLinkChildIdByDevice((prev) => ({ ...prev, [device.id]: e.target.value }))
+                                }
+                                disabled={linkingDeviceId === device.id}
+                                className={inputClassName}
+                              >
+                                {linkableChildren.map((child) => (
+                                  <option key={child.id} value={child.id}>
+                                    {child.display_name}
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="Tài khoản Windows" htmlFor={`link-account-${device.id}`}>
+                              <select
+                                id={`link-account-${device.id}`}
+                                value={effectiveLinkSid}
+                                onChange={(e) =>
+                                  setLinkSidByDevice((prev) => ({ ...prev, [device.id]: e.target.value }))
+                                }
+                                disabled={linkingDeviceId === device.id || deviceUnmappedSeen.length === 0}
+                                className={inputClassName}
+                              >
+                                {deviceUnmappedSeen.map((seen) => (
+                                  <option key={seen.windows_sid} value={seen.windows_sid}>
+                                    {seen.windows_username ?? 'Không rõ tên'}
+                                    {seen.is_admin ? ' (quản trị)' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                          </div>
+                        )}
+                        {linkableChildren.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleLinkChildAccount(device)}
+                              disabled={
+                                linkingDeviceId === device.id ||
+                                !seenAccountsAvailable ||
+                                deviceUnmappedSeen.length === 0
+                              }
+                              className={secondaryButtonClassName}
+                              title={
+                                !seenAccountsAvailable
+                                  ? 'Chưa có dữ liệu tài khoản Windows — cần migration 25 + bản Agent mới'
+                                  : undefined
+                              }
+                            >
+                              {linkingDeviceId === device.id ? 'Đang gắn…' : 'Gắn tài khoản với con'}
+                            </button>
+                            {seenAccountsAvailable && deviceUnmappedSeen.length === 0 && (
+                              <p className="text-xs text-slate-500">
+                                Không còn tài khoản Windows nào chưa gắn trên máy này.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {!seenAccountsAvailable && (
+                          <p className="text-xs text-slate-500">
+                            Chưa có dữ liệu tài khoản Windows trên máy này — cần migration 25 + bản Agent
+                            mới để liệt kê tài khoản và gắn (xem ghi chú thiết kế trong mã nguồn).
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {seenAccountsAvailable && unmappedStandardAccounts.length > 0 && (
+                      <AlertBox tone="warning" className="mt-3">
+                        <p className="font-medium">
+                          Tài khoản chưa gắn — không được quản lý trên máy này:
+                        </p>
+                        <ul className="mt-1 list-disc space-y-1 pl-5">
+                          {unmappedStandardAccounts.map((seen) => (
+                            <li key={seen.windows_sid}>
+                              {seen.windows_username ?? 'Không rõ tên'} — tài khoản Standard này đang dùng máy
+                              nhưng chưa gắn với hồ sơ con nào nên không áp quy tắc, không tính giờ. Hãy gắn
+                              tài khoản với hồ sơ con ở trên.
+                            </li>
+                          ))}
+                        </ul>
+                      </AlertBox>
+                    )}
+                  </div>
+                  <div className="mt-4 border-t border-slate-100 pt-4">
                     <p className="mb-2 text-sm font-medium text-slate-700">Khóa máy ngay</p>
+                    {pickerChildIds.length > 0 ? (
+                      <div className="mb-3">
+                        <Field label="Áp dụng cho con" htmlFor={`target-child-${device.id}`}>
+                          <select
+                            id={`target-child-${device.id}`}
+                            value={targetChildId}
+                            onChange={(e) =>
+                              setTargetChildByDevice((prev) => ({ ...prev, [device.id]: e.target.value }))
+                            }
+                            disabled={pickerChildIds.length === 1}
+                            className={inputClassName}
+                          >
+                            {pickerChildIds.map((id) => (
+                              <option key={id} value={id}>
+                                {childNameById.get(id) ?? 'Không rõ con'}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Lệnh khóa, mở khóa và hủy ghi đè dưới đây đều áp dụng cho con này trên máy này.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="mb-3 text-sm text-slate-600">
+                        Máy chưa gán cho hồ sơ con nào — lệnh khóa/mở sẽ không gắn được với con nào.
+                      </p>
+                    )}
                     <div className="flex flex-wrap gap-2" role="group" aria-label="Độ trễ trước khi khóa">
                       {LOCK_DELAYS.map((delay) => (
                         <button
@@ -967,6 +1449,56 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                       </>
                     )}
                   </div>
+                  {pendingCommandsForDevice.length > 0 && (
+                    <div className="mt-4 border-t border-slate-100 pt-4">
+                      <p className="mb-2 text-sm font-medium text-slate-700">Lệnh đang chờ trên máy này</p>
+                      <ul className="space-y-1.5 text-sm">
+                        {pendingCommandsForDevice.map((command) => {
+                          const pendingState = describePendingCommand(
+                            command,
+                            device,
+                            childNameById,
+                            Date.now(),
+                          )
+                          const commandTargetId =
+                            command.child_id ?? device.child_id ?? null
+                          return (
+                            <li
+                              key={command.id}
+                              className="rounded-lg bg-slate-50 px-3 py-2 text-slate-700"
+                            >
+                              <span className="font-medium text-slate-900">
+                                {pendingCommandLabel(command)}
+                              </span>
+                              {commandTargetId && (
+                                <> cho {childNameById.get(commandTargetId) ?? 'con'}</>
+                              )}{' '}
+                              <span className="text-slate-500">
+                                · gửi lúc {formatTimeVi(command.created_at)}
+                              </span>
+                              {pendingState && (
+                                <span
+                                  className={
+                                    pendingState.kind === 'waiting-child' ||
+                                  pendingState.kind === 'expired' ||
+                                  pendingState.kind === 'stuck'
+                                      ? 'mt-0.5 block font-medium text-amber-700'
+                                      : 'mt-0.5 block text-slate-500'
+                                  }
+                                >
+                                  {pendingState.text}
+                                </span>
+                              )}
+                            </li>
+                          )
+                        })}
+                      </ul>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Trạng thái “sẽ áp dụng khi con đăng nhập” được suy ra từ lệnh còn chờ trong khi máy
+                        vẫn online — Agent chưa báo riêng trạng thái hoãn.
+                      </p>
+                    </div>
+                  )}
                   <div className="mt-4 border-t border-slate-100 pt-4">
                     <p className="mb-2 text-sm font-medium text-slate-700">Mã PIN thoát Tray</p>
                     <p className="text-sm text-slate-600">

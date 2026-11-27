@@ -8,6 +8,7 @@ import {
   formatTimeVi,
   toVietnameseError,
 } from '../lib/format'
+import { fetchDeviceChildAccounts } from '../lib/deviceChildren'
 import {
   activeGrantLatestExpiry,
   activeGrantTotal,
@@ -67,6 +68,13 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
   const [missingMigration, setMissingMigration] = useState(false)
   const [grants, setGrants] = useState<TimeBankGrant[]>([])
   const [deviceCount, setDeviceCount] = useState(0)
+  // Số máy chung mà con CHỈ gắn thêm qua ánh xạ tài khoản Windows (không
+  // phải con mặc định). Sprint 5 / M1: RPC ngân hàng giờ (migration 13)
+  // chưa biết Sprint 5 nên chỉ gửi lệnh tới máy mặc định của con — máy
+  // chung chỉ-gắn chưa nhận được giờ thưởng cho tới khi có migration 26.
+  // Số này được tính vào deviceCount để phụ huynh thấy đúng số máy con
+  // dùng, nhưng giao diện phải nói rõ giới hạn đó (xem ghi chú dưới).
+  const [linkedOnlyDeviceCount, setLinkedOnlyDeviceCount] = useState(0)
   const [historyCapped, setHistoryCapped] = useState(false)
 
   const [minutes, setMinutes] = useState(30)
@@ -98,7 +106,7 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
     setError('')
     setMissingMigration(false)
     try {
-      const [grantsResult, devicesResult] = await Promise.all([
+      const [grantsResult, devicesResult, linkedResult] = await Promise.all([
         supabase
           .from('time_bank_grants')
           .select('id, family_id, child_id, minutes, reason, granted_by, status, expires_at, created_at')
@@ -108,6 +116,9 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
           // hàng thì chưa cắt gì, banner chỉ hiện khi thật sự có hơn.
           .limit(HISTORY_LIMIT + 1),
         supabase.from('devices').select('id').eq('child_id', childId),
+        // Best-effort: bảng chỉ có sau migration 24; lỗi thì coi như
+        // chưa có máy gắn thêm, không làm hỏng tab.
+        fetchDeviceChildAccounts(supabase),
       ])
       if (seq !== loadSeqRef.current) return
       if (grantsResult.error) throw grantsResult.error
@@ -115,7 +126,16 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
       const rows = (grantsResult.data ?? []) as TimeBankGrant[]
       setHistoryCapped(rows.length > HISTORY_LIMIT)
       setGrants(sortGrantsDesc(rows.slice(0, HISTORY_LIMIT)))
-      setDeviceCount((devicesResult.data ?? []).length)
+      // Sprint 5: máy của con = máy mặc định + máy đã gắn thêm qua ánh
+      // xạ tài khoản Windows (máy chung). Đếm hợp (dedup theo id) để
+      // phụ huynh thấy đúng số máy con dùng.
+      const defaultDeviceIds = new Set((devicesResult.data ?? []).map((d) => d.id as string))
+      const linkedDeviceIds = linkedResult.accounts
+        .filter((a) => a.child_id === childId)
+        .map((a) => a.device_id)
+      const linkedOnly = linkedDeviceIds.filter((id) => !defaultDeviceIds.has(id))
+      setLinkedOnlyDeviceCount(linkedOnly.length)
+      setDeviceCount(defaultDeviceIds.size + linkedOnly.length)
       setState('ready')
     } catch (err) {
       if (seq !== loadSeqRef.current) return
@@ -145,6 +165,21 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
     if (Number.isInteger(parsed)) setMinutes(parsed)
   }
 
+  // TODO (Sprint 5, migration 26 — CHƯA LÀM, cần migration mới, ngoài
+  // phạm vi đợt Dashboard): RPC safepc_grant_time_bank / safepc_void_time_bank_grant
+  // (migration 13) chưa biết Sprint 5 — insert commands KHÔNG có child_id
+  // và chỉ nhắm máy có d.child_id = p_child_id, nên con chỉ-gắn trên máy
+  // chung không nhận được giờ thưởng (devices_notified đếm thiếu), và bước
+  // kiểm tra "ghi đè mới nhất" ở void không lọc child_id nên có thể GIỮ
+  // LẠI oan lệnh hủy: ghi đè mới nhất trên máy chung thuộc con khác thì
+  // void không gửi cancel, bonus của con bị thu hồi vẫn còn hiệu lực trên
+  // máy chung tới hết ngày (không phải hủy nhầm bonus của con khác).
+  // insert child_id = p_child_id; tập máy đích = d.child_id = p_child_id
+  // UNION device_child_accounts.child_id = p_child_id; bước kiểm tra ở
+  // void thêm điều kiện (child_id = v_grant.child_id OR child_id IS NULL).
+  // Tới khi đó, tab này đã đếm đúng máy (mặc định + gắn thêm) và hiện
+  // ghi chú cảnh báo ở trên; đừng xóa ghi chú đó trước khi migration 26
+  // được áp dụng.
   const handleGrant = async () => {
     if (!supabase || !user) return
     const trimmedReason = reason.trim()
@@ -175,8 +210,13 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
       setActionMessage(
         `Đã thưởng ${formatDurationVi(parsedMinutes * 60)} cho ${childName}. Tổng phút thưởng đang hiệu lực: ${formatDurationVi(newTotal * 60)}, hiệu lực tới hết ngày hôm nay` +
           (notified > 0
-            ? ` — lệnh sẽ tới ${notified} máy trong vòng ~15 giây khi máy online.`
-            : ' — con chưa có máy nào nên chưa gửi lệnh tới máy nào.'),
+            ? ` — lệnh sẽ tới ${notified} máy trong vòng ~15 giây khi máy online.` +
+              (linkedOnlyDeviceCount > 0
+                ? ` ${linkedOnlyDeviceCount} máy chung chỉ-gắn chưa nhận được (cần migration 26).`
+                : '')
+            : deviceCount > 0
+              ? ' — đã ghi sổ nhưng lệnh chưa tới máy chung của con (máy chỉ-gắn chưa nhận được, cần migration 26).'
+              : ' — con chưa có máy nào nên chưa gửi lệnh tới máy nào.'),
       )
       setReason('')
       await load()
@@ -303,8 +343,18 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
 
           <p className="text-sm text-slate-600">
             Nhiều lần thưởng trong ngày sẽ cộng dồn với nhau. Lệnh sẽ gửi tới {deviceCount} máy của con
-            {deviceCount === 0 ? ' — con chưa có máy nào được ghép nối' : ''}.
+            {deviceCount === 0
+              ? ' — con chưa có máy nào được ghép nối.'
+              : linkedOnlyDeviceCount > 0
+                ? ` (trong đó ${linkedOnlyDeviceCount} máy chung chưa nhận được, cần migration 26).`
+                : '.'}
           </p>
+          {linkedOnlyDeviceCount > 0 && (
+            <p className="text-sm text-amber-700">
+              Lưu ý: trong {deviceCount} máy có {linkedOnlyDeviceCount} máy chung mà {childName} chỉ gắn thêm
+              qua tài khoản Windows — giờ thưởng THÊM SAU khi gắn chưa gửi được tới {linkedOnlyDeviceCount === 1 ? 'máy này' : 'các máy này'} vì RPC ngân hàng giờ chưa biết Sprint 5 (cần migration 26). Giờ thưởng con đã có TRƯỚC lúc gắn thì máy chung nhận được ngay lúc gắn (đồng bộ lúc gắn, migration 27) — nhưng chỉ khi lúc gắn giờ thưởng vẫn đang là ghi đè hiệu lực; nếu phụ huynh đã thay bằng ghi đè khác (mở khóa, mở website…) thì máy nhận ghi đè mới nhất thay cho giờ thưởng. Ngồi máy chung trước khi gắn thì giờ thưởng chưa có hiệu lực.
+            </p>
+          )}
 
           {actionMessage && (
             <AlertBox tone="success">
@@ -329,6 +379,12 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
       </Card>
 
       <Card title="Lịch sử thưởng giờ">
+        {linkedOnlyDeviceCount > 0 && grants.some((grant) => isGrantActive(grant, nowMs)) && (
+          <p className="mb-3 text-sm text-amber-700">
+            Lưu ý: thu hồi chỉ gửi lệnh tới máy mặc định của con — {linkedOnlyDeviceCount} máy chung
+            chỉ-gắn có thể đã nhận giờ thưởng lúc gắn (đồng bộ lúc gắn, migration 27) nên giờ thưởng trên đó vẫn còn hiệu lực tới hết ngày dù lịch sử ghi 'Đã thu hồi' (cần migration 26 để thu hồi tới máy chung).
+          </p>
+        )}
         {grants.length === 0 ? (
           <EmptyState
             title="Chưa có lần thưởng nào"
@@ -413,8 +469,12 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
         Lưu ý: phút thưởng cộng vào mức trần giờ hôm nay của con, không phải mở khóa máy. Thưởng hoặc thu
         hồi sẽ thay thế ghi đè đang hiệu lực trên máy của con (kể cả lệnh mở khóa tạm thời), giống như form
         ghi đè ở trang Quy tắc. Chiều ngược lại cũng vậy: dùng form ghi đè ở trang Quy tắc sau khi thưởng
-        thì máy sẽ thôi áp tổng ngân hàng cho tới lần thưởng hoặc thu hồi tiếp theo. Máy mới ghép nối sau
-        khi thưởng sẽ nhận tổng số dư ở lần thưởng hoặc thu hồi tiếp theo.
+        thì máy sẽ thôi áp tổng ngân hàng cho tới lần thưởng hoặc thu hồi tiếp theo. Máy mới ghép nối cho
+        con sẽ nhận tổng số dư ngay lúc ghép nối — nếu lúc ghép nối giờ thưởng vẫn đang là ghi đè hiệu lực
+        (hoặc con chưa từng có ghi đè nào); nếu phụ huynh đã thay bằng ghi đè khác thì máy nhận ghi đè mới
+        nhất thay cho giờ thưởng. Máy chung gắn thêm cũng nhận tổng số dư đã có TRƯỚC lúc gắn (đồng bộ lúc
+        gắn, migration 27) với cùng điều kiện — chỉ giờ thưởng thêm SAU lúc gắn mới chưa tới máy chung cho
+        tới migration 26.
       </p>
     </div>
   )

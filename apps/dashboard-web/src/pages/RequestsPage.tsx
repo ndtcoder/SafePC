@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
-import type { AppRequest, Child, Device } from '../lib/types'
+import type { AppRequest, Child, Device, DeviceChildAccount } from '../lib/types'
+import { describeCommandInsertError, fetchDeviceChildAccounts } from '../lib/deviceChildren'
 import {
   formatDateTimeVi,
   formatRelativeVi,
@@ -45,6 +46,10 @@ export default function RequestsPage() {
   const [requests, setRequests] = useState<AppRequest[]>([])
   const [children, setChildren] = useState<Child[]>([])
   const [devices, setDevices] = useState<Device[]>([])
+  // Ánh xạ con ↔ tài khoản Windows (bảng device_child_accounts,
+  // migration 24) — best-effort (xem load()): chưa áp migration 24 thì
+  // rỗng và đường dự phòng tìm máy của con chạy như trước.
+  const [childAccounts, setChildAccounts] = useState<DeviceChildAccount[]>([])
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [decidingId, setDecidingId] = useState<string | null>(null)
@@ -122,6 +127,11 @@ export default function RequestsPage() {
       } catch {
         // Chưa có cột → giữ nguyên yêu cầu không có tên miền.
       }
+      // Truy vấn RIÊNG, best-effort: bảng device_child_accounts chỉ có
+      // sau migration 24. Truy vấn lỗi thì đường dự phòng tìm máy của
+      // con (resolveDeviceId) chạy như trước, KHÔNG làm hỏng cả trang.
+      const mappingsResult = await fetchDeviceChildAccounts(supabase)
+      setChildAccounts(mappingsResult.accounts)
       setState('ready')
     } catch (err) {
       setError(toVietnameseError(err))
@@ -153,19 +163,55 @@ export default function RequestsPage() {
   }, [requests])
 
   // Máy nhận lệnh duyệt: máy đã gửi yêu cầu, nếu không có thì máy của con
-  // thấy gần nhất (cùng mẫu dự phòng của luồng xin thêm giờ).
-  const resolveDeviceId = useCallback(async (request: AppRequest): Promise<string | null> => {
-    if (!supabase) return null
-    if (request.device_id) return request.device_id
-    const { data: childDevices, error: devicesError } = await supabase
-      .from('devices')
-      .select('id, last_seen_at')
-      .eq('child_id', request.child_id)
-      .order('last_seen_at', { ascending: false, nullsFirst: false })
-      .limit(1)
-    if (devicesError) throw devicesError
-    return childDevices?.[0]?.id ?? null
-  }, [])
+  // thấy gần nhất (cùng mẫu dự phòng của luồng xin thêm giờ). Sprint 5:
+  // "máy của con" gồm cả máy mà con là hồ sơ mặc định lẫn máy mà con đã
+  // gắn qua ánh xạ tài khoản Windows (máy chung) — không thì yêu cầu của
+  // con trên máy chung sẽ gửi lệnh nhầm sang máy riêng của con (hoặc
+  // không tìm thấy máy nào dù con đang ngồi trên máy chung).
+  const resolveDeviceId = useCallback(
+    async (request: AppRequest): Promise<string | null> => {
+      if (!supabase) return null
+      if (request.device_id) return request.device_id
+      // Fallback khi yêu cầu cũ không có device_id (trước migration 7):
+      // KHÔNG xác định được chắc máy gốc đã gửi yêu cầu — lấy máy của
+      // con (mặc định HOẶC đã gắn qua ánh xạ) có last_seen_at gần nhất,
+      // thay vì ưu tiên máy mặc định trước như trước đây (máy riêng của
+      // con có thể vừa online trong khi yêu cầu thực ra gửi từ máy
+      // chung). Đây vẫn là suy đoán, không phải máy gốc chắc chắn.
+      const linkedDeviceIds = childAccounts
+        .filter((a) => a.child_id === request.child_id)
+        .map((a) => a.device_id)
+      const { data: childDevices, error: devicesError } = await supabase
+        .from('devices')
+        .select('id, last_seen_at')
+        .eq('child_id', request.child_id)
+        .order('last_seen_at', { ascending: false, nullsFirst: false })
+        .limit(1)
+      if (devicesError) throw devicesError
+      let linkedDevices: Array<{ id: string; last_seen_at: string | null }> | null = null
+      if (linkedDeviceIds.length > 0) {
+        const { data: linkedData, error: linkedError } = await supabase
+          .from('devices')
+          .select('id, last_seen_at')
+          .in('id', linkedDeviceIds)
+          .order('last_seen_at', { ascending: false, nullsFirst: false })
+          .limit(1)
+        if (linkedError) throw linkedError
+        linkedDevices = (linkedData ?? []) as Array<{ id: string; last_seen_at: string | null }>
+      }
+      const candidates = [
+        ...((childDevices ?? []) as Array<{ id: string; last_seen_at: string | null }>),
+        ...(linkedDevices ?? []),
+      ]
+      candidates.sort((a, b) => {
+        const timeA = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0
+        const timeB = b.last_seen_at ? new Date(b.last_seen_at).getTime() : 0
+        return timeB - timeA
+      })
+      return candidates[0]?.id ?? null
+    },
+    [childAccounts],
+  )
 
   const handleDecide = async (request: AppRequest, status: 'approved' | 'denied', approveMinutes?: number) => {
     if (!supabase || !user) return
@@ -185,16 +231,23 @@ export default function RequestsPage() {
       // các quy tắc áp lại như cũ. Lệnh gửi trước, cập nhật trạng thái
       // sau — gửi lệnh lỗi thì yêu cầu vẫn ở trạng thái chờ để phụ huynh
       // thử lại.
+      let approvedDeviceId: string | null = null
       if (status === 'approved' && request.type === 'extra_time') {
         const deviceId = await resolveDeviceId(request)
         if (!deviceId) {
           throw new Error('Không tìm thấy thiết bị của con để gửi lệnh mở khóa.')
         }
+        approvedDeviceId = deviceId
         const minutes = request.minutes ?? 30
         const expiresAt = new Date(Date.now() + minutes * 60000)
+        // Sprint 5: lệnh mở khóa gắn với đúng con đã xin (child_id của
+        // yêu cầu) trên đúng máy đã gửi yêu cầu — Agent chỉ thi hành khi
+        // đúng con đó active; con chưa đăng nhập thì lệnh giữ pending
+        // tới khi con đăng nhập (không áp nhầm cho con khác trên máy chung).
         const { error: insertError } = await supabase.from('commands').insert({
           family_id: request.family_id,
           device_id: deviceId,
+          child_id: request.child_id,
           type: 'temporary_override',
           payload: { action: 'unlock', minutes, expires_at: expiresAt.toISOString() },
           status: 'pending',
@@ -220,9 +273,11 @@ export default function RequestsPage() {
         if (!deviceId) {
           throw new Error('Không tìm thấy thiết bị của con để gửi lệnh mở trang web.')
         }
+        approvedDeviceId = deviceId
         const { error: insertError } = await supabase.from('commands').insert({
           family_id: request.family_id,
           device_id: deviceId,
+          child_id: request.child_id,
           type: 'temporary_override',
           payload,
           status: 'pending',
@@ -250,16 +305,26 @@ export default function RequestsPage() {
             : r,
         ),
       )
+      // Tên máy + ghi chú hoãn cho thông báo sau khi duyệt: lệnh gắn với
+      // đúng con trên đúng máy; nếu con chưa đăng nhập trên máy đó thì
+      // lệnh giữ pending và áp dụng khi con đăng nhập (Sprint 5).
+      const approvedDeviceName = approvedDeviceId
+        ? (deviceNameById.get(approvedDeviceId) ?? 'máy của con')
+        : null
+      const deferredNote =
+        status === 'approved' && (request.type === 'extra_time' || request.type === 'unblock_domain')
+          ? ` Nếu ${childNameById.get(request.child_id) ?? 'con'} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`
+          : ''
       setActionMessage(
         status === 'approved' && request.type === 'extra_time'
-          ? `Đã duyệt: máy sẽ mở khóa trong ${request.minutes ?? 30} phút cho ${childNameById.get(request.child_id) ?? 'con'}.`
+          ? `Đã duyệt: máy "${approvedDeviceName}" sẽ mở khóa trong ${request.minutes ?? 30} phút cho ${childNameById.get(request.child_id) ?? 'con'}.${deferredNote}`
           : status === 'approved' && request.type === 'unblock_domain' && approvedDomain
-            ? `Đã duyệt: ${approvedDomain} sẽ được mở trong ${approvedMinutes} phút cho ${childNameById.get(request.child_id) ?? 'con'}. Lệnh tới máy trong ~15 giây, extension làm mới trong ~1 phút — con quay lại rồi mở lại trang thì mở được. Ghi đè mới thay thế ghi đè đang hiệu lực trên máy (nếu có).`
+            ? `Đã duyệt: ${approvedDomain} sẽ được mở trong ${approvedMinutes} phút cho ${childNameById.get(request.child_id) ?? 'con'} trên máy "${approvedDeviceName}". Lệnh tới máy trong ~15 giây, extension làm mới trong ~1 phút — con quay lại rồi mở lại trang thì mở được. Ghi đè mới thay thế ghi đè đang hiệu lực của con trên máy (nếu có).${deferredNote}`
             : `Đã ${status === 'approved' ? 'duyệt' : 'từ chối'} yêu cầu của ${childNameById.get(request.child_id) ?? 'con'}.`,
       )
       setDomainApproveId(null)
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setDecidingId(null)
     }

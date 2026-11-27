@@ -72,6 +72,7 @@ import {
   secondaryButtonClassName,
 } from '../components/ui'
 import WebHistorySearch from './WebHistorySearch'
+import SearchTermsReport from './SearchTermsReport'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -987,6 +988,17 @@ export default function WeeklyReportPage() {
           <WebHistorySearch
             childId={selectedChildId}
             childName={selectedChild?.display_name ?? 'Con'}
+          />
+        </div>
+      )}
+
+      {selectedChildId !== '' && (
+        <div className="mt-4 sm:mt-6">
+          <SearchTermsReport
+            childId={selectedChildId}
+            childName={selectedChild?.display_name ?? 'Con'}
+            weekStartIso={range.start.toISOString()}
+            weekEndIso={range.end.toISOString()}
           />
         </div>
       )}

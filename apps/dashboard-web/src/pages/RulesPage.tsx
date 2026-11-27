@@ -4,7 +4,13 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { createFamily, getMyFamily } from '../lib/family'
 import { buildRuleSummary, logRuleChange } from '../lib/ruleAudit'
-import type { Child, Command, Device, Family, Rule, TemporaryOverrideAction } from '../lib/types'
+import type { Child, Command, Device, DeviceChildAccount, Family, Rule, TemporaryOverrideAction } from '../lib/types'
+import {
+  commandTargetsChild,
+  describeCommandInsertError,
+  fetchDeviceChildAccounts,
+  targetChildrenForDevice,
+} from '../lib/deviceChildren'
 import {
   PRESET_OPTIONS,
   appConfigToAllowlistByTimeDraft,
@@ -27,6 +33,7 @@ import {
   buildAppTimeLimitConfig,
   buildBlockDomainsByTimeConfig,
   buildBlockDomainsConfig,
+  buildBlockSearchKeywordsConfig,
   buildDomainTimeLimitConfig,
   buildFocusConfig,
   buildForcedBreakConfig,
@@ -46,6 +53,7 @@ import {
   emptyFocusDraft,
   emptyForcedBreakDraft,
   emptySafeSearchDraft,
+  emptySearchKeywordsDraft,
   emptyTimeWindowDraft,
   emptyWebsiteDomainsDraft,
   parseAppConfig,
@@ -70,12 +78,14 @@ import {
   validateDomainTimeLimitDraft,
   validateFocusDraft,
   validateForcedBreakDraft,
+  validateSearchKeywordsDraft,
   validateTimeWindowDraft,
   websiteConfigToAllowlistByTimeDraft,
   websiteConfigToBlockByTimeDraft,
   websiteConfigToDomainsDraft,
   websiteConfigToFocusDraft,
   websiteConfigToSafeSearchDraft,
+  websiteConfigToSearchKeywordsDraft,
   websiteConfigToTimeLimitDraft,
   websiteListSelectionFromMode,
   websiteModeFromListSelection,
@@ -94,6 +104,7 @@ import {
   type ListKind,
   type PresetId,
   type SafeSearchDraft,
+  type SearchKeywordsDraft,
   type TimeKind,
   type TimeWindowDraft,
   type WebsiteDomainsDraft,
@@ -113,7 +124,9 @@ import {
   RULE_CATEGORY_OF,
   RULE_CATEGORY_ORDER,
   RULE_CATEGORY_THEME,
+  SEARCH_KEYWORDS_TEMPLATE_NAME,
   buildEdgeOnlyTemplateItems,
+  buildSearchKeywordsTemplateItems,
   parseRuleTemplateRow,
   ruleDisplayName,
   ruleToTemplateItem,
@@ -140,6 +153,7 @@ import {
   ForcedBreakForm,
   ListKindPicker,
   SafeSearchForm,
+  SearchKeywordsForm,
   TimeKindPicker,
   TimeWindowForm,
 } from '../components/RuleForms'
@@ -173,7 +187,7 @@ type EditableRuleType = 'daily_limit' | 'time_window' | 'bedtime' | 'website' | 
  * (chặn/cho phép × luôn luôn/theo giờ/tạm thời); các nhóm còn lại giữ
  * form riêng như trước.
  */
-type WebsiteFormKind = 'list' | 'domain_time_limit' | 'safe_search' | 'focus'
+type WebsiteFormKind = 'list' | 'domain_time_limit' | 'safe_search' | 'block_search_keywords' | 'focus'
 type AppFormKind = 'list' | 'app_time_limit' | 'forced_break'
 
 type OverrideSendAction = Exclude<TemporaryOverrideAction, 'cancel'>
@@ -202,12 +216,19 @@ interface ActiveOverride {
  * máy con mới là nơi thi hành thật, dựa trên bản ghi đè nó đã lưu local
  * và thời gian hết hạn.
  */
-function getActiveOverride(commands: Command[], deviceId: string, nowMs: number): ActiveOverride | null {
+function getActiveOverride(commands: Command[], deviceId: string, nowMs: number, childId?: string, defaultChildId?: string | null): ActiveOverride | null {
   // Có lệnh lock_now mới hơn ghi đè đang xét hay không (duyệt mới nhất
   // trước nên lock_now gặp trước ghi đè nghĩa là mới hơn ghi đè đó).
   let sawNewerLockNow = false
   for (const command of commands) {
     if (command.device_id !== deviceId) continue
+    // Sprint 5: chỉ xét ghi đè nhắm tới đúng con đang chọn (lệnh cũ
+    // không có child_id thì tính cho con mặc định của máy). Ghi đè là
+    // theo từng con phía Service nên ghi đè của con khác không được
+    // tính là "đang hiệu lực" cho con này.
+    if (childId !== undefined && !commandTargetsChild(command, childId, defaultChildId ?? null)) {
+      continue
+    }
     if (command.type === 'lock_now') {
       sawNewerLockNow = true
       continue
@@ -249,12 +270,29 @@ function getActiveOverride(commands: Command[], deviceId: string, nowMs: number)
 }
 
 /**
+ * Nhãn ô chọn máy: tên máy + TẤT CẢ con được quản lý trên máy đó (con mặc
+ * định trước, rồi các con gắn thêm qua ánh xạ — xem targetChildrenForDevice),
+ * không chỉ con mặc định. Máy chưa gán con nào thì chỉ hiện tên máy.
+ */
+function deviceOptionLabel(
+  device: Device,
+  childAccounts: readonly DeviceChildAccount[],
+  childNameById: Map<string, string>,
+): string {
+  const names = targetChildrenForDevice(device, childAccounts)
+    .map((id) => childNameById.get(id) ?? '')
+    .filter((name) => name !== '')
+  return names.length > 0 ? `${device.hostname} — ${names.join(', ')}` : device.hostname
+}
+
+/**
  * Ô chọn máy nhận ghi đè + thời lượng, dùng trong form quy tắc khi chọn
  * "Tạm thời — đếm ngược". Cùng mẫu với thẻ ghi đè tạm thời: chọn máy
  * (kèm tên con), chọn số phút trong 15/30/60/120.
  */
 function TempOverrideTargetFields({
   devices,
+  childAccounts,
   childNameById,
   deviceId,
   onDeviceChange,
@@ -262,6 +300,7 @@ function TempOverrideTargetFields({
   onMinutesChange,
 }: {
   devices: Device[]
+  childAccounts: readonly DeviceChildAccount[]
   childNameById: Map<string, string>
   deviceId: string
   onDeviceChange: (deviceId: string) => void
@@ -287,8 +326,7 @@ function TempOverrideTargetFields({
         >
           {devices.map((device) => (
             <option key={device.id} value={device.id}>
-              {device.hostname}
-              {device.child_id ? ` — ${childNameById.get(device.child_id) ?? ''}` : ''}
+              {deviceOptionLabel(device, childAccounts, childNameById)}
             </option>
           ))}
         </select>
@@ -372,6 +410,10 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   const [children, setChildren] = useState<Child[]>([])
   const [devices, setDevices] = useState<Device[]>([])
   const [overrideCommands, setOverrideCommands] = useState<Command[]>([])
+  // Ánh xạ con ↔ tài khoản Windows (bảng device_child_accounts,
+  // migration 24) — best-effort (xem load()): chưa áp migration 24 thì
+  // rỗng và trang chạy như trước (chỉ con mặc định của máy).
+  const [childAccounts, setChildAccounts] = useState<DeviceChildAccount[]>([])
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
@@ -412,6 +454,8 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     useState<AllowlistByTimeDraft>(emptyAllowlistByTimeDraft())
   const [timeLimitDraft, setTimeLimitDraft] = useState<DomainTimeLimitDraft>(emptyDomainTimeLimitDraft())
   const [safeSearchDraft, setSafeSearchDraft] = useState<SafeSearchDraft>(emptySafeSearchDraft())
+  const [searchKeywordsDraft, setSearchKeywordsDraft] =
+    useState<SearchKeywordsDraft>(emptySearchKeywordsDraft())
   const [focusDraft, setFocusDraft] = useState<FocusDraft>(emptyFocusDraft())
   // Quy tắc ứng dụng: một dòng rule type='app' mang đúng 1 chế độ. Nhóm
   // 'list' ánh xạ thành app_block / app_block_by_time / app_allowlist /
@@ -438,6 +482,13 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   // trong enforcement snapshot của mọi máy; truy vấn best-effort — xem
   // load()). Rỗng nghĩa là chưa biết rule nào đang thi hành.
   const [enforcingRuleIds, setEnforcingRuleIds] = useState<ReadonlySet<string>>(new Set())
+
+  // Rule đang thi hành mà bằng chứng mới nhất đã quá cũ (hơn 5 phút, cùng
+  // ngưỡng trang Thiết bị), tính THEO TỪNG RULE — khi cũ thì highlight
+  // "Đang thi hành" chỉ còn là dữ liệu cũ (RuleCard bớt đậm + gắn nhãn
+  // "Dữ liệu cũ"). Tính theo từng rule vì snapshot mới của một máy không
+  // chứng minh được rule của máy khác vẫn đang thi hành.
+  const [staleEnforcingRuleIds, setStaleEnforcingRuleIds] = useState<ReadonlySet<string>>(new Set())
 
   // Thẻ quy tắc đang mở rộng trong danh sách nhóm; mặc định tất cả đóng.
   const [expandedRuleIds, setExpandedRuleIds] = useState<ReadonlySet<string>>(new Set())
@@ -472,6 +523,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   // bước với tóm tắt tên mẫu + số rule + con đích, như mẫu một chạm.
   const [confirmTemplateId, setConfirmTemplateId] = useState<string | null>(null)
   const [confirmEdgeTemplate, setConfirmEdgeTemplate] = useState(false)
+  const [confirmSearchKeywordsTemplate, setConfirmSearchKeywordsTemplate] = useState(false)
   const [applyingTemplate, setApplyingTemplate] = useState(false)
 
   // Xoá quy tắc: bấm 2 lần (bấm "Xoá" rồi "Xác nhận xoá") để tránh xoá nhầm.
@@ -480,6 +532,10 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
 
   // Ghi đè tạm thời (gửi tới từng máy, tự hết hạn).
   const [overrideDeviceId, setOverrideDeviceId] = useState('')
+  // Con đích của ghi đè tạm thời trên máy đã chọn (Sprint 5: ghi đè gắn
+  // theo từng con). Mặc định: con trong hồ sơ đang xem (childIdFilter),
+  // nếu không thì con mặc định của máy.
+  const [overrideChildId, setOverrideChildId] = useState('')
   const [overrideAction, setOverrideAction] = useState<OverrideSendAction>('bonus_minutes')
   const [overrideMinutes, setOverrideMinutes] = useState(30)
   const [sendingOverride, setSendingOverride] = useState(false)
@@ -519,7 +575,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
           .select('id, family_id, device_id, type, payload, status, created_at')
           .in('type', ['temporary_override', 'lock_now'])
           .order('created_at', { ascending: false })
-          .limit(50),
+          .limit(200),
       ])
       if (rulesResult.error) throw rulesResult.error
       if (childrenResult.error) throw childrenResult.error
@@ -529,6 +585,27 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       setChildren((childrenResult.data ?? []) as Child[])
       setDevices((devicesResult.data ?? []) as Device[])
       setOverrideCommands((commandsResult.data ?? []) as Command[])
+      // Truy vấn RIÊNG, best-effort: cột commands.child_id chỉ có sau
+      // migration 24 (cùng lý do như trang Thiết bị: không gộp vào truy
+      // vấn chính để khỏi vỡ trang trước khi migration 24 được áp).
+      try {
+        const childCommandsResult = await supabase
+          .from('commands')
+          .select('id, family_id, device_id, child_id, type, payload, status, created_at')
+          .in('type', ['temporary_override', 'lock_now'])
+          .order('created_at', { ascending: false })
+          .limit(200)
+        if (!childCommandsResult.error) {
+          setOverrideCommands((childCommandsResult.data ?? []) as Command[])
+        }
+      } catch {
+        // Chưa có cột → giữ bản lệnh không có child_id.
+      }
+      // Truy vấn RIÊNG, best-effort: bảng device_child_accounts chỉ có
+      // sau migration 24. Truy vấn lỗi thì coi như chưa có ánh xạ — trang
+      // chạy như trước (chỉ con mặc định của máy), KHÔNG làm hỏng trang.
+      const mappingsResult = await fetchDeviceChildAccounts(supabase)
+      setChildAccounts(mappingsResult.accounts)
       // Truy vấn RIÊNG, best-effort: cột rules.name chỉ có sau migration
       // 9. Truy vấn lỗi (cột chưa tồn tại) thì tên rule vắng mặt và ô đặt
       // tên ẩn đi, KHÔNG làm hỏng cả trang.
@@ -570,28 +647,58 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         setTemplates([])
         setTemplatesState('unavailable')
       }
-      // Truy vấn RIÊNG, best-effort: cột enforcement_json chỉ có sau
-      // migration 6. Truy vấn lỗi (cột chưa tồn tại) thì coi như chưa biết
-      // rule nào đang thi hành, KHÔNG làm hỏng cả trang.
+      // Truy vấn RIÊNG, best-effort: cột enforcement_json /
+      // enforcement_updated_at chỉ có sau migration 6. Truy vấn lỗi (cột
+      // chưa tồn tại) thì coi như chưa biết rule nào đang thi hành, KHÔNG
+      // làm hỏng cả trang.
       try {
-        const enforcementResult = await supabase.from('devices').select('id, enforcement_json')
+        const enforcementResult = await supabase
+          .from('devices')
+          .select('id, enforcement_json, enforcement_updated_at')
         if (enforcementResult.error) {
           setEnforcingRuleIds(new Set())
+          setStaleEnforcingRuleIds(new Set())
         } else {
           const ids = new Set<string>()
+          // updated_at mới nhất theo từng rule — snapshot mới của một máy
+          // không làm tươi bằng chứng của rule chỉ thi hành trên máy khác.
+          const newestUpdatedByRule = new Map<string, number>()
           for (const row of (enforcementResult.data ?? []) as Array<{
             id: string
             enforcement_json: unknown
+            enforcement_updated_at: string | null
           }>) {
             const snapshot = parseEnforcementSnapshot(row.enforcement_json)
+            const updatedMs = row.enforcement_updated_at
+              ? new Date(row.enforcement_updated_at).getTime()
+              : Number.NaN
             if (snapshot) {
-              for (const ruleId of snapshot.ruleIds) ids.add(ruleId)
+              for (const ruleId of snapshot.ruleIds) {
+                ids.add(ruleId)
+                if (!Number.isNaN(updatedMs)) {
+                  const prev = newestUpdatedByRule.get(ruleId)
+                  if (prev === undefined || updatedMs > prev) {
+                    newestUpdatedByRule.set(ruleId, updatedMs)
+                  }
+                }
+              }
             }
           }
           setEnforcingRuleIds(ids)
+          // Rule mà bằng chứng mới nhất quá 5 phút (cùng ngưỡng trang
+          // Thiết bị) thì highlight "Đang thi hành" là dữ liệu cũ — RuleCard
+          // bớt đậm và gắn nhãn "Dữ liệu cũ" thay vì tô đậm như dữ liệu
+          // tươi. Rule không rõ thời điểm (updated_at trống) thì không tính
+          // là cũ.
+          const staleIds = new Set<string>()
+          for (const [ruleId, newestMs] of newestUpdatedByRule) {
+            if (Date.now() - newestMs > 5 * 60 * 1000) staleIds.add(ruleId)
+          }
+          setStaleEnforcingRuleIds(staleIds)
         }
       } catch {
         setEnforcingRuleIds(new Set())
+        setStaleEnforcingRuleIds(new Set())
       }
       setState('ready')
     } catch (err) {
@@ -620,22 +727,78 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     }
   }, [children, presetChildId, childIdFilter])
 
+  // Sprint 5: máy của một con là máy mà con là hồ sơ mặc định HOẶC đã
+  // gắn qua ánh xạ tài khoản Windows (máy chung hiện trong hồ sơ của cả
+  // hai con, không chỉ con mặc định như trước).
+  const devicesForChild = useCallback(
+    (childId: string) =>
+      devices.filter(
+        (d) =>
+          d.child_id === childId ||
+          childAccounts.some((a) => a.device_id === d.id && a.child_id === childId),
+      ),
+    [devices, childAccounts],
+  )
+
+  // Sprint 5: khi đổi hồ sơ con thì máy đã chọn phải thuộc pool máy
+  // của con mới — nếu không, lệnh của con mới sẽ gửi nhầm sang máy của
+  // con cũ (component được tái dùng khi chuyển tab hồ sơ, state cũ sống
+  // sót). Reset về máy đầu tiên của pool mới khi máy cũ không còn trong
+  // pool (hoặc chưa chọn máy nào).
   useEffect(() => {
-    const pool = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
-    if (!overrideDeviceId && pool.length > 0) setOverrideDeviceId(pool[0].id)
-  }, [devices, overrideDeviceId, childIdFilter])
+    const pool = childIdFilter ? devicesForChild(childIdFilter) : devices
+    if (pool.length === 0) {
+      if (overrideDeviceId) setOverrideDeviceId('')
+      return
+    }
+    if (!overrideDeviceId || !pool.some((d) => d.id === overrideDeviceId)) {
+      setOverrideDeviceId(pool[0].id)
+    }
+  }, [devices, devicesForChild, overrideDeviceId, childIdFilter])
 
   useEffect(() => {
-    const pool = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
-    if (!tempDeviceId && pool.length > 0) setTempDeviceId(pool[0].id)
-  }, [devices, tempDeviceId, childIdFilter])
+    // Pool máy của form ghi đè tạm thời theo đúng con đã chọn trong form
+    // (cùng pool với TempOverrideTargetFields) — đổi con thì máy đã chọn
+    // phải thuộc pool mới, nếu không ô chọn máy sẽ trống vì tempDeviceId
+    // không nằm trong danh sách.
+    const pool = formChildId
+      ? devicesForChild(formChildId)
+      : childIdFilter
+        ? devicesForChild(childIdFilter)
+        : devices
+    if (pool.length === 0) {
+      if (tempDeviceId) setTempDeviceId('')
+      return
+    }
+    if (!tempDeviceId || !pool.some((d) => d.id === tempDeviceId)) {
+      setTempDeviceId(pool[0].id)
+    }
+  }, [devices, devicesForChild, tempDeviceId, childIdFilter, formChildId])
+
+  // Con đích của ghi đè tạm thời: trong hồ sơ của một con thì luôn là
+  // con đó; trang độc lập thì mặc định theo máy đã chọn (con mặc định
+  // của máy, fallback: con gắn đầu tiên) và đổi theo khi đổi máy.
+  const overrideDevice = devices.find((d) => d.id === overrideDeviceId)
+  const overrideTargetChildIds = overrideDevice
+    ? targetChildrenForDevice(overrideDevice, childAccounts)
+    : []
+  useEffect(() => {
+    if (childIdFilter) {
+      setOverrideChildId(childIdFilter)
+      return
+    }
+    if (overrideTargetChildIds.length === 0) return
+    if (!overrideChildId || !overrideTargetChildIds.includes(overrideChildId)) {
+      setOverrideChildId(overrideTargetChildIds[0])
+    }
+  }, [childIdFilter, overrideTargetChildIds, overrideChildId])
 
   const childNameById = new Map(children.map((c) => [c.id, c.display_name]))
 
   // Khi nhúng trong hồ sơ của một con (tab Quy tắc) thì chỉ hiện quy tắc,
   // máy và lựa chọn của con đó; trang độc lập (/quy-tac) hiện mọi con.
   const visibleChildren = childIdFilter ? children.filter((c) => c.id === childIdFilter) : children
-  const visibleDevices = childIdFilter ? devices.filter((d) => d.child_id === childIdFilter) : devices
+  const visibleDevices = childIdFilter ? devicesForChild(childIdFilter) : devices
   const visibleRules = childIdFilter ? rules.filter((r) => r.child_id === childIdFilter) : rules
 
   const resetDrafts = () => {
@@ -648,6 +811,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     setAllowlistByTimeDraft(emptyAllowlistByTimeDraft())
     setTimeLimitDraft(emptyDomainTimeLimitDraft())
     setSafeSearchDraft(emptySafeSearchDraft())
+    setSearchKeywordsDraft(emptySearchKeywordsDraft())
     setFocusDraft(emptyFocusDraft())
     setAppListDraft(emptyAppListDraft())
     setAppTimeLimitDraft(emptyAppTimeLimitDraft())
@@ -724,6 +888,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       } else if (
         parsed?.mode === 'domain_time_limit' ||
         parsed?.mode === 'safe_search' ||
+        parsed?.mode === 'block_search_keywords' ||
         parsed?.mode === 'focus'
       ) {
         setWebsiteFormKind(parsed.mode)
@@ -737,6 +902,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       setAllowlistByTimeDraft(websiteConfigToAllowlistByTimeDraft(parsed))
       setTimeLimitDraft(websiteConfigToTimeLimitDraft(parsed))
       setSafeSearchDraft(websiteConfigToSafeSearchDraft(parsed))
+      setSearchKeywordsDraft(websiteConfigToSearchKeywordsDraft(parsed))
       setFocusDraft(websiteConfigToFocusDraft(parsed))
     } else if (rule.type === 'app') {
       const parsed = parseAppConfig(rule.config)
@@ -788,6 +954,20 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       setActionError('Chưa chọn máy nhận ghi đè. Hãy ghép nối máy của con trước (xem trang Thiết bị).')
       return
     }
+    // Con đích của form phải có hồ sơ (không gửi ghi đè "vô chủ") và
+    // phải được quản lý trên máy đã chọn (mặc định hoặc đã gắn qua ánh
+    // xạ) — nếu không lệnh sẽ pending tới hết hạn mà không bao giờ được
+    // thi hành cho con đó trên máy này.
+    if (!formChildId) {
+      setActionError('Chưa chọn hồ sơ con nhận ghi đè. Hãy chọn con trước rồi gửi lại.')
+      return
+    }
+    if (!targetChildrenForDevice(device, childAccounts).includes(formChildId)) {
+      setActionError(
+        `${childNameById.get(formChildId) ?? 'Con'} chưa được quản lý trên máy "${device.hostname}" (chưa phải con mặc định của máy và chưa gắn tài khoản Windows với máy này). Hãy chọn máy khác hoặc gắn tài khoản Windows của con với máy này (xem trang Thiết bị).`,
+      )
+      return
+    }
     const parsedDomains =
       formType === 'website' ? parseDomainsInput(websiteDomainsDraft.domainsText) : null
     if (parsedDomains?.error) {
@@ -827,20 +1007,24 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         formType === 'website'
           ? { action, domains: targets, minutes: tempMinutes, expires_at: expiresAt.toISOString() }
           : { action, apps: targets, minutes: tempMinutes, expires_at: expiresAt.toISOString() }
+      // Sprint 5: ghi đè gắn với hồ sơ con của form (formChildId) trên
+      // đúng máy đã chọn — Agent chỉ thi hành khi đúng con đó active;
+      // lệnh cho con chưa active thì giữ pending tới khi con đăng nhập.
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: formChildId,
         type: 'temporary_override',
         payload,
         status: 'pending',
       })
       if (insertError) throw insertError
       setActionMessage(
-        `Đã gửi "${overrideActionLabel(action)}" (${targets.join(', ')}) tới máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}.`,
+        `Đã gửi "${overrideActionLabel(action)}" (${targets.join(', ')}) cho ${childNameById.get(formChildId) ?? 'con'} trên máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}. Nếu con chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`,
       )
       await load()
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setSavingRule(false)
     }
@@ -945,6 +1129,13 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
         config = buildFocusConfig(focusDraft)
       } else if (websiteFormKind === 'safe_search') {
         config = buildSafeSearchConfig(safeSearchDraft)
+      } else if (websiteFormKind === 'block_search_keywords') {
+        const validationError = validateSearchKeywordsDraft(searchKeywordsDraft)
+        if (validationError) {
+          setActionError(validationError)
+          return
+        }
+        config = buildBlockSearchKeywordsConfig(searchKeywordsDraft)
       } else {
         const mode = websiteModeFromListSelection(
           websiteListKind,
@@ -1184,6 +1375,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       })
       setConfirmTemplateId(null)
       setConfirmEdgeTemplate(false)
+      setConfirmSearchKeywordsTemplate(false)
       setActionMessage(
         `Đã áp dụng mẫu “${templateLabel}” cho ${childNameById.get(presetChildId) ?? 'con'}: thêm ${items.length} quy tắc mới.`,
       )
@@ -1339,6 +1531,16 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     if (!supabase || !family || !overrideDeviceId) return
     const device = devices.find((d) => d.id === overrideDeviceId)
     if (!device) return
+    // Sprint 5: ghi đè gắn với con đích đã chọn trên máy này. Máy chưa
+    // gán con nào thì không gửi (lệnh không có con đích sẽ bị hoãn mãi
+    // phía Service vì không có con mặc định để áp).
+    if (!overrideChildId) {
+      setActionError(
+        `Máy "${device.hostname}" chưa gán cho hồ sơ con nào nên ghi đè không gắn được với con nào. Hãy ghép nối máy cho một con, hoặc gắn tài khoản Windows của con với máy này (xem trang Thiết bị).`,
+      )
+      return
+    }
+    const targetChildName = childNameById.get(overrideChildId) ?? 'con'
     setSendingOverride(true)
     setActionError(null)
     setActionMessage(null)
@@ -1353,17 +1555,18 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: overrideChildId,
         type: 'temporary_override',
         payload: { action: overrideAction, minutes: overrideMinutes, expires_at: expiresAt.toISOString() },
         status: 'pending',
       })
       if (insertError) throw insertError
       setActionMessage(
-        `Đã gửi "${overrideActionLabel(overrideAction)}" tới máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}.`,
+        `Đã gửi "${overrideActionLabel(overrideAction)}" cho ${targetChildName} trên máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}. Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`,
       )
       await load()
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setSendingOverride(false)
     }
@@ -1373,6 +1576,14 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     if (!supabase || !family || !overrideDeviceId) return
     const device = devices.find((d) => d.id === overrideDeviceId)
     if (!device) return
+    // Hủy đúng ghi đè của con đích đã chọn (cancel mang child_id để
+    // Service chỉ hủy ghi đè của con đó, không chạm ghi đè của con khác
+    // trên cùng máy chung).
+    if (!overrideChildId) {
+      setActionError(`Máy "${device.hostname}" chưa gán cho hồ sơ con nào nên không có ghi đè nào để hủy.`)
+      return
+    }
+    const targetChildName = childNameById.get(overrideChildId) ?? 'con'
     setCancellingOverride(true)
     setActionError(null)
     setActionMessage(null)
@@ -1380,15 +1591,16 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: overrideChildId,
         type: 'temporary_override',
         payload: { action: 'cancel' },
         status: 'pending',
       })
       if (insertError) throw insertError
-      setActionMessage(`Đã gửi lệnh hủy ghi đè tới máy "${device.hostname}". Các quy tắc bình thường sẽ áp dụng lại như cũ.`)
+      setActionMessage(`Đã gửi lệnh hủy ghi đè cho ${targetChildName} trên máy "${device.hostname}". Các quy tắc bình thường sẽ áp dụng lại như cũ. Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`)
       await load()
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setCancellingOverride(false)
     }
@@ -1403,6 +1615,13 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     }
     const device = devices.find((d) => d.id === overrideDeviceId)
     if (!device) return
+    if (!overrideChildId) {
+      setActionError(
+        `Máy "${device.hostname}" chưa gán cho hồ sơ con nào nên ghi đè website không gắn được với con nào. Hãy ghép nối máy cho một con, hoặc gắn tài khoản Windows của con với máy này (xem trang Thiết bị).`,
+      )
+      return
+    }
+    const targetChildName = childNameById.get(overrideChildId) ?? 'con'
     setSendingDomainOverride(true)
     setActionError(null)
     setActionMessage(null)
@@ -1411,6 +1630,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       const { error: insertError } = await supabase.from('commands').insert({
         family_id: device.family_id,
         device_id: device.id,
+        child_id: overrideChildId,
         type: 'temporary_override',
         payload: {
           action: domainOverrideAction,
@@ -1422,18 +1642,27 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       })
       if (insertError) throw insertError
       setActionMessage(
-        `Đã gửi "${overrideActionLabel(domainOverrideAction)}" (${parsed.domains.join(', ')}) tới máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}.`,
+        `Đã gửi "${overrideActionLabel(domainOverrideAction)}" (${parsed.domains.join(', ')}) cho ${targetChildName} trên máy "${device.hostname}". Agent sẽ nhận lệnh trong vòng ~15 giây khi máy online; ghi đè tự hết hạn lúc ${formatTimeVi(expiresAt.toISOString())}. Nếu ${targetChildName} chưa đăng nhập trên máy này, lệnh sẽ áp dụng khi con đăng nhập.`,
       )
       await load()
     } catch (err) {
-      setActionError(toVietnameseError(err))
+      setActionError(describeCommandInsertError(err) ?? toVietnameseError(err))
     } finally {
       setSendingDomainOverride(false)
     }
   }
 
+  // Ghi đè đang hiệu lực của ĐÚNG con đích đã chọn trên máy đã chọn
+  // (Sprint 5: ghi đè theo từng con — ghi đè của con khác trên cùng máy
+  // chung không tính là "đang hiệu lực" cho con này).
   const activeOverride = overrideDeviceId
-    ? getActiveOverride(overrideCommands, overrideDeviceId, Date.now())
+    ? getActiveOverride(
+        overrideCommands,
+        overrideDeviceId,
+        Date.now(),
+        overrideChildId === '' ? undefined : overrideChildId,
+        overrideDevice?.child_id ?? null,
+      )
     : null
 
   // Ghi đè website đang hiệu lực (nếu lệnh mới nhất là ghi đè domain).
@@ -1638,6 +1867,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                             rule={rule}
                             category={category.key}
                             enforcing={enforcingRuleIds.has(rule.id)}
+                            enforcingStale={staleEnforcingRuleIds.has(rule.id)}
                             expanded={expandedRuleIds.has(rule.id)}
                             toggling={togglingId === rule.id}
                             confirmingDelete={confirmDeleteId === rule.id}
@@ -1746,7 +1976,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                   </CreateSection>
                   <CreateSection
                     category="website"
-                    description="Chặn/cho phép website, giới hạn giờ, SafeSearch, giờ học tập trung"
+                    description="Chặn/cho phép website, giới hạn giờ, SafeSearch, chặn từ khóa tìm kiếm, giờ học tập trung"
                     open={createOpen === 'website'}
                     disabled={editingRule !== null}
                     onToggle={() => toggleCreateSection('website')}
@@ -1766,6 +1996,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                         <option value="list">Danh sách website (chặn / cho phép)</option>
                         <option value="domain_time_limit">Giới hạn thời gian theo website</option>
                         <option value="safe_search">Tìm kiếm an toàn (SafeSearch / YouTube)</option>
+                        <option value="block_search_keywords">Chặn từ khóa tìm kiếm</option>
                         <option value="focus">Giờ học tập trung</option>
                       </select>
                     </Field>
@@ -1829,7 +2060,8 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                         }
                       />
                       <TempOverrideTargetFields
-                        devices={visibleDevices}
+                        devices={formChildId ? devicesForChild(formChildId) : visibleDevices}
+                        childAccounts={childAccounts}
                         childNameById={childNameById}
                         deviceId={tempDeviceId}
                         onDeviceChange={setTempDeviceId}
@@ -1843,6 +2075,9 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                 )}
                 {formType === 'website' && websiteFormKind === 'safe_search' && (
                   <SafeSearchForm draft={safeSearchDraft} onChange={setSafeSearchDraft} />
+                )}
+                {formType === 'website' && websiteFormKind === 'block_search_keywords' && (
+                  <SearchKeywordsForm draft={searchKeywordsDraft} onChange={setSearchKeywordsDraft} />
                 )}
                 {formType === 'website' && websiteFormKind === 'focus' && (
                   <FocusForm draft={focusDraft} onChange={setFocusDraft} />
@@ -1930,7 +2165,8 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                       idPrefix="app-temp"
                     />
                     <TempOverrideTargetFields
-                      devices={visibleDevices}
+                      devices={formChildId ? devicesForChild(formChildId) : visibleDevices}
+                      childAccounts={childAccounts}
                       childNameById={childNameById}
                       deviceId={tempDeviceId}
                       onDeviceChange={setTempDeviceId}
@@ -2112,6 +2348,65 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                           <button
                             type="button"
                             onClick={() => setConfirmEdgeTemplate(true)}
+                            className={secondaryButtonClassName}
+                          >
+                            Áp dụng
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 p-4">
+                      <h4 className="text-sm font-semibold text-slate-900">{SEARCH_KEYWORDS_TEMPLATE_NAME}</h4>
+                      <p className="mt-2 text-sm text-slate-600">
+                        Tạo quy tắc chặn lượt tìm kiếm chứa từ khóa bị cấm trên Google, Bing,
+                        DuckDuckGo, Yahoo và Cốc Cốc. Mẫu này bật sẵn nhóm “Nội dung người lớn
+                        (16+/18+)” (15 từ khóa mẫu song ngữ Anh/Việt). Sau khi áp dụng, bạn tích
+                        thêm các nhóm khác (Cờ bạc / cá cược, Bạo lực, Game, Phim, Mạng xã hội)
+                        hoặc thêm từ khóa riêng trong quy tắc ở danh sách hiện hành.
+                      </p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Cụm từ đã tìm được ghi lại để xem trong Báo cáo tuần (giữ 90 ngày) — xem
+                        Chính sách riêng tư.
+                      </p>
+                      {confirmSearchKeywordsTemplate && (
+                        <p className="mt-3 rounded-lg bg-slate-50 p-2 text-sm text-slate-700">
+                          Sẽ thêm 1 quy tắc chặn từ khóa tìm kiếm cho{' '}
+                          {childNameById.get(presetChildId) ?? 'con'} với nhóm “Nội dung người lớn
+                          (16+/18+)” đang bật (15 từ khóa mẫu), chưa có từ khóa riêng (chỉ thêm
+                          mới, không xóa quy tắc cũ).
+                        </p>
+                      )}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {confirmSearchKeywordsTemplate ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleApplyTemplateItems(
+                                  buildSearchKeywordsTemplateItems(),
+                                  SEARCH_KEYWORDS_TEMPLATE_NAME,
+                                  { action: 'preset_applied', target: 'search_keywords' },
+                                )
+                              }
+                              disabled={applyingTemplate}
+                              className={primaryButtonClassName}
+                            >
+                              {applyingTemplate ? 'Đang áp dụng…' : 'Xác nhận áp dụng'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmSearchKeywordsTemplate(false)}
+                              disabled={applyingTemplate}
+                              className={secondaryButtonClassName}
+                            >
+                              Huỷ
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmSearchKeywordsTemplate(true)}
                             className={secondaryButtonClassName}
                           >
                             Áp dụng
@@ -2524,8 +2819,22 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                     >
                       {visibleDevices.map((device) => (
                         <option key={device.id} value={device.id}>
-                          {device.hostname}
-                          {device.child_id ? ` — ${childNameById.get(device.child_id) ?? ''}` : ''}
+                          {deviceOptionLabel(device, childAccounts, childNameById)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Áp dụng cho con" htmlFor="override-child">
+                    <select
+                      id="override-child"
+                      value={overrideChildId}
+                      onChange={(e) => setOverrideChildId(e.target.value)}
+                      disabled={!!childIdFilter || overrideTargetChildIds.length <= 1}
+                      className={inputClassName}
+                    >
+                      {overrideTargetChildIds.map((id) => (
+                        <option key={id} value={id}>
+                          {childNameById.get(id) ?? 'Không rõ con'}
                         </option>
                       ))}
                     </select>
@@ -2568,13 +2877,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                     : overrideAction === 'lock'
                       ? 'Máy sẽ bị khóa trong thời gian đã chọn, sau đó các quy tắc bình thường áp dụng lại.'
                       : 'Các quy tắc giờ giấc (giới hạn ngày, khung giờ, giờ ngủ) tạm ngưng trong thời gian đã chọn, sau đó áp dụng lại như cũ.'}{' '}
-                  Ghi đè mới nhất sẽ thay thế ghi đè trước đó trên cùng một máy.
+                  Ghi đè mới nhất sẽ thay thế ghi đè trước đó trên cùng một máy và cùng một con.
                 </p>
 
                 {activeOverride && (
                   <AlertBox tone="warning">
                     <p>
-                      <span className="font-medium">Đang hiệu lực trên máy này: </span>
+                      <span className="font-medium">
+                        Đang hiệu lực cho {childNameById.get(overrideChildId) ?? 'con'} trên máy này:{' '}
+                      </span>
                       {overrideActionLabel(activeOverride.action)}
                       {activeOverride.domains && activeOverride.domains.length > 0
                         ? `: ${activeOverride.domains.join(', ')}`
@@ -2619,7 +2930,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
               </p>
             ) : (
               <div className="space-y-4">
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-4 sm:grid-cols-3">
                   <Field label="Máy" htmlFor="domain-override-device">
                     <select
                       id="domain-override-device"
@@ -2629,8 +2940,22 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                     >
                       {visibleDevices.map((device) => (
                         <option key={device.id} value={device.id}>
-                          {device.hostname}
-                          {device.child_id ? ` — ${childNameById.get(device.child_id) ?? ''}` : ''}
+                          {deviceOptionLabel(device, childAccounts, childNameById)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Áp dụng cho con" htmlFor="domain-override-child">
+                    <select
+                      id="domain-override-child"
+                      value={overrideChildId}
+                      onChange={(e) => setOverrideChildId(e.target.value)}
+                      disabled={!!childIdFilter || overrideTargetChildIds.length <= 1}
+                      className={inputClassName}
+                    >
+                      {overrideTargetChildIds.map((id) => (
+                        <option key={id} value={id}>
+                          {childNameById.get(id) ?? 'Không rõ con'}
                         </option>
                       ))}
                     </select>
@@ -2678,13 +3003,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                   {domainOverrideAction === 'allow_domain'
                     ? 'Các domain trên sẽ được mở tạm thời (bỏ qua quy tắc chặn website) trong thời gian đã chọn, sau đó các quy tắc website bình thường áp dụng lại.'
                     : 'Các domain trên sẽ bị chặn tạm thời trong thời gian đã chọn, sau đó các quy tắc website bình thường áp dụng lại.'}{' '}
-                  Ghi đè mới nhất sẽ thay thế ghi đè trước đó trên cùng một máy (kể cả ghi đè giờ giấc).
+                  Ghi đè mới nhất sẽ thay thế ghi đè trước đó trên cùng một máy và cùng một con (kể cả ghi đè giờ giấc).
                 </p>
 
                 {activeDomainOverride && (
                   <AlertBox tone="warning">
                     <p>
-                      <span className="font-medium">Đang hiệu lực trên máy này: </span>
+                      <span className="font-medium">
+                        Đang hiệu lực cho {childNameById.get(overrideChildId) ?? 'con'} trên máy này:{' '}
+                      </span>
                       {overrideActionLabel(activeDomainOverride.action)}
                       {activeDomainOverride.domains && activeDomainOverride.domains.length > 0
                         ? `: ${activeDomainOverride.domains.join(', ')}`
