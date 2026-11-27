@@ -4233,3 +4233,6 @@ Trả lời: migration 25/26 chưa từng tồn tại dạng file — số thứ
 
 ## [2026-11-27 17:06 +07] ChaMuse
 Báo cáo: nhánh develop đã tạo từ head main b5414b5 (repo có 3 nhánh: main, develop, chat-logs). CI đợt 2 XANH cả hai run cổng: #329 (Dashboard) và #332 (Agent — Tray 19/19, IPC 13/13), và lần này upload artifact THÀNH CÔNG: bản cài MỚI NHẤT v0.1.332 (Sprint 5 + kiểm duyệt từ khóa ở Agent) tải được ngay, không phải chờ reset hạn mức 01/12, cũng không cần chạy lại run #317. Đã ghi vào danh sách build. Kèm đường dẫn run #332 dạng backtick + hướng dẫn điều hướng dự phòng. Nhắn tin và migration 25/26 vẫn đang hoàn thiện, sẽ lên develop.
+
+## [2026-11-27 17:36 +07] ChaMuse
+Báo cáo tổng kết: mọi thứ đã lên develop (13 commit ahead main: nhắn tin 9, migration 25/26 3, CI 1; head b069c5b). Nhắn tin qua 2 vòng review (sửa 2 lỗi trung bình), harness 43/43. Migration 25/26 review APPROVED (21/21 + 23/23), Service đã nối lời gọi M25. Phát hiện CI không chạy trên develop (ci.yml chỉ trigger main) — đã sửa ci.yml trên develop (thêm develop + workflow_dispatch), run #334 XANH cả 4 job, Tray 19/19, IPC 13/13, có bản cài v0.1.334 (gồm nhắn tin) tải được; đã ghi danh sách build. Việc của anh khi rảnh: áp migration 25 → 26 → 29 (điều kiện đã đủ hết). Tư vấn merge: đợt develop này là một update lớn mạch lạc, nên merge lên main sau khi anh test xong v0.1.309 cuối tuần.
