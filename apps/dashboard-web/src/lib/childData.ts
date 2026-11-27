@@ -5,6 +5,7 @@ import type {
   Child,
   Command,
   Device,
+  Message,
   NotificationSend,
   PairingCode,
   Rule,
@@ -31,6 +32,7 @@ export type ChildDataSectionKey =
   | 'commands'
   | 'app_usage'
   | 'web_visits'
+  | 'messages'
   | 'audit_logs'
   | 'time_bank_grants'
   | 'notification_sends'
@@ -47,6 +49,7 @@ export const CHILD_DATA_SECTIONS: Array<{
   { key: 'commands', label: 'Lệnh', description: 'Lệnh phụ huynh đã gửi xuống máy của con.' },
   { key: 'app_usage', label: 'Lịch sử dùng app', description: 'Thời gian dùng từng app trên máy của con.' },
   { key: 'web_visits', label: 'Lịch sử web', description: 'Tên miền và đường dẫn đã xem (đường dẫn bỏ phần truy vấn, chỉ có từ bản extension mới).' },
+  { key: 'messages', label: 'Tin nhắn', description: 'Tin nhắn hai chiều giữa phụ huynh và con trong kênh nhắn tin của SafePC.' },
   { key: 'audit_logs', label: 'Nhật ký kiểm tra', description: 'Sự kiện can thiệp và thi hành gắn với con.' },
   { key: 'time_bank_grants', label: 'Thưởng giờ', description: 'Lịch sử thưởng / thu hồi giờ của ngân hàng giờ.' },
   { key: 'notification_sends', label: 'Thông báo đã gửi', description: 'Email thông báo đã gửi gắn với con.' },
@@ -97,6 +100,7 @@ export interface ChildDataExportInput {
   commands: Command[]
   appUsage: AppUsage[]
   webVisits: WebVisit[]
+  messages: Message[]
   auditLogs: AuditLog[]
   timeBankGrants: TimeBankGrant[]
   notificationSends: NotificationSend[]
@@ -109,6 +113,7 @@ const EXCLUDED_NOTES = [
   'device_tokens: hash token của máy — thông tin xác thực, không có giá trị xuất dữ liệu.',
   'devices.exit_pin_hash: hash mã PIN thoát Tray — thông tin xác thực, không xuất.',
   'pairing_codes.code_hash: hash mã ghép nối — mã thô không bao giờ lưu, hash không có giá trị xuất.',
+  'chat_sessions: phiên nhắn tin của con — chứa hash token phiên, là thông tin xác thực, không xuất (như device_tokens).',
   'Dữ liệu cấp gia đình (mẫu quy tắc, lời mời, lịch sử gửi email báo cáo tuần) không thuộc về riêng con nên không có trong file này.',
 ]
 
@@ -169,6 +174,7 @@ export function buildChildDataExport(input: ChildDataExportInput): ChildDataExpo
       commands: section('commands', input.commands.map(toRow)),
       app_usage: section('app_usage', input.appUsage.map(toRow)),
       web_visits: section('web_visits', input.webVisits.map(toRow)),
+      messages: section('messages', input.messages.map(toRow)),
       audit_logs: section('audit_logs', input.auditLogs.map(toRow)),
       time_bank_grants: section('time_bank_grants', input.timeBankGrants.map(toRow)),
       notification_sends: section('notification_sends', input.notificationSends.map(toRow)),
@@ -243,6 +249,13 @@ export interface ChildDataDeleteCounts {
   audit_logs: number
   notification_sends: number
   pairing_codes: number
+  /**
+   * Số tin nhắn + phiên nhắn tin đã xóa (migration 29). TÙY CHỌN: khi
+   * server chưa áp migration 29, RPC vẫn là bản migration 15 và không
+   * trả hai khóa này — kết quả xóa vẫn hợp lệ, chỉ thiếu hai dòng này.
+   */
+  messages?: number
+  chat_sessions?: number
 }
 
 export interface ChildDataDeleteResult {
@@ -266,6 +279,11 @@ const DELETE_COUNT_KEYS: Array<keyof ChildDataDeleteCounts> = [
   'pairing_codes',
 ]
 
+const OPTIONAL_DELETE_COUNT_KEYS: Array<'messages' | 'chat_sessions'> = [
+  'messages',
+  'chat_sessions',
+]
+
 /** Kiểm tra kết quả RPC có đúng hình dạng không trước khi hiển thị số liệu. */
 export function isChildDataDeleteResult(value: unknown): value is ChildDataDeleteResult {
   if (typeof value !== 'object' || value === null) return false
@@ -274,7 +292,11 @@ export function isChildDataDeleteResult(value: unknown): value is ChildDataDelet
   if (!Array.isArray(v.skipped_missing_tables)) return false
   if (typeof v.deleted !== 'object' || v.deleted === null) return false
   const deleted = v.deleted as Record<string, unknown>
-  return DELETE_COUNT_KEYS.every((k) => typeof deleted[k] === 'number' && Number.isFinite(deleted[k] as number))
+  const isCount = (n: unknown) => typeof n === 'number' && Number.isFinite(n as number)
+  if (!DELETE_COUNT_KEYS.every((k) => isCount(deleted[k]))) return false
+  // Khóa tùy chọn (migration 29): vắng mặt thì thôi, có mặt thì phải
+  // là số hợp lệ — không vì thiếu khóa mà báo kết quả xóa bị hỏng.
+  return OPTIONAL_DELETE_COUNT_KEYS.every((k) => deleted[k] === undefined || isCount(deleted[k]))
 }
 
 /** Nhãn hiển thị cho từng dòng số liệu đã xóa (kể cả device_tokens, mục chỉ có ở kết quả xóa). */
@@ -282,6 +304,8 @@ export function deleteCountLabel(key: keyof ChildDataDeleteCounts): string {
   switch (key) {
     case 'device_tokens':
       return 'Token của máy'
+    case 'chat_sessions':
+      return 'Phiên nhắn tin'
     default:
       return sectionLabel(key as ChildDataSectionKey)
   }
