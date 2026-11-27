@@ -4209,3 +4209,27 @@ thế em cứ đẩy cả đợt đang giữ (Sprint 5 Dashboard, migration 27, 
 
 ## [2026-11-27 16:50 +07] ChaMuse
 Đã nhận lệnh, đang đẩy theo 2 đợt: đợt 1 ngay bây giờ gồm extension 0.1.11 + migration 27/28 + zalo.me (không trùng file đang xây); đợt 2 gồm Dashboard + Service + docs, làm ngay khi 2 builder nhắn tin hạ cánh vì vài file Dashboard/tài liệu đang được sửa dở cho tính năng nhắn tin — đẩy lúc này dễ gãy bản dựng. Code nhắn tin không nằm trong đợt đẩy này (chờ review xong). Lưu ý đã báo anh: đẩy lên main thì Dashboard mới lên sóng Vercel ngay (phần cần migration chưa áp sẽ hiện ghi chú "chưa bật", không sập); bản cài v0.1.309 anh test cuối tuần không bị ảnh hưởng.
+
+## [2026-11-27 16:52 +07] ChaMuse
+Đợt 1 đã lên GitHub xong, kiểm chứng qua API: commit 79274d3 (extension 0.1.11), 886047b (migration 27 + 28), 0a0225e (zalo.me) — head main hiện là 0a0225e, manifest trên main đã là 0.1.11 có quyền webNavigation. Đợt 2 (Dashboard + Service + tài liệu) chờ builder web của tính năng nhắn tin hạ cánh rồi đẩy tiếp.
+
+## [2026-11-27 16:55 +07] Anh Tiến
+safePC em cũng triển khai thay đổi trên develop nhé (em tự duyệt, tự push). Anh sẽ duyệt ở các update lớn để đưa lên main (em tư vấn cho anh)
+
+## [2026-11-27 16:57 +07] ChaMuse
+Đã ghi quy tắc workflow SafePC mới vào bộ nhớ: từ thay đổi kế tiếp, mọi thay đổi đi qua nhánh develop (em tự review + tự đẩy), merge develop → main chỉ ở các update lớn khi anh duyệt, em chịu trách nhiệm tư vấn. Đợt đẩy dự phòng đang chạy dở theo lệnh 16:47 thì hoàn tất nốt trên main (đang giữa chừng, chuyển nhánh lúc này làm vỡ tính liên tục của đợt), xong em tạo develop từ head main mới. Tính năng nhắn tin sẽ là thay đổi đầu tiên đi qua develop.
+
+## [2026-11-27 16:56 +07] Anh Tiến
+ok
+
+## [2026-11-27 16:57 +07] ChaMuse
+Dạ vâng anh, em tiếp tục theo đúng kế hoạch đó — đợt 2 đang đẩy, xong em tạo develop và báo lại anh.
+
+## [2026-11-27 17:00 +07] Anh Tiến
+a chạy migration 24,27,28 rồi (trước đó đã chạy đủ đến 23). Nhưng sao ko thấy migration 25,26 nhỉ?
+
+## [2026-11-27 17:03 +07] ChaMuse
+Trả lời: migration 25/26 chưa từng tồn tại dạng file — số thứ tự được giữ chỗ cho hai thiết kế ghi trong TODO ở code Dashboard từ đợt Sprint 5 (25 = bảng device_seen_accounts + RPC báo tài khoản Windows Tray đã thấy; 26 = định tuyến lệnh ngân hàng giờ theo đúng hồ sơ con). Anh không thiếu gì, DB không lỗi; 27/28 không phụ thuộc 25/26. Đã cho xây 25 + 26 ngay, kèm bộ kiểm thử, xong đẩy lên develop. Đồng thời báo: đợt đẩy dự phòng lên main đã xong (head b5414b5); tính năng nhắn tin review xong, có 2 lỗi trung bình đang sửa (policy UPDATE trên messages quá rộng; RPC fetch trả 100 tin cũ nhất thay vì mới nhất); đang tạo nhánh develop + kiểm tra CI đợt 2.
+
+## [2026-11-27 17:06 +07] ChaMuse
+Báo cáo: nhánh develop đã tạo từ head main b5414b5 (repo có 3 nhánh: main, develop, chat-logs). CI đợt 2 XANH cả hai run cổng: #329 (Dashboard) và #332 (Agent — Tray 19/19, IPC 13/13), và lần này upload artifact THÀNH CÔNG: bản cài MỚI NHẤT v0.1.332 (Sprint 5 + kiểm duyệt từ khóa ở Agent) tải được ngay, không phải chờ reset hạn mức 01/12, cũng không cần chạy lại run #317. Đã ghi vào danh sách build. Kèm đường dẫn run #332 dạng backtick + hướng dẫn điều hướng dự phòng. Nhắn tin và migration 25/26 vẫn đang hoàn thiện, sẽ lên develop.
