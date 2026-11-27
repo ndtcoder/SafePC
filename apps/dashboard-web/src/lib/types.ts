@@ -133,6 +133,46 @@ export interface WebVisit {
   created_at: string
 }
 
+// Dòng search_terms theo migration 28: một lượt con gõ tìm kiếm trên
+// Google, Bing, DuckDuckGo, Yahoo hoặc Cốc Cốc. `term` là cụm từ tìm
+// kiếm nguyên văn (đây là dữ liệu duy nhất SafePC lưu kèm nội dung truy
+// vấn — xem AMENDMENTS A-14); `blocked` = lượt tìm kiếm bị chặn vì
+// vướng từ khóa trong quy tắc block_search_keywords. Giữ 90 ngày.
+export interface SearchTerm {
+  family_id: string
+  child_id: string
+  device_id: string
+  /** Id công cụ tìm kiếm đã lưu (google, bing, duckduckgo, yahoo, coccoc…). */
+  engine: string
+  term: string
+  blocked: boolean
+  created_at: string
+}
+
+export type MessageSenderRole = 'parent' | 'child'
+
+/**
+ * Một tin nhắn trong kênh nhắn tin gia đình (bảng messages, migration
+ * 29 — PRD §2.13). Phụ huynh gửi từ Dashboard (sender_role 'parent',
+ * sender_user_id = auth user của phụ huynh); con gửi từ trang chat
+ * /nhan-tin qua RPC mang token phiên (sender_role 'child',
+ * sender_user_id = null, device_id = máy con gửi từ — null khi máy đã
+ * bị xóa). parent_read_at áp cho tin của con, child_read_at áp cho
+ * tin của phụ huynh.
+ */
+export interface Message {
+  id: string
+  family_id: string
+  child_id: string
+  device_id: string | null
+  sender_role: MessageSenderRole
+  sender_user_id: string | null
+  body: string
+  parent_read_at: string | null
+  child_read_at: string | null
+  created_at: string
+}
+
 export interface AppRequest {
   id: string
   family_id: string
@@ -161,6 +201,50 @@ export interface Command {
   payload: Record<string, unknown>
   status: CommandStatus
   created_at: string
+  // Hồ sơ con mà lệnh nhắm tới (thêm ở migration 24, Sprint 5 đợt 1).
+  // NULL = lệnh cũ, thuộc về con mặc định của máy (devices.child_id).
+  // Lệnh có child_id chỉ thi hành khi đúng con đó đang active trên máy;
+  // lệnh cho con chưa active thì Agent giữ pending tới khi con lên
+  // console (không ack). Dashboard luôn ghi child_id tường minh khi đã
+  // biết con đích, để trạng thái "sẽ áp dụng khi con đăng nhập" suy ra
+  // được từ dữ liệu. Vắng mặt với lệnh cũ hoặc khi migration 24 chưa áp
+  // dụng (truy vấn best-effort không chọn cột thì trường này vắng).
+  child_id?: string | null
+}
+
+/**
+ * Ánh xạ thiết bị ↔ hồ sơ con ↔ tài khoản Windows (bảng
+ * device_child_accounts, migration 24, Sprint 5 đợt 1). Lưu theo SID
+ * cho bền (đổi tên tài khoản không làm lệch ánh xạ). Dashboard ghi hàng
+ * này khi phụ huynh gắn tài khoản Windows với hồ sơ con; Agent chỉ đọc
+ * qua RPC. UNIQUE (device_id, windows_sid): một tài khoản Windows trên
+ * một máy chỉ gắn với đúng một hồ sơ con.
+ */
+export interface DeviceChildAccount {
+  id: string
+  family_id: string
+  device_id: string
+  child_id: string
+  windows_sid: string
+  windows_username: string | null
+  created_at: string
+}
+
+/**
+ * Tài khoản Windows mà Tray/Service đã "nhìn thấy" trên một máy (bảng
+ * device_seen_accounts — CHƯA CÓ, thiết kế ở lib/deviceChildren.ts cho
+ * migration 25 đợt sau; Service báo lên mỗi khi Tray hello / đổi phiên
+ * console). Dashboard đọc bảng này để cho phụ huynh CHỌN tài khoản khi
+ * gắn (không gõ tay) và để cảnh báo tài khoản Standard chưa gắn. Tới khi
+ * migration 25 chưa áp dụng thì truy vấn best-effort trả lỗi và Dashboard
+ * coi như chưa có dữ liệu (không bịa tài khoản).
+ */
+export interface SeenWindowsAccount {
+  device_id: string
+  windows_sid: string
+  windows_username: string | null
+  is_admin: boolean
+  last_seen_at: string
 }
 
 /** Trạng thái một lần thưởng giờ (bảng time_bank_grants, migration 13). */

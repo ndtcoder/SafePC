@@ -10,7 +10,7 @@
 
 import { formatDurationVi } from './format'
 import { parseDailyLimitConfig, WEEKDAY_OPTIONS, type MinutesByWeekday, type WeekdayNumber } from './ruleConfig'
-import type { AppRequest, AppUsage, AuditLog, Command, Device, Rule as RuleRow, WebVisit } from './types'
+import type { AppRequest, AppUsage, AuditLog, Command, Device, Rule as RuleRow, SearchTerm, WebVisit } from './types'
 
 // ---------------------------------------------------------------------------
 // Tuần: bắt đầu thứ Hai, giờ địa phương
@@ -626,7 +626,78 @@ export function filterWebHistory(
   })
 }
 
-// Tên miền an toàn để dựng link mở trang: chỉ nhãn chữ thường/số/gạch
+// ---------------------------------------------------------------------------
+// Từ khóa tìm kiếm (migration 28): tổng hợp các hàng search_terms của
+// tuần thành bảng "từ khóa × công cụ" cho mục Từ khóa tìm kiếm trong
+// Báo cáo tuần, cùng mẫu tổng hợp/lọc với lịch sử web ở trên.
+// ---------------------------------------------------------------------------
+
+/** Một dòng tổng hợp: một cụm từ trên một công cụ tìm kiếm trong tuần. */
+export interface SearchTermSummary {
+  term: string
+  engine: string
+  /** Tổng số lượt tìm kiếm cụm từ này trên công cụ này. */
+  total: number
+  /** Số lượt trong đó bị chặn vì vướng từ khóa bị cấm. */
+  blockedCount: number
+}
+
+const SEARCH_ENGINE_LABELS: Record<string, string> = {
+  google: 'Google',
+  bing: 'Bing',
+  duckduckgo: 'DuckDuckGo',
+  yahoo: 'Yahoo',
+  coccoc: 'Cốc Cốc',
+}
+
+/** Nhãn hiển thị của công cụ tìm kiếm; id lạ (công cụ mới) thì hiện đúng id đã lưu để không mất thông tin. */
+export function searchEngineLabel(engine: string): string {
+  return SEARCH_ENGINE_LABELS[engine.trim().toLowerCase()] ?? engine
+}
+
+/**
+ * Gom các hàng search_terms theo (cụm từ, công cụ): đếm tổng lượt và số
+ * lượt bị chặn. Cụm từ gom không phân biệt hoa/thường (extension lưu
+ * nguyên văn con gõ; hai lượt chỉ khác hoa/thường là cùng một cụm từ).
+ * Sắp xếp: tổng lượt giảm dần, hòa thì lượt bị chặn giảm dần, rồi theo
+ * cụm từ tăng dần để thứ tự ổn định.
+ */
+export function aggregateSearchTerms(
+  rows: readonly Pick<SearchTerm, 'term' | 'engine' | 'blocked'>[],
+): SearchTermSummary[] {
+  const byKey = new Map<string, SearchTermSummary>()
+  for (const row of rows) {
+    const term = row.term.trim()
+    if (term === '') continue
+    const key = JSON.stringify([term.toLowerCase(), row.engine])
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.total += 1
+      if (row.blocked) existing.blockedCount += 1
+    } else {
+      byKey.set(key, {
+        term,
+        engine: row.engine,
+        total: 1,
+        blockedCount: row.blocked ? 1 : 0,
+      })
+    }
+  }
+  return [...byKey.values()].sort(
+    (a, b) =>
+      b.total - a.total || b.blockedCount - a.blockedCount || a.term.localeCompare(b.term),
+  )
+}
+
+/** Lọc bảng tổng hợp từ khóa theo ô lọc text: khớp một phần trên cụm từ, không phân biệt hoa thường (như filterWebHistory). */
+export function filterSearchTermSummaries(
+  summaries: readonly SearchTermSummary[],
+  query: string,
+): SearchTermSummary[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return [...summaries]
+  return summaries.filter((summary) => summary.term.toLowerCase().includes(needle))
+}
 // nối, ít nhất 2 nhãn, mỗi nhãn 1–63 ký tự, không bắt đầu/kết thúc bằng
 // gạch nối. Tên miền trong DB do Agent kiểm tra ký tự trước khi gửi,
 // nhưng kiểm tra lại ở đây để chuỗi lạ (vd hàng viết tay) không bao giờ

@@ -341,6 +341,7 @@ export type WebsiteMode =
   | 'allowlist_by_time'
   | 'domain_time_limit'
   | 'safe_search'
+  | 'block_search_keywords'
   | 'focus'
 
 export interface WebsiteModeOption {
@@ -355,6 +356,7 @@ export const WEBSITE_MODE_OPTIONS: WebsiteModeOption[] = [
   { value: 'allowlist_by_time', label: 'Chỉ cho phép một số website theo giờ' },
   { value: 'domain_time_limit', label: 'Giới hạn thời gian theo website' },
   { value: 'safe_search', label: 'Tìm kiếm an toàn (SafeSearch / YouTube)' },
+  { value: 'block_search_keywords', label: 'Chặn từ khóa tìm kiếm' },
   { value: 'focus', label: 'Giờ học tập trung' },
 ]
 
@@ -482,6 +484,32 @@ export type SafeSearchConfig = {
 }
 
 /**
+ * Chặn từ khóa tìm kiếm (yêu cầu của anh Tiến 27/11/2026, kiểu Microsoft
+ * Family Safety): cụm từ con gõ vào ô tìm kiếm của Google, Bing,
+ * DuckDuckGo, Yahoo hoặc Cốc Cốc mà chứa một từ khóa trong danh sách thì
+ * lượt tìm kiếm bị chặn và trình duyệt hiện trang cảnh báo. Backend phát
+ * danh sách xuống extension qua `searchGuard.blockedKeywords` trong
+ * domain_rules.json. Cụm từ đã tìm (kèm cờ bị chặn) lưu vào bảng
+ * search_terms (migration 28) để thống kê trong Báo cáo tuần.
+ *
+ * Hình dạng v2 (bổ sung 27/11/2026): danh sách mẫu chia theo NHÓM CHỦ ĐỀ
+ * (`KEYWORD_GROUPS`) để phụ huynh tích chọn cả nhóm, cộng từ khóa riêng.
+ * `keywords` LUÔN là danh sách hiệu lực duy nhất = hợp nhất từ khóa của
+ * các nhóm trong `groups` + `customKeywords` (đã chuẩn hoá) — backend/
+ * extension chỉ đọc `keywords` nên hợp đồng phía sau không đổi. Rule cũ
+ * chỉ có `keywords` (không `groups`/`customKeywords`) vẫn đọc được:
+ * toàn bộ `keywords` được hiểu là từ khóa riêng (xem parseWebsiteConfig).
+ */
+export type BlockSearchKeywordsConfig = {
+  mode: 'block_search_keywords'
+  keywords: string[]
+  /** Id các nhóm chủ đề đã tích chọn (chỉ id hợp lệ của KEYWORD_GROUPS). Vắng mặt ở rule cũ. */
+  groups?: KeywordGroupId[]
+  /** Từ khóa riêng do phụ huynh tự thêm (đã chuẩn hoá). Vắng mặt ở rule cũ. */
+  customKeywords?: string[]
+}
+
+/**
  * Giờ học tập trung: trong các khung giờ theo thứ, chỉ các website trong
  * `allowedDomains` (do extension thi hành) và các ứng dụng trong
  * `allowedApps` (do Agent đóng các ứng dụng còn lại) mới mở được.
@@ -502,6 +530,7 @@ export type WebsiteConfig =
   | AllowlistByTimeConfig
   | DomainTimeLimitConfig
   | SafeSearchConfig
+  | BlockSearchKeywordsConfig
   | FocusConfig
 
 // ---------------------------------------------------------------------------
@@ -923,6 +952,15 @@ function readStoredUrlPatterns(config: Record<string, unknown>): string[] {
 }
 
 /**
+ * Đọc danh sách từ khóa tìm kiếm từ config đã lưu (khóa `keywords`),
+ * chuẩn hoá như lúc lưu (trim, chữ thường, bỏ rỗng, bỏ trùng) để phần
+ * mô tả/sửa không vỡ khi gặp dữ liệu lạ.
+ */
+function readStoredKeywords(config: Record<string, unknown>): string[] {
+  return normalizeSearchKeywords(asStringArray(config['keywords']))
+}
+
+/**
  * Đọc danh sách ứng dụng từ config đã lưu (khóa `apps` hoặc khóa khác do
  * nơi gọi truyền vào), khoan dung: mục nhập là chuỗi thì hiểu là tên exe;
  * mục nhập là object thì đọc `exe`/`name`; mục thiếu exe thì bỏ qua; tên
@@ -963,6 +1001,7 @@ const WEBSITE_MODES: WebsiteMode[] = [
   'allowlist_by_time',
   'domain_time_limit',
   'safe_search',
+  'block_search_keywords',
   'focus',
 ]
 
@@ -1004,6 +1043,17 @@ export function parseWebsiteConfig(config: Record<string, unknown>): WebsiteConf
           searchProviders: asBooleanOr(config['searchProviders'], true),
           youtubeRestricted: asBooleanOr(config['youtubeRestricted'], true),
         }
+      case 'block_search_keywords': {
+        const keywords = readStoredKeywords(config)
+        const groups = readStoredKeywordGroups(config['groups'])
+        // Rule v2 có khóa customKeywords (kể cả mảng rỗng) thì đọc đúng
+        // khóa đó; rule cũ không có khóa này thì toàn bộ keywords hiệu
+        // lực được hiểu là từ khóa riêng của phụ huynh.
+        const customKeywords = Array.isArray(config['customKeywords'])
+          ? normalizeSearchKeywords(asStringArray(config['customKeywords']))
+          : keywords
+        return { mode, keywords, groups, customKeywords }
+      }
       case 'focus':
         return {
           mode,
@@ -1102,6 +1152,17 @@ export interface SafeSearchDraft {
   youtubeRestricted: boolean
 }
 
+/**
+ * Draft cho chế độ chặn từ khóa tìm kiếm (v2): các nhóm chủ đề đã tích
+ * chọn + từ khóa riêng dạng chip (đã chuẩn hoá khi thêm). Danh sách
+ * hiệu lực không lưu trong draft — luôn suy ra bằng
+ * `effectiveSearchKeywords` để form và config không lệch nhau.
+ */
+export interface SearchKeywordsDraft {
+  groups: KeywordGroupId[]
+  customKeywords: string[]
+}
+
 /** Draft cho chế độ giờ học tập trung: khung giờ + domain được phép + app được phép. */
 export interface FocusDraft {
   windows: TimeWindowDraft
@@ -1129,6 +1190,10 @@ export function emptySafeSearchDraft(): SafeSearchDraft {
   return { searchProviders: true, youtubeRestricted: true }
 }
 
+export function emptySearchKeywordsDraft(): SearchKeywordsDraft {
+  return { groups: [], customKeywords: [] }
+}
+
 /** Draft focus trống: một dòng ứng dụng trống để phụ huynh gõ ngay. */
 export function emptyFocusDraft(): FocusDraft {
   return { windows: emptyTimeWindowDraft(), allowedDomainsText: '', apps: [{ exe: '', name: '' }] }
@@ -1140,7 +1205,7 @@ function entriesToDomainsText(domains: string[], urlPatterns: string[] | undefin
 }
 
 export function websiteConfigToDomainsDraft(config: WebsiteConfig | null): WebsiteDomainsDraft {
-  if (!config || config.mode === 'safe_search' || config.mode === 'focus') {
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus' || config.mode === 'block_search_keywords') {
     return emptyWebsiteDomainsDraft()
   }
   return {
@@ -1153,7 +1218,7 @@ export function websiteConfigToDomainsDraft(config: WebsiteConfig | null): Websi
 
 export function websiteConfigToBlockByTimeDraft(config: WebsiteConfig | null): BlockDomainsByTimeDraft {
   const draft = emptyBlockDomainsByTimeDraft()
-  if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus' || config.mode === 'block_search_keywords') return draft
   draft.domainsText = entriesToDomainsText(config.domains, config.urlPatterns)
   if (config.mode === 'block_domains_by_time') {
     draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
@@ -1165,7 +1230,7 @@ export function websiteConfigToAllowlistByTimeDraft(
   config: WebsiteConfig | null,
 ): AllowlistByTimeDraft {
   const draft = emptyAllowlistByTimeDraft()
-  if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus' || config.mode === 'block_search_keywords') return draft
   draft.domainsText = entriesToDomainsText(config.domains, config.urlPatterns)
   if (config.mode === 'allowlist_by_time') {
     draft.windows = timeWindowConfigToDraft(config.windowsByWeekday)
@@ -1175,7 +1240,7 @@ export function websiteConfigToAllowlistByTimeDraft(
 
 export function websiteConfigToTimeLimitDraft(config: WebsiteConfig | null): DomainTimeLimitDraft {
   const draft = emptyDomainTimeLimitDraft()
-  if (!config || config.mode === 'safe_search' || config.mode === 'focus') return draft
+  if (!config || config.mode === 'safe_search' || config.mode === 'focus' || config.mode === 'block_search_keywords') return draft
   draft.domainsText = entriesToDomainsText(config.domains, config.urlPatterns)
   if (config.mode === 'domain_time_limit' && config.minutes_per_day > 0) {
     draft.minutes = String(config.minutes_per_day)
@@ -1188,6 +1253,18 @@ export function websiteConfigToSafeSearchDraft(config: WebsiteConfig | null): Sa
     return { searchProviders: config.searchProviders, youtubeRestricted: config.youtubeRestricted }
   }
   return emptySafeSearchDraft()
+}
+
+export function websiteConfigToSearchKeywordsDraft(
+  config: WebsiteConfig | null,
+): SearchKeywordsDraft {
+  if (config?.mode !== 'block_search_keywords') return emptySearchKeywordsDraft()
+  return {
+    groups: [...(config.groups ?? [])],
+    // parseWebsiteConfig đã suy customKeywords cho rule cũ (= keywords);
+    // fallback ở đây chỉ phòng config dựng tay chưa qua parse.
+    customKeywords: [...(config.customKeywords ?? config.keywords)],
+  }
 }
 
 export function websiteConfigToFocusDraft(config: WebsiteConfig | null): FocusDraft {
@@ -1287,6 +1364,307 @@ export function buildSafeSearchConfig(draft: SafeSearchDraft): SafeSearchConfig 
     mode: 'safe_search',
     searchProviders: draft.searchProviders,
     youtubeRestricted: draft.youtubeRestricted,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Chặn từ khóa tìm kiếm (27/11/2026): chuẩn hoá + kiểm tra hợp lệ + chuyển
+// draft -> config. Từ khóa so khớp dạng "cụm từ tìm kiếm CHỨA từ khóa"
+// (extension thi hành), không phân biệt hoa/thường nên mọi từ khóa đều
+// lưu dạng chữ thường.
+// ---------------------------------------------------------------------------
+
+/** Số từ khóa tối đa trong một quy tắc chặn từ khóa tìm kiếm. */
+export const MAX_SEARCH_KEYWORDS = 200
+
+/** Độ dài tối đa của một từ khóa (ký tự). */
+export const MAX_SEARCH_KEYWORD_LENGTH = 60
+
+/** Id nhóm từ khóa theo chủ đề. Thứ tự trong KEYWORD_GROUPS là thứ tự hiển thị trên form. */
+export type KeywordGroupId = 'adult' | 'gambling' | 'violence' | 'games' | 'movies' | 'social'
+
+export interface KeywordGroup {
+  id: KeywordGroupId
+  label: string
+  /** Mô tả ngắn hiển thị dưới nhãn nhóm trên form. */
+  description: string
+  /** Từ khóa mẫu của nhóm (đã ở dạng chuẩn hoá: chữ thường, không trùng). */
+  keywords: string[]
+}
+
+/**
+ * Các NHÓM TỪ KHÓA MẪU theo chủ đề cho quy tắc "Chặn từ khóa tìm kiếm"
+ * (anh Tiến bổ sung 27/11/2026): phụ huynh TÍCH CHỌN cả nhóm thay vì
+ * thêm từng từ, rồi thêm từ khóa riêng của gia đình. Mọi nhóm đều là
+ * danh sách mẫu do SafePC gợi ý — phụ huynh tự sửa/xóa/thêm sau khi
+ * tích (từ của nhóm đã chọn nằm trong danh sách hiệu lực, bỏ tích nhóm
+ * là gỡ cả nhóm). Nhóm 'adult' giữ bộ từ mẫu gốc về nội dung người lớn
+ * của tính năng (11 từ) và bổ sung vài từ; các từ cờ bạc trong bộ mẫu
+ * gốc đã TÁCH thành nhóm riêng 'gambling' theo review 27/11/2026 (nhãn
+ * nhóm phải nói đúng nội dung — khớp cách tách danh mục domain
+ * adult/gambling/social ở phía Agent).
+ */
+export const KEYWORD_GROUPS: KeywordGroup[] = [
+  {
+    // Danh sách mẫu, phụ huynh tự sửa.
+    id: 'adult',
+    label: 'Nội dung người lớn (16+/18+)',
+    description:
+      'Danh sách mẫu gốc của SafePC: nội dung người lớn (16+/18+), song ngữ Anh/Việt.',
+    keywords: [
+      // Nội dung người lớn — tiếng Anh
+      'porn',
+      'xxx',
+      'sex',
+      'hentai',
+      'pornhub',
+      'xvideos',
+      // Nội dung người lớn — tiếng Việt
+      'phim sex',
+      'phim người lớn',
+      'khiêu dâm',
+      'đồi trụy',
+      'jav',
+      // Bổ sung khi chia nhóm theo chủ đề (27/11/2026)
+      'phim 18+',
+      'sex video',
+      'clip nóng',
+      'trang web đen',
+    ],
+  },
+  {
+    // Danh sách mẫu, phụ huynh tự sửa. Tách từ nhóm 'adult' theo
+    // review 27/11/2026 — trước đó lẫn trong bộ mẫu gốc.
+    id: 'gambling',
+    label: 'Cờ bạc / cá cược',
+    description: 'Từ khóa cá cược, nhà cái, soi kèo, tài xỉu, lô đề — song ngữ Anh/Việt.',
+    keywords: [
+      // Cờ bạc, cá cược — tiếng Anh
+      'casino',
+      'betting',
+      'slot game',
+      'poker online',
+      // Cờ bạc, cá cược — tiếng Việt
+      'cá cược',
+      'cờ bạc',
+      'nhà cái',
+      'soi kèo',
+      'tài xỉu',
+      'lô đề',
+    ],
+  },
+  {
+    // Danh sách mẫu, phụ huynh tự sửa.
+    id: 'violence',
+    label: 'Bạo lực',
+    description: 'Từ khóa về hành vi bạo lực, vũ khí và tự gây hại.',
+    keywords: [
+      // Tiếng Việt
+      'giết người',
+      'đâm chém',
+      'khủng bố',
+      'chế tạo bom',
+      'mua súng',
+      'tự tử',
+      'tự sát',
+      'đánh nhau',
+      'hành hung',
+      'bạo hành',
+      // Tiếng Anh
+      'violence',
+      'murder',
+      'suicide',
+      'terrorist',
+      'how to make a bomb',
+      'buy a gun',
+      'kill someone',
+      'school shooting',
+    ],
+  },
+  {
+    // Danh sách mẫu, phụ huynh tự sửa.
+    id: 'games',
+    label: 'Game',
+    description: 'Từ khóa tải/chơi/hack game, gồm tên các game phổ biến với trẻ em.',
+    keywords: [
+      // Tiếng Việt
+      'tải game',
+      'hack game',
+      'game online',
+      'game bài',
+      'chơi game',
+      'tải game miễn phí',
+      // Tên game phổ biến
+      'roblox',
+      'minecraft',
+      'free fire',
+      'liên quân',
+      'pubg',
+      'genshin impact',
+      'fortnite',
+      'among us',
+      'valorant',
+    ],
+  },
+  {
+    // Danh sách mẫu, phụ huynh tự sửa.
+    id: 'movies',
+    label: 'Phim',
+    description:
+      'Từ khóa xem/tải phim online phổ biến — gồm phim lậu, xem miễn phí và các cụm tìm phim thông dụng.',
+    keywords: [
+      'xem phim online',
+      'xem phim miễn phí',
+      'phim lậu',
+      'phimmoi',
+      'motphim',
+      'phim chiếu rạp',
+      'tải phim',
+      'xem phim full',
+      'phim vietsub',
+      'phim thuyết minh',
+      'phim bộ hay',
+      'phim lẻ hay',
+      'netflix free',
+    ],
+  },
+  {
+    // Danh sách mẫu, phụ huynh tự sửa.
+    id: 'social',
+    label: 'Mạng xã hội',
+    description: 'Tên các mạng xã hội và ứng dụng nhắn tin phổ biến.',
+    keywords: [
+      'facebook',
+      'tiktok',
+      'instagram',
+      'zalo',
+      'telegram',
+      'snapchat',
+      'twitter',
+      'discord',
+      'messenger',
+      'whatsapp',
+      'mạng xã hội',
+      'chat online',
+    ],
+  },
+]
+
+const KEYWORD_GROUP_ID_SET: ReadonlySet<string> = new Set(KEYWORD_GROUPS.map((g) => g.id))
+
+export function isKeywordGroupId(value: unknown): value is KeywordGroupId {
+  return typeof value === 'string' && KEYWORD_GROUP_ID_SET.has(value)
+}
+
+/** Nhãn hiển thị của một id nhóm. Id lạ thì hiện đúng id để không mất thông tin. */
+export function keywordGroupLabel(id: string): string {
+  return KEYWORD_GROUPS.find((g) => g.id === id)?.label ?? id
+}
+
+/**
+ * Đọc mảng groups đã lưu: chỉ giữ id đã biết, bỏ trùng, sắp theo thứ tự
+ * của KEYWORD_GROUPS (tolerant reader như readStoredCategories).
+ */
+export function readStoredKeywordGroups(value: unknown): KeywordGroupId[] {
+  if (!Array.isArray(value)) return []
+  const kept = new Set<KeywordGroupId>()
+  for (const item of value) {
+    if (isKeywordGroupId(item)) kept.add(item)
+  }
+  return KEYWORD_GROUPS.map((g) => g.id).filter((id) => kept.has(id))
+}
+
+/** Hợp nhất từ khóa của các nhóm đã chọn (theo thứ tự nhóm, bỏ trùng). */
+export function keywordsOfGroups(groups: readonly KeywordGroupId[]): string[] {
+  const seen = new Set<string>()
+  const keywords: string[] = []
+  for (const group of KEYWORD_GROUPS) {
+    if (!groups.includes(group.id)) continue
+    for (const keyword of group.keywords) {
+      if (!seen.has(keyword)) {
+        seen.add(keyword)
+        keywords.push(keyword)
+      }
+    }
+  }
+  return keywords
+}
+
+/**
+ * Danh sách từ khóa HIỆU LỰC của một quy tắc chặn từ khóa tìm kiếm:
+ * hợp nhất từ khóa các nhóm đã chọn + từ khóa riêng, chuẩn hoá như lúc
+ * lưu (trim, chữ thường, bỏ rỗng, bỏ trùng). Đây là giá trị ghi vào
+ * khóa `keywords` của config — backend chỉ đọc khóa này.
+ */
+export function effectiveSearchKeywords(
+  groups: readonly KeywordGroupId[],
+  customKeywords: readonly string[],
+): string[] {
+  return normalizeSearchKeywords([...keywordsOfGroups(groups), ...customKeywords])
+}
+
+/**
+ * Danh sách từ khóa MẪU gốc của tính năng = từ khóa của nhóm 'adult'
+ * trong KEYWORD_GROUPS. Giữ tên này để code cũ (mẫu sẵn, gợi ý) không
+ * phải đổi; nội dung là cùng một mảng với nhóm adult.
+ */
+export const SAMPLE_SEARCH_KEYWORDS: string[] =
+  KEYWORD_GROUPS.find((g) => g.id === 'adult')?.keywords ?? []
+
+/** Chuẩn hoá một từ khóa: bỏ khoảng trắng hai đầu + chữ thường. */
+export function normalizeSearchKeyword(raw: string): string {
+  return raw.trim().toLowerCase()
+}
+
+/**
+ * Chuẩn hoá danh sách từ khóa khi lưu: trim, chữ thường, bỏ rỗng, bỏ
+ * trùng (giữ thứ tự xuất hiện đầu tiên). Không tự cắt số lượng hay độ
+ * dài — vượt trần là lỗi ở `validateSearchKeywordsDraft` để phụ huynh
+ * tự sửa, không lặng lẽ mất từ khóa.
+ */
+export function normalizeSearchKeywords(raw: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const keywords: string[] = []
+  for (const item of raw) {
+    const keyword = normalizeSearchKeyword(item)
+    if (keyword === '' || seen.has(keyword)) continue
+    seen.add(keyword)
+    keywords.push(keyword)
+  }
+  return keywords
+}
+
+export function validateSearchKeywordsDraft(draft: SearchKeywordsDraft): string | null {
+  const custom = normalizeSearchKeywords(draft.customKeywords)
+  if (custom.length > MAX_SEARCH_KEYWORDS) {
+    return `Tối đa ${MAX_SEARCH_KEYWORDS} từ khóa riêng trong một quy tắc (đang có ${custom.length}). Hãy xóa bớt từ khóa riêng.`
+  }
+  for (const keyword of custom) {
+    if (keyword.length > MAX_SEARCH_KEYWORD_LENGTH) {
+      return `Từ khóa “${keyword}” quá dài (tối đa ${MAX_SEARCH_KEYWORD_LENGTH} ký tự). Hãy rút gọn từ khóa này.`
+    }
+  }
+  const effective = effectiveSearchKeywords(draft.groups, draft.customKeywords)
+  if (effective.length === 0) {
+    return 'Hãy chọn ít nhất một nhóm từ khóa hoặc thêm ít nhất một từ khóa riêng.'
+  }
+  if (effective.length > MAX_SEARCH_KEYWORDS) {
+    return `Tổng số từ khóa sẽ bị chặn là ${effective.length}, vượt quá tối đa ${MAX_SEARCH_KEYWORDS} từ khóa trong một quy tắc. Hãy bỏ chọn một nhóm hoặc xóa bớt từ khóa riêng.`
+  }
+  return null
+}
+
+export function buildBlockSearchKeywordsConfig(
+  draft: SearchKeywordsDraft,
+): BlockSearchKeywordsConfig {
+  const groups = readStoredKeywordGroups(draft.groups)
+  const customKeywords = normalizeSearchKeywords(draft.customKeywords)
+  return {
+    mode: 'block_search_keywords',
+    // keywords = danh sách hiệu lực duy nhất backend đọc (hợp đồng v2).
+    keywords: effectiveSearchKeywords(groups, customKeywords),
+    groups,
+    customKeywords,
   }
 }
 

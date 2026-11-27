@@ -4,6 +4,7 @@ import {
   groupWeekdays,
   hhmmToMinutes,
   domainCategoryLabel,
+  keywordGroupLabel,
   parseAppConfig,
   parseBedtimeConfig,
   parseDailyLimitConfig,
@@ -406,6 +407,28 @@ function describeWebsiteConfig(parsed: WebsiteConfig): string[] {
       if (parts.length === 0) return ['Tìm kiếm an toàn: cả hai tùy chọn đều đang tắt.']
       return [`Tìm kiếm an toàn: ${parts.join(', ')}`]
     }
+    case 'block_search_keywords': {
+      const groups = parsed.groups ?? []
+      // Rule v2: từ riêng nằm ở customKeywords. Rule cũ (chưa qua parse
+      // v2) không có customKeywords thì toàn bộ keywords là từ riêng.
+      const customCount =
+        parsed.customKeywords !== undefined
+          ? parsed.customKeywords.length
+          : groups.length > 0
+            ? 0
+            : parsed.keywords.length
+      if (parsed.keywords.length === 0) {
+        return ['Chặn từ khóa tìm kiếm (chưa chọn nhóm/từ khóa nào).']
+      }
+      const parts: string[] = []
+      if (groups.length > 0) {
+        parts.push(`nhóm ${groups.map((id) => keywordGroupLabel(id)).join(', ')}`)
+      }
+      if (customCount > 0) parts.push(`${customCount} từ riêng`)
+      return [
+        `Chặn từ khóa tìm kiếm: ${parts.join(' + ')} (tổng ${parsed.keywords.length} từ khóa)`,
+      ]
+    }
     case 'focus': {
       const lines: string[] = []
       if (parsed.allowedDomains.length === 0) {
@@ -520,7 +543,8 @@ export function describeRuleConfig(rule: Rule): string[] {
     'end_time', 'end', 'bedtime_end', 'to',
     'app_name', 'app', 'name', 'process_name', 'action',
     'domain', 'website', 'url', 'host',
-    'mode', 'domains', 'urlPatterns', 'categories', 'searchProviders', 'youtubeRestricted',
+    'mode', 'domains', 'urlPatterns', 'categories', 'searchProviders', 'youtubeRestricted', 'keywords',
+    'groups', 'customKeywords',
     'apps', 'minutesPerDay', 'workMinutes', 'breakMinutes', 'allowedApps', 'allowedDomains',
   ])
   for (const [key, value] of Object.entries(config)) {
@@ -669,4 +693,20 @@ export function isMissingColumnError(error: unknown, column: string): boolean {
   if (!qualified.test(message)) return false
   if (typeof record.code === 'string' && record.code === '42703') return true
   return /does not exist/i.test(message)
+}
+
+/**
+ * Lỗi này có phải là "bảng chưa tồn tại" (migration chưa áp dụng) cho
+ * đúng `table` không? PostgREST báo mã PGRST205 kèm thông điệp "Could
+ * not find the table '<schema>.<bảng>' in the schema cache". Chỉ kết
+ * luận khi tên bảng xuất hiện trong thông điệp, để lỗi ở bảng khác
+ * không bị nhận nhầm thành thiếu migration.
+ */
+export function isMissingTableError(error: unknown, table: string): boolean {
+  if (!error || typeof error !== 'object') return false
+  const record = error as { message?: unknown; code?: unknown }
+  const message = typeof record.message === 'string' ? record.message : ''
+  if (!message.includes(table)) return false
+  if (record.code === 'PGRST205') return true
+  return /does not exist|schema cache/i.test(message)
 }

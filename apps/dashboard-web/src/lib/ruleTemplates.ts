@@ -7,6 +7,7 @@
 // luôn có nhãn chữ đi kèm, không dùng màu làm kênh thông tin duy nhất.
 
 import { ruleTypeLabel } from './format'
+import { keywordsOfGroups } from './ruleConfig'
 import type { Rule, RuleType } from './types'
 
 // ---------------------------------------------------------------------------
@@ -210,6 +211,34 @@ export function buildEdgeOnlyTemplateItems(): RuleTemplateItem[] {
       config: {
         mode: 'app_block',
         apps: KNOWN_BROWSERS.map((browser) => ({ exe: browser.exe, name: browser.name })),
+      },
+    },
+  ]
+}
+
+// ---------------------------------------------------------------------------
+// Mẫu sẵn "Chặn từ khóa tìm kiếm" (27/11/2026): tạo một quy tắc website
+// mode block_search_keywords với nhóm chủ đề 'adult' (Nội dung người lớn
+// 16+/18+) ĐÃ TÍCH SẴN — khớp mặc định kiểu Family Safety — và không có
+// từ khóa riêng; `keywords` là danh sách hiệu lực của nhóm adult (xem
+// KEYWORD_GROUPS ở lib/ruleConfig.ts). Phụ huynh xác nhận 2 bước như
+// các mẫu sẵn khác rồi tự sửa (tích thêm nhóm khác/thêm từ riêng) trong
+// quy tắc đã tạo.
+// ---------------------------------------------------------------------------
+
+export const SEARCH_KEYWORDS_TEMPLATE_NAME = 'Chặn từ khóa tìm kiếm'
+
+/** Quy tắc duy nhất của mẫu "Chặn từ khóa tìm kiếm": nhóm 'adult' bật sẵn, chặn tìm kiếm chứa từ khóa của nhóm trên 5 công cụ tìm kiếm. */
+export function buildSearchKeywordsTemplateItems(): RuleTemplateItem[] {
+  return [
+    {
+      type: 'website',
+      name: SEARCH_KEYWORDS_TEMPLATE_NAME,
+      config: {
+        mode: 'block_search_keywords',
+        keywords: keywordsOfGroups(['adult']),
+        groups: ['adult'],
+        customKeywords: [],
       },
     },
   ]
