@@ -165,21 +165,17 @@ export default function TimeBankTab({ childId, childName }: { childId: string; c
     if (Number.isInteger(parsed)) setMinutes(parsed)
   }
 
-  // TODO (Sprint 5, migration 26 — CHƯA LÀM, cần migration mới, ngoài
-  // phạm vi đợt Dashboard): RPC safepc_grant_time_bank / safepc_void_time_bank_grant
-  // (migration 13) chưa biết Sprint 5 — insert commands KHÔNG có child_id
-  // và chỉ nhắm máy có d.child_id = p_child_id, nên con chỉ-gắn trên máy
-  // chung không nhận được giờ thưởng (devices_notified đếm thiếu), và bước
-  // kiểm tra "ghi đè mới nhất" ở void không lọc child_id nên có thể GIỮ
-  // LẠI oan lệnh hủy: ghi đè mới nhất trên máy chung thuộc con khác thì
-  // void không gửi cancel, bonus của con bị thu hồi vẫn còn hiệu lực trên
-  // máy chung tới hết ngày (không phải hủy nhầm bonus của con khác).
-  // insert child_id = p_child_id; tập máy đích = d.child_id = p_child_id
-  // UNION device_child_accounts.child_id = p_child_id; bước kiểm tra ở
-  // void thêm điều kiện (child_id = v_grant.child_id OR child_id IS NULL).
-  // Tới khi đó, tab này đã đếm đúng máy (mặc định + gắn thêm) và hiện
-  // ghi chú cảnh báo ở trên; đừng xóa ghi chú đó trước khi migration 26
-  // được áp dụng.
+  // Migration 26 ĐÃ VIẾT (backend/supabase/migrations/
+  // 20261121110000_sprint5_time_bank_child_scope.sql) theo đúng thiết
+  // kế TODO cũ ở đây: hai RPC safepc_grant_time_bank /
+  // safepc_void_time_bank_grant (migration 13) được CREATE OR REPLACE
+  // để (1) lệnh insert mang child_id = p_child_id, (2) tập máy đích =
+  // d.child_id = p_child_id UNION device_child_accounts.child_id =
+  // p_child_id, (3) bước kiểm tra "ghi đè mới nhất" ở void thêm điều
+  // kiện (child_id = v_grant.child_id OR child_id IS NULL). Chữ ký RPC
+  // không đổi nên lời gọi ở tab này không phải sửa. Ghi chú cảnh báo
+  // trên giao diện ("cần migration 26") GIỮ NGUYÊN tới khi migration
+  // 26 được ÁP thật trên server — file đã viết không đồng nghĩa đã áp.
   const handleGrant = async () => {
     if (!supabase || !user) return
     const trimmedReason = reason.trim()
