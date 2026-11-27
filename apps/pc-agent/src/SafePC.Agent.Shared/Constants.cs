@@ -111,6 +111,19 @@ public static class StateKeys
     /// <summary>Lần cuối đã gửi sự kiện can thiệp clock_drift lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ.</summary>
     public const string TamperClockDriftLastSent = "tamper_clock_drift_last_sent";
 
+    /// <summary>
+    /// Độ lệch giờ tin cậy tại lần đồng bộ server thành công gần nhất
+    /// (migration 31, PRD §2.14): số mili-giây (server − máy) dạng chuỗi
+    /// nguyên có dấu. Sau khởi động lại chưa có mạng, Service nạp lại
+    /// offset này để giờ thi hành vẫn bám lần đồng bộ cuối (trạng thái
+    /// "chưa kiểm chứng" — xem TrustedClock). Vắng mặt = chưa từng đồng
+    /// bộ trên máy này.
+    /// </summary>
+    public const string TrustedClockOffsetMs = "trusted_clock_offset_ms";
+
+    /// <summary>Múi giờ gia đình (tên IANA) nhận qua heartbeat gần nhất (migration 31); dùng lại sau khởi động lại khi chưa có mạng. Vắng mặt = mặc định Asia/Ho_Chi_Minh.</summary>
+    public const string TrustedClockTimezone = "trusted_clock_timezone";
+
     /// <summary>Lần cuối đã gửi sự kiện can thiệp agent_restart lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ.</summary>
     public const string TamperRestartLastSent = "tamper_restart_last_sent";
 

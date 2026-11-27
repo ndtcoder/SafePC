@@ -77,6 +77,71 @@ public sealed class Rule
 
     [JsonPropertyName("created_at")]
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>Tên luật phụ huynh đặt (migration 9; các RPC fetch rules
+    /// trả thêm từ migration 31). Dùng làm BẢN CHỤP tên luật trong dòng
+    /// theo dõi luật không chặn (<see cref="RuleObservationRecord"/>) —
+    /// luật bị đổi tên/xóa thì dòng cũ vẫn hiện tên tại thời điểm ghi.
+    /// Server cũ (chưa áp migration 31) không trả trường này → null,
+    /// phía ghi nhận thay bằng nhãn suy từ mode/type.</summary>
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
+/// <summary>Một dòng GỘP theo dõi khi luật không chặn (migration 31,
+/// bảng <c>rule_observations</c>), khớp phần tử của mảng
+/// <c>p_observations</c> trong RPC <c>safepc_push_rule_observations</c>.
+/// Ngữ nghĩa (PRD §2.15): con dùng app/domain/giờ thuộc diện một luật
+/// CẤM nhưng luật không chặn tại thời điểm đó — vì luật đang tắt
+/// (context <c>rule_disabled</c>), vì đang được cho phép tạm thời
+/// (<c>temp_allowed</c>) hoặc vì không chặn được
+/// (<c>unenforceable</c>). Agent gộp phía máy theo (luật, ngày theo
+/// giờ tin cậy + múi giờ gia đình, đối tượng, ngữ cảnh) rồi đẩy định
+/// kỳ; server cộng dồn tiếp theo cùng khóa. RuleName/RuleMode là BẢN
+/// CHỤP tại thời điểm ghi: sửa luật → ghi theo thông số mới, dòng cũ
+/// giữ bản chụp cũ; xóa luật → RuleId thành null phía server nhưng
+/// dòng vẫn còn tới hạn giữ 90 ngày. KHÔNG phải loại dữ liệu mới:
+/// suy ra từ mẫu sử dụng Service vốn đã thu.</summary>
+public sealed class RuleObservationRecord
+{
+    [JsonPropertyName("rule_id")]
+    public Guid? RuleId { get; set; }
+
+    [JsonPropertyName("rule_name")]
+    public string RuleName { get; set; } = string.Empty;
+
+    [JsonPropertyName("rule_mode")]
+    public string RuleMode { get; set; } = string.Empty;
+
+    /// <summary>Đối tượng: tên exe (app), domain (web), hoặc tên app
+    /// đang dùng / "Máy tính" (luật giờ).</summary>
+    [JsonPropertyName("target")]
+    public string Target { get; set; } = string.Empty;
+
+    /// <summary>'rule_disabled' | 'temp_allowed' | 'unenforceable'.</summary>
+    [JsonPropertyName("context")]
+    public string Context { get; set; } = string.Empty;
+
+    /// <summary>Ngày theo giờ tin cậy quy đổi múi giờ gia đình, dạng yyyy-MM-dd.</summary>
+    [JsonPropertyName("day")]
+    public string Day { get; set; } = string.Empty;
+
+    [JsonPropertyName("occurrence_count")]
+    public int OccurrenceCount { get; set; }
+
+    [JsonPropertyName("total_seconds")]
+    public int TotalSeconds { get; set; }
+
+    [JsonPropertyName("first_seen_at")]
+    public DateTimeOffset FirstSeenAt { get; set; }
+
+    [JsonPropertyName("last_seen_at")]
+    public DateTimeOffset LastSeenAt { get; set; }
+
+    /// <summary>SID tài khoản Windows của mẫu (phân giải con phía
+    /// server như các RPC Sprint 5); null = con mặc định của máy.</summary>
+    [JsonPropertyName("windows_sid")]
+    public string? WindowsSid { get; set; }
 }
 
 /// <summary>Khớp bảng <c>commands</c> (lệnh phụ huynh gửi xuống máy con).
