@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
 import InstallGuidePage from './pages/InstallGuidePage'
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage'
+import ChildChatPage from './pages/ChildChatPage'
 import TodayPage from './pages/TodayPage'
 import DevicesPage from './pages/DevicesPage'
 import RulesPage from './pages/RulesPage'
@@ -54,6 +55,10 @@ export default function App() {
       {/* Trang chấp nhận lời mời nằm ngoài RequireAuth: người được mời có
           thể chưa đăng nhập, thậm chí chưa có tài khoản. */}
       <Route path="/moi/:token" element={<AcceptInvitePage />} />
+      {/* Trang chat của con nằm ngoài RequireAuth: con không có tài
+          khoản — quyền truy cập là token phiên 12 giờ trong fragment
+          URL do Service trên máy con cấp (migration 29). */}
+      <Route path="/nhan-tin" element={<ChildChatPage />} />
       <Route
         element={
           <RequireAuth>
