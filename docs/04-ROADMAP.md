@@ -101,20 +101,20 @@ Trạng thái: v1 cho Web/PWA đã xây ở cây local ngày 27/11/2026 (migrati
 - [ ] Kiểm chứng trên điện thoại thật: bật công tắc trên Dashboard (cài PWA lên màn hình chính trên iOS thì mới nhận push), con gửi tin → push tới trong tối đa ~5 phút dù Dashboard đang đóng; bấm push mở đúng tab Nhắn tin.
 - [ ] Android/FCM: để giai đoạn app Android — dùng chung bảng `push_subscriptions` (platform 'android') và cùng Edge Function, chỉ thêm đường gửi FCM.
 
-### Giờ tin cậy + theo dõi khi luật không chặn (anh Tiến yêu cầu 27/11/2026 — đã ghi thiết kế, chờ xếp đợt) ⏳
+### Giờ tin cậy + theo dõi khi luật không chặn (anh Tiến yêu cầu 27/11/2026 — ĐÃ XÂY ở cây local 27/11/2026, chờ áp migration 31 + kiểm chứng máy thật) 🔨
 
 Chi tiết thiết kế: PRD §2.14 (giờ tin cậy) + §2.15 (theo dõi luật), AMENDMENTS A-17 + A-18. Hai tính năng độc lập, có thể làm cùng một đợt Agent vì đều đụng tới vòng đánh giá luật và publisher.
 
 **Giờ tin cậy (PRD §2.14):**
-- [ ] Cài đặt "Múi giờ gia đình" trên Dashboard (mặc định Asia/Ho_Chi_Minh) + cột cài đặt phía backend (đọc qua đường đồng bộ luật hiện có).
-- [ ] Agent: đồng hồ tin cậy = giờ server lần đồng bộ cuối + TickCount64; mọi đánh giá luật theo giờ + ranh giới ngày chuyển sang giờ tin cậy quy đổi múi giờ gia đình.
-- [ ] Lệch > 120 giây → sự kiện `clock_drift` (đã có) + vẫn thi hành bằng giờ tin cậy; heartbeat báo độ lệch để thẻ thiết bị hiện cảnh báo.
+- [x] Cài đặt "Múi giờ gia đình" trên Dashboard (mặc định Asia/Ho_Chi_Minh) + cột cài đặt phía backend (đọc qua đường đồng bộ luật hiện có). — Đã xây: cột `families.timezone` (migration 31), thẻ "Múi giờ gia đình" ở trang Hồ sơ; đường xuống Agent là heartbeat (trường `family_timezone`), không phải đường đồng bộ luật — ít xâm lấn hơn và tới sớm hơn (mỗi 60 giây).
+- [x] Agent: đồng hồ tin cậy = giờ server lần đồng bộ cuối + TickCount64; mọi đánh giá luật theo giờ + ranh giới ngày chuyển sang giờ tin cậy quy đổi múi giờ gia đình. — Đã xây: lớp TrustedClock; vòng tick, thi hành app ngay, handler ghi đè, RuleEngine, ranh giới ngày usage đều dùng giờ tin cậy. Extension vẫn tự đánh giá khung giờ domain bằng giờ trình duyệt (ngoài phạm vi đợt này).
+- [x] Lệch > 120 giây → sự kiện `clock_drift` (đã có) + vẫn thi hành bằng giờ tin cậy; heartbeat báo độ lệch để thẻ thiết bị hiện cảnh báo. — Đã xây: ngưỡng đổi từ 5 phút xuống 120 giây, payload thêm `drift_seconds`; độ lệch + cờ đã-kiểm-chứng đi trong snapshot thi hành (không đổi chữ ký heartbeat), thẻ thiết bị hiện cảnh báo khi lệch > 120 giây.
 - [ ] Kiểm chứng máy thật: chỉnh giờ hệ thống ±, đổi múi giờ Windows, mất mạng qua đêm, khởi động lại khi chưa có mạng.
 
 **Theo dõi khi luật không chặn (PRD §2.15):**
-- [ ] Migration 31: bảng `rule_observations` (gộp theo luật/ngày/đối tượng, bản chụp tên + mode của luật, ngữ cảnh rule_disabled/temp_allowed/unenforceable, giữ 90 ngày, RLS đọc theo gia đình) + RPC đẩy theo token thiết bị + bổ sung vào xuất/xóa dữ liệu của con.
-- [ ] Publisher phát thêm `monitorRules` (luật đang tắt ở dạng chỉ-theo-dõi + luật đang bật để gắn ngữ cảnh tạm-cho-phép); Service đối chiếu mẫu sử dụng đã thu, gộp và đẩy observations.
-- [ ] Dashboard: công tắc "Theo dõi cả khi luật không chặn" trong form luật (mặc định bật), mục mới trong Báo cáo tuần + tóm tắt trên thẻ luật; cập nhật docs/09 + trang Chính sách riêng tư.
+- [x] Migration 31: bảng `rule_observations` (gộp theo luật/ngày/đối tượng, bản chụp tên + mode của luật, ngữ cảnh rule_disabled/temp_allowed/unenforceable, giữ 90 ngày, RLS đọc theo gia đình) + RPC đẩy theo token thiết bị + bổ sung vào xuất/xóa dữ liệu của con. — Đã viết + harness PGlite m31 đạt 40/40; CHƯA áp lên server.
+- [x] Publisher phát thêm `monitorRules` (luật đang tắt ở dạng chỉ-theo-dõi + luật đang bật để gắn ngữ cảnh tạm-cho-phép); Service đối chiếu mẫu sử dụng đã thu, gộp và đẩy observations. — Đã xây với một điều chỉnh: `monitorRules` chỉ chứa luật ĐANG TẮT; ngữ cảnh tạm-cho-phép được đối chiếu thẳng trên cache thi hành + trạng thái ghi đè (không cần đưa luật đang bật vào monitorRules). Ngữ cảnh `unenforceable` chỉ phát sinh cho trường hợp chắc chắn: lượt web thuộc diện luật chặn domain đang bật trong lúc extension mất dấu theo heartbeat.
+- [ ] Dashboard: công tắc "Theo dõi cả khi luật không chặn" trong form luật (mặc định bật), mục mới trong Báo cáo tuần + tóm tắt trên thẻ luật; cập nhật docs/09 + trang Chính sách riêng tư. — Đã xong: công tắc trong form luật, mục "Hoạt động thuộc diện luật đang không chặn" trong Báo cáo tuần, mục xuất dữ liệu con, docs/09 + trang Chính sách riêng tư. CHƯA làm: tóm tắt tuần này trên thẻ luật (để đợt sau).
 - [ ] Kiểm chứng máy thật: tắt luật cấm domain rồi vào thử; mở khóa tạm thời rồi dùng app bị cấm; sửa luật giữa chừng (dòng cũ giữ bản chụp cũ); xóa luật (dừng ghi).
 
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)

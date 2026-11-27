@@ -19,12 +19,13 @@ không dùng dữ liệu để huấn luyện AI.
 | Tên ứng dụng + thời lượng dùng (giây) | Tính giờ dùng, thi hành giới hạn theo ứng dụng, báo cáo tuần | Chỉ tên process (VD: chrome.exe, notepad.exe). **Không** tiêu đề cửa sổ, **không** nội dung trong ứng dụng. |
 | Tên miền + đường dẫn web đã xem + thời lượng (giây) | Đếm giờ web, thi hành chặn website, báo cáo tuần | Chỉ domain + đường dẫn (VD: youtube.com/watch). **Đã bỏ phần truy vấn (?...) và fragment (#...)** — không lưu link đầy đủ, không đọc nội dung trang. Lượt web bị chặn chỉ lưu tên miền, không có đường dẫn. |
 | Cụm từ tìm kiếm trên các công cụ tìm kiếm (Google, Bing, DuckDuckGo, Yahoo, Cốc Cốc) + dấu hiệu bị chặn hay không | Thi hành chặn từ khóa tìm kiếm, thống kê trong báo cáo tuần | Chỉ cụm từ con gõ vào ô tìm kiếm của các công cụ này mới được lưu (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-14). Phần truy vấn của mọi link khác vẫn bị bỏ như lịch sử web ở trên. |
+| Ghi nhận khi luật không chặn (tên luật do phụ huynh đặt, ứng dụng/trang web/khung giờ thuộc diện luật, số lần, tổng thời lượng, ngữ cảnh luật đang tắt / được cho phép tạm thời / không chặn được) | Báo cáo tuần cho phụ huynh: thấy hoạt động thuộc diện luật mà luật không chặn lúc đó | **Không phải loại dữ liệu mới**: suy ra từ dữ liệu sử dụng vốn đã thu ở các hàng trên, chỉ gắn thêm liên kết tới luật (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-18). Giữ 90 ngày; có trong xuất/xóa dữ liệu của con. |
 | Tin nhắn giữa phụ huynh và con trong SafePC (nội dung + mốc đã đọc) | Kênh liên lạc hai chiều trong gia đình ngay trong sản phẩm, để con khỏi dùng ứng dụng nhắn tin bên ngoài | Nội dung do CHÍNH phụ huynh và con chủ động gửi trong kênh của SafePC (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-15) — khác với nội dung chat ở ứng dụng khác, mà SafePC không đọc (mục 2). Tin nhắn có trong file xuất dữ liệu của con và bị xóa khi xóa dữ liệu của con. |
 | Đăng ký thông báo đẩy của phụ huynh (điểm nhận push trên trình duyệt/thiết bị + khóa công khai mã hóa của điểm nhận) | Gửi thông báo đẩy tới thiết bị của phụ huynh khi con nhắn tin hoặc gửi yêu cầu mới, kể cả khi Dashboard đang đóng | Chỉ có khi phụ huynh tự BẬT công tắc "Thông báo đẩy" trên Dashboard (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-16). Đây là dữ liệu của PHỤ HUYNH, không phải của con. Tắt công tắc thì đăng ký bị xóa ngay. Thông báo đẩy hiện tiêu đề + đoạn xem trước tối đa 60 ký tự của tin nhắn mới nhất; nội dung push được mã hóa theo chuẩn Web Push, chỉ thiết bị của phụ huynh giải mã được. |
 | Quy tắc phụ huynh đặt (giờ giấc, danh sách chặn, giới hạn) | Thi hành trên máy con | Do phụ huynh nhập trên Dashboard. |
 | Trạng thái máy (online/offline, đang khóa hay mở, phiên bản Agent) | Hiển thị trên Dashboard, cảnh báo khi máy offline | Heartbeat mỗi 60 giây. |
 | Yêu cầu của con (xin thêm giờ, xin mở ứng dụng/trang web) + quyết định của phụ huynh | Duyệt yêu cầu, nhật ký hoạt động | Nội dung do con/phụ huynh tự nhập (số phút, lý do ngắn). |
-| Sự kiện can thiệp (đổi giờ hệ thống, Agent/Tray/extension dừng bất thường) | Cảnh báo phụ huynh | Chỉ loại sự kiện + thời điểm, không nội dung. |
+| Sự kiện can thiệp (đổi giờ hệ thống, Agent/Tray/extension dừng bất thường) | Cảnh báo phụ huynh | Chỉ loại sự kiện + thời điểm, không nội dung. Ghi chú giờ tin cậy (AMENDMENTS A-17): luật theo giờ được thi hành bằng giờ máy chủ đã đồng bộ quy đổi sang múi giờ gia đình do phụ huynh đặt — con chỉnh giờ hệ thống hay đổi múi giờ trên máy không thay đổi được thi hành, chỉ tạo sự kiện can thiệp khi lệch quá 120 giây. |
 | Email phụ huynh, tên hồ sơ con, tên máy | Đăng nhập, phân biệt các con/máy | Tên con do phụ huynh đặt (tên hiển thị, không bắt buộc tên thật). |
 
 ## 2. SafePC KHÔNG thu thập
@@ -58,6 +59,8 @@ không dùng dữ liệu để huấn luyện AI.
 - **Lịch sử web** (domain + đường dẫn): giữ **90 ngày**, tự xóa các hàng
   cũ hơn mỗi ngày.
 - **Từ khóa tìm kiếm** (cụm từ trên các công cụ tìm kiếm): giữ **90 ngày**,
+  tự xóa các hàng cũ hơn mỗi ngày.
+- **Ghi nhận khi luật không chặn** (bảng rule_observations): giữ **90 ngày**,
   tự xóa các hàng cũ hơn mỗi ngày.
 - **Tin nhắn trong SafePC**: giữ tới khi phụ huynh xóa dữ liệu của con
   (không tự hết hạn theo ngày như lịch sử web).
