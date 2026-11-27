@@ -28,7 +28,11 @@ namespace SafePC.Agent.Service;
 /// cộng thêm, Version vẫn là 1. Đợt danh mục chặn thêm <c>blockedCategories</c>
 /// (domain theo từng danh mục đã chọn, hợp từ mọi rule mode
 /// 'block_domains' mang mảng 'categories'; khóa vắng mặt khi không có
-/// danh mục nào) — cũng là trường cộng thêm, Version vẫn là 1. Domain
+/// danh mục nào) — cũng là trường cộng thêm, Version vẫn là 1. Đợt kiểm
+/// duyệt từ khóa tìm kiếm (27/11/2026) thêm <c>searchGuard</c> (từ khóa
+/// cấm tìm kiếm, hợp từ mọi rule mode 'block_search_keywords', chuẩn hóa
+/// trim + chữ thường + bỏ trùng; khóa vắng mặt khi không có rule nào) —
+/// cũng là trường cộng thêm, Version vẫn là 1. Domain
 /// danh mục đồng thời nằm trong <c>blocked</c> (cùng mức ưu tiên chặn 30
 /// phía extension); <c>blockedCategories</c> chỉ để extension hiện đúng
 /// lý do theo danh mục trên trang chặn.
@@ -61,6 +65,9 @@ public sealed class DomainRulesPublisher
 
     /// <summary>File JSONL NativeHost ghi yêu cầu xin mở domain vào (extension 0.1.9), Service đọc trong chu kỳ poll lệnh.</summary>
     public static string DomainRequestsFilePath => Path.Combine(SharedDirectory, "domain_requests.jsonl");
+
+    /// <summary>File JSONL NativeHost ghi cụm từ tìm kiếm vào (extension 0.1.11), Service đọc trong chu kỳ flush usage.</summary>
+    public static string SearchTermsFilePath => Path.Combine(SharedDirectory, "search_terms.jsonl");
 
     /// <summary>File NativeHost ghi đè mỗi khi extension liên hệ (chỉ chứa timestamp UTC ISO), Service đọc để báo extension còn sống.</summary>
     public static string ExtensionHeartbeatFilePath => Path.Combine(SharedDirectory, "extension_heartbeat.txt");
@@ -143,7 +150,8 @@ public sealed class DomainRulesPublisher
                 + (file.AllowlistByTime is null ? "không có allowlist theo giờ" : file.AllowlistByTime.Count + " allowlist theo giờ") + ", "
                 + file.DomainLimits.Count + " giới hạn theo domain, "
                 + "tempAllow " + file.TempAllow.Count + ", tempBlock " + file.TempBlock.Count + ", "
-                + (file.Focus is null ? "không có focus" : "focus " + file.Focus.AllowedDomains.Count + " domain cho phép") + ".");
+                + (file.Focus is null ? "không có focus" : "focus " + file.Focus.AllowedDomains.Count + " domain cho phép") + ", "
+                + (file.SearchGuard is null ? "không có searchGuard" : "searchGuard " + file.SearchGuard.BlockedKeywords.Count + " từ khóa cấm") + ".");
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -176,6 +184,12 @@ public sealed class DomainRulesPublisher
         // block_domains (xem AddRuleCategories). Sau vòng lặp, domain
         // danh mục hợp vào tập chặn chung + xuất riêng theo danh mục.
         var categoryDomains = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+        // Kiểm duyệt từ khóa tìm kiếm (27/11/2026): hợp từ khóa cấm từ
+        // mọi rule mode 'block_search_keywords' đang hiệu lực của con
+        // đang xét — đã chuẩn hóa (trim + chữ thường) ngay khi đọc nên
+        // tập này tự bỏ trùng (xem AddRuleSearchKeywords).
+        var searchKeywords = new HashSet<string>(StringComparer.Ordinal);
         HashSet<string>? allowlist = null;
         bool safeSearch = false;
         bool youtubeRestricted = false;
@@ -300,6 +314,13 @@ public sealed class DomainRulesPublisher
                     youtubeRestricted |= TryGetBoolOrDefault(config, "youtubeRestricted", defaultValue: true);
                     break;
 
+                case "block_search_keywords":
+                    // Kiểm duyệt từ khóa tìm kiếm: rule chỉ mang mảng
+                    // keywords; từ khóa hợp vào tập chung, xuất qua
+                    // searchGuard sau vòng lặp (null khi tập rỗng).
+                    AddRuleSearchKeywords(searchKeywords, config);
+                    break;
+
                 case "focus":
                 {
                     Dictionary<string, List<TimeRangeEntry>>? windows = ParseWindowsByWeekday(config);
@@ -354,6 +375,16 @@ public sealed class DomainRulesPublisher
 
         file.Blocked = blocked.OrderBy(d => d, StringComparer.Ordinal).ToList();
         file.BlockedCategories = blockedCategories;
+        // searchGuard: null khi không có rule block_search_keywords nào
+        // đang hiệu lực (hoặc mọi từ khóa đều không hợp lệ) — khóa JSON
+        // được BỎ HOÀN TOÀN khi null (WhenWritingNull, cùng mẫu
+        // blockedCategories) để extension cũ không thấy khóa lạ.
+        file.SearchGuard = searchKeywords.Count == 0
+            ? null
+            : new SearchGuardEntry
+            {
+                BlockedKeywords = searchKeywords.OrderBy(k => k, StringComparer.Ordinal).ToList(),
+            };
         file.UrlPatterns = urlPatterns.Count == 0
             ? null
             : urlPatterns.OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -450,6 +481,41 @@ public sealed class DomainRulesPublisher
             }
 
             target.Add(normalized);
+        }
+    }
+
+    /// <summary>
+    /// Đọc mảng <c>keywords</c> trong config rule mode
+    /// 'block_search_keywords', chuẩn hóa (trim + chữ thường) và thêm vào
+    /// tập đích — tập đích là HashSet nên từ khóa trùng tự bị bỏ. Từ khóa
+    /// rỗng sau khi trim bị bỏ qua lặng lẽ (phụ huynh để sót dòng trống);
+    /// mục không phải chuỗi hoặc mảng vắng mặt thì ghi Warning như mẫu
+    /// <see cref="AddRuleDomains"/>. Không bao giờ ném exception hay làm
+    /// hỏng lần xuất bản.
+    /// </summary>
+    private void AddRuleSearchKeywords(HashSet<string> target, JsonElement config)
+    {
+        if (!config.TryGetProperty("keywords", out JsonElement array) || array.ValueKind != JsonValueKind.Array)
+        {
+            _log.Warning("Rule block_search_keywords thiếu mảng keywords, bỏ qua.");
+            return;
+        }
+
+        foreach (JsonElement element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                _log.Warning("Mục keywords không phải chuỗi trong rule block_search_keywords, đã bỏ qua.");
+                continue;
+            }
+
+            string? keyword = element.GetString()?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(keyword))
+            {
+                continue;
+            }
+
+            target.Add(keyword);
         }
     }
 
@@ -1058,6 +1124,28 @@ internal sealed class DomainRulesFile
     /// </summary>
     [JsonPropertyName("focus")]
     public FocusEntry? Focus { get; set; }
+
+    /// <summary>
+    /// Kiểm duyệt từ khóa tìm kiếm (27/11/2026, cộng thêm — Version vẫn
+    /// là 1): từ khóa cấm tìm kiếm hợp từ mọi rule website mode
+    /// 'block_search_keywords' đang hiệu lực của con đang xét, đã chuẩn
+    /// hóa trim + chữ thường + bỏ trùng phía Agent. Null = không có rule
+    /// nào của mode này — khóa JSON được BỎ HOÀN TOÀN khi null
+    /// (WhenWritingNull, cùng mẫu với <see cref="BlockedCategories"/>)
+    /// để extension cũ không thấy khóa lạ. Extension dùng danh sách này
+    /// để dựng rule DNR chặn tìm kiếm chứa từ khóa và để tab watcher
+    /// đối chiếu dự phòng.
+    /// </summary>
+    [JsonPropertyName("searchGuard")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SearchGuardEntry? SearchGuard { get; set; }
+}
+
+/// <summary>Kiểm duyệt từ khóa tìm kiếm: danh sách từ khóa cấm (đã chuẩn hóa) cho extension thi hành.</summary>
+internal sealed class SearchGuardEntry
+{
+    [JsonPropertyName("blockedKeywords")]
+    public List<string> BlockedKeywords { get; set; } = new();
 }
 
 /// <summary>Một mục chặn theo giờ: các domain + khung giờ theo thứ (0 = Chủ nhật..6 = Thứ 7).</summary>

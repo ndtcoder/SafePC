@@ -47,6 +47,50 @@ public sealed class HeartbeatResult
     public string? ExitPinHash { get; set; }
 }
 
+/// <summary>Trạng thái một lần đẩy cụm từ tìm kiếm lên server (migration 28).</summary>
+public enum SearchTermsPushStatus
+{
+    /// <summary>Server đã nhận batch (kết quả inserted/skipped đi kèm).</summary>
+    Sent,
+
+    /// <summary>Lỗi mạng/server/chưa ghép nối — giữ dữ liệu, chu kỳ sau gửi lại.</summary>
+    Failed,
+
+    /// <summary>RPC chưa có trên server (migration 28 chưa áp — PostgREST
+    /// trả 404/PGRST202). Nơi gọi cảnh báo MỘT lần rồi giữ dữ liệu như
+    /// Failed, không spam log mỗi chu kỳ.</summary>
+    RpcMissing,
+}
+
+/// <summary>Kết quả RPC <c>safepc_push_search_terms</c>: số mẫu đã ghi + số mẫu bị bỏ qua phía server.</summary>
+public sealed class SearchTermsPushResult
+{
+    [JsonPropertyName("inserted")]
+    public int Inserted { get; set; }
+
+    [JsonPropertyName("skipped")]
+    public int Skipped { get; set; }
+}
+
+/// <summary>Trạng thái một lần xin cấp phiên chat (migration 29).</summary>
+public enum ChatSessionMintStatus
+{
+    /// <summary>Đã cấp phiên: kết quả <see cref="ChatSessionMintResult"/> đi kèm có token.</summary>
+    Ok,
+
+    /// <summary>Chưa ghép nối máy (chưa có device token) hoặc chưa cấu hình
+    /// Supabase — phía IPC dịch sang mã lỗi "not_paired" cho Tray.</summary>
+    NotPaired,
+
+    /// <summary>RPC chưa có trên server (migration 29 chưa áp — PostgREST
+    /// trả 404/PGRST202). Phía IPC dịch sang mã lỗi "chat_not_enabled".</summary>
+    RpcMissing,
+
+    /// <summary>Lỗi mạng/server/kết quả không hợp lệ — phía IPC dịch sang
+    /// mã lỗi "failed".</summary>
+    Failed,
+}
+
 /// <summary>
 /// Client gọi Supabase từ Agent qua PostgREST RPC (xem migration
 /// backend/supabase/migrations/20261116170000_device_rpc.sql).
@@ -377,6 +421,208 @@ public sealed class SupabaseApiClient
             },
             ct);
         return inserted.HasValue;
+    }
+
+    /// <summary>
+    /// Gửi một batch cụm từ tìm kiếm lên bảng search_terms (migration 28,
+    /// RPC <c>safepc_push_search_terms</c>). Hình dạng payload: mỗi mẫu là
+    /// {engine, term, blocked, windows_sid} — server suy child_id theo
+    /// từng mẫu qua SID (fallback con mặc định), mẫu không suy ra được
+    /// con nào thì bỏ qua và đếm vào skipped. Khác
+    /// <see cref="SendWebVisitsAsync"/> ở chỗ trả về TRẠNG THÁI tường
+    /// minh: RPC là RPC tùy chọn theo nghĩa migration có thể chưa áp —
+    /// PostgREST trả 404 kèm mã PGRST202 khi hàm chưa tồn tại, và nơi
+    /// gọi phải phân biệt được trường hợp đó (cảnh báo 1 lần) với lỗi
+    /// mạng thông thường (giữ file, thử lại lặng lẽ). Vì vậy hàm này gọi
+    /// HTTP trực tiếp thay vì qua <see cref="PostRpcAsync{T}"/> (vốn gộp
+    /// mọi lỗi thành default).
+    /// </summary>
+    public async Task<(SearchTermsPushStatus Status, SearchTermsPushResult? Result)> SendSearchTermsAsync(
+        IReadOnlyList<SearchTermRecord> records, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        if (records.Count == 0)
+        {
+            return (SearchTermsPushStatus.Sent, new SearchTermsPushResult());
+        }
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Gửi search terms bỏ qua: " + reason + ". Dữ liệu giữ lại để gửi sau.");
+            return (SearchTermsPushStatus.Failed, null);
+        }
+
+        var terms = new List<object>(records.Count);
+        foreach (SearchTermRecord record in records)
+        {
+            terms.Add(new
+            {
+                engine = record.Engine,
+                term = record.Term,
+                blocked = record.Blocked,
+                windows_sid = record.WindowsSid,
+            });
+        }
+
+        const string function = "safepc_push_search_terms";
+        string url = _baseUrl + "/rest/v1/rpc/" + function;
+        string json = JsonSerializer.Serialize(new
+        {
+            p_device_id = creds.DeviceId,
+            p_token_hash = Hashing.HashSecret(creds.Token),
+            p_terms = terms,
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogThrottled(function, "Không nối được tới server (" + function + ").", ex);
+            return (SearchTermsPushStatus.Failed, null);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                string body = string.Empty;
+                try
+                {
+                    body = await response.Content.ReadAsStringAsync(ct);
+                }
+                catch (HttpRequestException)
+                {
+                    // Body lỗi không đọc được: phân loại theo mã HTTP ở dưới.
+                }
+
+                // PostgREST báo hàm không tồn tại bằng 404 + mã PGRST202
+                // trong body. Chỉ hai dấu hiệu này mới là "chưa áp
+                // migration"; lỗi khác (401/400/5xx) là Failed thường.
+                if ((int)response.StatusCode == 404 || body.Contains("PGRST202", StringComparison.Ordinal))
+                {
+                    LogThrottled(function, "RPC " + function + " chưa có trên server (migration 28 chưa áp).");
+                    return (SearchTermsPushStatus.RpcMissing, null);
+                }
+
+                LogThrottled(function, "Server từ chối " + function + " (HTTP " + (int)response.StatusCode + ").");
+                return (SearchTermsPushStatus.Failed, null);
+            }
+
+            try
+            {
+                SearchTermsPushResult? result = await response.Content.ReadFromJsonAsync<SearchTermsPushResult>(JsonOptions, ct);
+                return result is null
+                    ? (SearchTermsPushStatus.Failed, null)
+                    : (SearchTermsPushStatus.Sent, result);
+            }
+            catch (JsonException ex)
+            {
+                LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
+                return (SearchTermsPushStatus.Failed, null);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Xin server cấp một phiên chat cho con của PHIÊN Tray đang hỏi
+    /// (migration 29, RPC <c>safepc_mint_chat_session</c>): Service gọi khi
+    /// con bấm "Nhắn tin với bố mẹ" trong menu khay. Server suy ra hồ sơ con
+    /// từ thiết bị đã xác thực + <paramref name="sid"/> (SID của tài khoản
+    /// Windows của phiên Tray — Service lấy từ bản tin hello của kết nối
+    /// pipe, KHÔNG lấy từ payload Tray gửi kèm); <paramref name="sid"/> null
+    /// (Tray cũ chưa gửi SID) thì server ghi theo con mặc định của máy.
+    /// Token phiên trong kết quả KHÔNG bao giờ được ghi log ở đây — nơi gọi
+    /// (IPC) chỉ chuyển nó vào URL trả về đúng Tray đã hỏi.
+    /// Giống <see cref="SendSearchTermsAsync"/>, hàm này gọi HTTP trực tiếp
+    /// thay vì qua <see cref="PostRpcAsync{T}"/> vì nơi gọi phải phân biệt
+    /// "RPC chưa áp" (404/PGRST202) với lỗi thường để báo đúng cho con.
+    /// </summary>
+    public async Task<(ChatSessionMintStatus Status, ChatSessionMintResult? Result)> SendChatSessionMintAsync(
+        string? sid, CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Xin phiên chat bỏ qua: " + reason + ".");
+            return (ChatSessionMintStatus.NotPaired, null);
+        }
+
+        const string function = "safepc_mint_chat_session";
+        string url = _baseUrl + "/rest/v1/rpc/" + function;
+        string json = JsonSerializer.Serialize(new
+        {
+            p_device_id = creds.DeviceId,
+            p_token_hash = Hashing.HashSecret(creds.Token),
+            p_windows_sid = sid,
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogThrottled(function, "Không nối được tới server (" + function + ").", ex);
+            return (ChatSessionMintStatus.Failed, null);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                string body = string.Empty;
+                try
+                {
+                    body = await response.Content.ReadAsStringAsync(ct);
+                }
+                catch (HttpRequestException)
+                {
+                    // Body lỗi không đọc được: phân loại theo mã HTTP ở dưới.
+                }
+
+                // Như SendSearchTermsAsync: chỉ 404/PGRST202 mới là "chưa
+                // áp migration 29"; lỗi khác (401/400/5xx) là Failed thường.
+                if ((int)response.StatusCode == 404 || body.Contains("PGRST202", StringComparison.Ordinal))
+                {
+                    LogThrottled(function, "RPC " + function + " chưa có trên server (migration 29 chưa áp).");
+                    return (ChatSessionMintStatus.RpcMissing, null);
+                }
+
+                LogThrottled(function, "Server từ chối " + function + " (HTTP " + (int)response.StatusCode + ").");
+                return (ChatSessionMintStatus.Failed, null);
+            }
+
+            try
+            {
+                ChatSessionMintResult? result = await response.Content.ReadFromJsonAsync<ChatSessionMintResult>(JsonOptions, ct);
+                if (result is null || string.IsNullOrWhiteSpace(result.Token))
+                {
+                    // Server trả 2xx nhưng không có token: coi như lỗi —
+                    // không bao giờ trả "thành công" kèm URL thiếu token.
+                    LogThrottled(function, "Kết quả " + function + " không có token phiên chat.");
+                    return (ChatSessionMintStatus.Failed, null);
+                }
+
+                return (ChatSessionMintStatus.Ok, result);
+            }
+            catch (JsonException ex)
+            {
+                LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
+                return (ChatSessionMintStatus.Failed, null);
+            }
+        }
     }
 
     /// <summary>

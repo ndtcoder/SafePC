@@ -68,6 +68,12 @@ public sealed class AgentWorker : BackgroundService
     // gửi lại trong 5 phút (xem DomainRequestThrottle).
     private readonly DomainRequestThrottle _unblockDomainThrottle = new();
 
+    // Đã cảnh báo "RPC search terms chưa có trên server (migration 28
+    // chưa áp)" hay chưa: chỉ cảnh báo MỘT lần cho tới khi gửi thành
+    // công trở lại, để vòng flush 5 phút không spam log (xem
+    // FlushSearchTermsAsync).
+    private bool _searchTermsRpcMissingWarned;
+
     // Denylist kill (tên đã chuẩn hóa bằng ExeNames, so khớp không phân biệt
     // hoa thường): tiến trình hệ thống + chính các exe của SafePC — không bao
     // giờ đóng, kể cả khi quy tắc của phụ huynh ghi nhầm tên.
@@ -1294,6 +1300,12 @@ public sealed class AgentWorker : BackgroundService
                 // Cùng chu kỳ 5 phút: đẩy lượt thăm web do extension ghi qua
                 // NativeHost. Lỗi trong này không được chặn chu kỳ sau.
                 await FlushWebUsageAsync(ct);
+
+                // Cùng chu kỳ: đẩy cụm từ tìm kiếm do extension ghi qua
+                // NativeHost (migration 28). Lỗi/RPC chưa có thì giữ file
+                // và bỏ qua mềm như các RPC tùy chọn khác — không được
+                // chặn chu kỳ sau.
+                await FlushSearchTermsAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -1535,6 +1547,204 @@ public sealed class AgentWorker : BackgroundService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _log.Error("Không cắt được file web_usage.jsonl sau khi gửi.", ex);
+        }
+    }
+
+    /// <summary>Trần kích thước file search_terms.jsonl: vượt trần thì bỏ dòng cũ nhất (như web_usage).</summary>
+    private const int SearchTermsMaxBytes = 5 * 1024 * 1024;
+
+    /// <summary>
+    /// Đẩy cụm từ tìm kiếm lên server từ file JSONL do NativeHost ghi
+    /// (<c>%ProgramData%\SafePC\shared\search_terms.jsonl</c>). Mỗi dòng
+    /// là một JSON {engine, term, blocked?, windows_sid?} — kênh duy
+    /// nhất mang cụm từ tìm kiếm (quyết định riêng tư 27/11/2026).
+    /// Ngữ nghĩa y hệt <see cref="FlushWebUsageAsync"/>: file chỉ bị cắt
+    /// khi gửi thành công toàn bộ; gửi lỗi thì giữ nguyên để chu kỳ sau
+    /// gửi lại; dòng dở cuối file không được tiêu thụ; trần 5MB bỏ dòng
+    /// cũ nhất. Phân tích dòng do <see cref="SearchTermLine"/> đảm
+    /// nhiệm. Điểm khác: RPC là RPC tùy chọn (migration 28 có thể chưa
+    /// áp) — server trả RpcMissing thì cảnh báo MỘT lần (cờ
+    /// <see cref="_searchTermsRpcMissingWarned"/>) rồi giữ file và bỏ
+    /// qua mềm như mẫu RPC tùy chọn sẵn có (enforcement events), không
+    /// bao giờ làm sập vòng lặp flush.
+    /// </summary>
+    private async Task FlushSearchTermsAsync(CancellationToken ct)
+    {
+        string path = DomainRulesPublisher.SearchTermsFilePath;
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        byte[] snapshot;
+        try
+        {
+            await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var memory = new MemoryStream();
+            await stream.CopyToAsync(memory, ct);
+            snapshot = memory.ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("Không đọc được file search_terms.jsonl, để lại chu kỳ sau.", ex);
+            return;
+        }
+
+        if (snapshot.Length == 0)
+        {
+            return;
+        }
+
+        int consumedLength = LastNewlineOffset(snapshot) + 1;
+        if (consumedLength == 0)
+        {
+            if (snapshot.Length > SearchTermsMaxBytes)
+            {
+                _log.Warning("File search_terms.jsonl vượt 5MB mà không có dòng hoàn chỉnh nào, cắt bỏ.");
+                await RewriteSearchTermsFileAsync(path, Array.Empty<byte>(), ct);
+            }
+
+            return;
+        }
+
+        List<string> lines = SplitCompleteLines(snapshot, consumedLength);
+
+        int droppedForCap = 0;
+        int bytesEstimate = lines.Sum(line => Encoding.UTF8.GetByteCount(line) + 1);
+        while (lines.Count > 0 && bytesEstimate > SearchTermsMaxBytes)
+        {
+            bytesEstimate -= Encoding.UTF8.GetByteCount(lines[0]) + 1;
+            lines.RemoveAt(0);
+            droppedForCap++;
+        }
+
+        if (droppedForCap > 0)
+        {
+            _log.Warning("File search_terms.jsonl vượt 5MB, đã bỏ " + droppedForCap + " dòng cũ nhất.");
+        }
+
+        var terms = new List<SearchTermRecord>(lines.Count);
+        int invalid = 0;
+        foreach (string line in lines)
+        {
+            SearchTermRecord? term = SearchTermLine.TryParse(line);
+            if (term is null)
+            {
+                invalid++;
+            }
+            else
+            {
+                terms.Add(term);
+            }
+        }
+
+        if (invalid > 0)
+        {
+            _log.Warning("Bỏ qua " + invalid + " dòng search_terms.jsonl không hợp lệ.");
+        }
+
+        if (terms.Count == 0)
+        {
+            // Toàn dòng rác: cắt phần đã tiêu thụ để không thử lại mãi.
+            await TruncateConsumedSearchTermsAsync(path, consumedLength, ct);
+            return;
+        }
+
+        // RPC giới hạn 500 mẫu/batch: chia nhỏ, batch nào lỗi thì dừng
+        // và giữ nguyên file để chu kỳ sau gửi lại từ đầu.
+        const int batchSize = 500;
+        int totalInserted = 0;
+        int totalSkipped = 0;
+        for (int i = 0; i < terms.Count; i += batchSize)
+        {
+            IReadOnlyList<SearchTermRecord> batch = terms.Skip(i).Take(batchSize).ToList();
+            (SearchTermsPushStatus status, SearchTermsPushResult? result) = await _api.SendSearchTermsAsync(batch, ct);
+            if (status == SearchTermsPushStatus.RpcMissing)
+            {
+                if (!_searchTermsRpcMissingWarned)
+                {
+                    _searchTermsRpcMissingWarned = true;
+                    _log.Warning("RPC safepc_push_search_terms chưa có trên server (migration 28 chưa áp) — giữ file search_terms.jsonl, sẽ tự gửi khi migration được áp.");
+                }
+
+                return;
+            }
+
+            if (status != SearchTermsPushStatus.Sent || result is null)
+            {
+                _log.Warning("Gửi search terms lỗi, giữ file lại để chu kỳ sau gửi lại.");
+                return;
+            }
+
+            totalInserted += result.Inserted;
+            totalSkipped += result.Skipped;
+        }
+
+        // Gửi thành công: cho phép cảnh báo lại nếu RPC biến mất sau này.
+        _searchTermsRpcMissingWarned = false;
+        await TruncateConsumedSearchTermsAsync(path, consumedLength, ct);
+        _log.Info("Đã gửi search terms lên server: " + totalInserted + " mẫu"
+            + (totalSkipped > 0 ? " (server bỏ qua " + totalSkipped + " mẫu không suy ra được con)" : "") + ".");
+    }
+
+    /// <summary>
+    /// Cắt phần đã tiêu thụ khỏi file search_terms.jsonl, giữ lại phần
+    /// sau vị trí đã tiêu thụ — soi mẫu
+    /// <see cref="TruncateConsumedWebUsageAsync"/> (cùng cửa sổ đua hẹp
+    /// được chấp nhận: dữ liệu thống kê là best-effort).
+    /// </summary>
+    private async Task TruncateConsumedSearchTermsAsync(string path, int consumedLength, CancellationToken ct)
+    {
+        byte[] suffix;
+        try
+        {
+            await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (stream.Length <= consumedLength)
+            {
+                suffix = Array.Empty<byte>();
+            }
+            else
+            {
+                suffix = new byte[stream.Length - consumedLength];
+                stream.Seek(consumedLength, SeekOrigin.Begin);
+                int read = 0;
+                while (read < suffix.Length)
+                {
+                    int n = await stream.ReadAsync(suffix.AsMemory(read), ct);
+                    if (n == 0)
+                    {
+                        break;
+                    }
+
+                    read += n;
+                }
+
+                if (read < suffix.Length)
+                {
+                    Array.Resize(ref suffix, read);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("Không đọc được phần còn lại của search_terms.jsonl sau khi gửi, giữ nguyên file.", ex);
+            return;
+        }
+
+        await RewriteSearchTermsFileAsync(path, suffix, ct);
+    }
+
+    private async Task RewriteSearchTermsFileAsync(string path, byte[] content, CancellationToken ct)
+    {
+        try
+        {
+            await using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            await stream.WriteAsync(content, ct);
+            await stream.FlushAsync(ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("Không cắt được file search_terms.jsonl sau khi gửi.", ex);
         }
     }
 
