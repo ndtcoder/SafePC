@@ -35,6 +35,14 @@ namespace SafePC.Agent.NativeHost;
 ///   domain_requests.jsonl để Service đọc trong chu kỳ poll lệnh, trả
 ///   {"type":"ack","ok":true|false}. Chỉ tên miền, cùng luật kiểm tra
 ///   domain như visit (không '/', '?', '#', khoảng trắng, ký tự điều khiển).
+/// - {"type":"reportSearch","terms":[{"engine","term","blocked"?}]}
+///   (extension 0.1.11, migration 28) -&gt; ghi thêm các dòng JSONL vào
+///   search_terms.jsonl, trả {"type":"ack","ok":true|false}. Đây là kênh
+///   DUY NHẤT được mang cụm từ tìm kiếm (quyết định riêng tư của phụ
+///   huynh 27/11/2026: chỉ cụm từ trên các công cụ tìm kiếm mới được
+///   trích; engine là id ngắn như "google"/"coccoc"). Tối đa 50 mẫu mỗi
+///   message, term cắt 200 ký tự ngay tại host (phòng thủ 2 lớp, RPC
+///   cắt lại lần nữa). windows_sid/username đóng dấu như dòng web_usage.
 /// Mỗi message getRules/reportUsage (kể cả message lỗi) còn ghi đè timestamp
 /// UTC hiện tại vào extension_heartbeat.txt — dấu hiệu extension còn sống để
 /// Service đọc và báo lên server (Sprint 2 đợt 3). Ghi heartbeat không bao
@@ -81,6 +89,9 @@ internal static class NativeHostApp
 
     /// <summary>File JSONL extension gửi yêu cầu xin mở domain vào (qua message requestUnblock), Service đọc trong chu kỳ poll lệnh.</summary>
     private static readonly string DomainRequestsFilePath = Path.Combine(SharedDirectory, "domain_requests.jsonl");
+
+    /// <summary>File JSONL extension gửi cụm từ tìm kiếm vào (qua message reportSearch, extension 0.1.11), Service đọc trong chu kỳ flush usage.</summary>
+    private static readonly string SearchTermsFilePath = Path.Combine(SharedDirectory, "search_terms.jsonl");
 
     /// <summary>File heartbeat của extension: chỉ chứa timestamp UTC ISO lúc extension liên hệ gần nhất. Service đọc để báo lên server.</summary>
     private static readonly string HeartbeatFilePath = Path.Combine(SharedDirectory, "extension_heartbeat.txt");
@@ -315,7 +326,7 @@ internal static class NativeHostApp
             }
 
             string? type = typeElement.GetString();
-            if (type is "getRules" or "reportUsage" or "requestUnblock")
+            if (type is "getRules" or "reportUsage" or "requestUnblock" or "reportSearch")
             {
                 // Mọi lần extension liên hệ đều để lại dấu heartbeat — kể cả
                 // khi message sau đó xử lý lỗi. Ghi lỗi không ảnh hưởng message.
@@ -327,6 +338,7 @@ internal static class NativeHostApp
                 "getRules" => GetRulesJson(),
                 "reportUsage" => ReportUsage(root),
                 "requestUnblock" => RequestUnblock(root),
+                "reportSearch" => ReportSearch(root),
                 _ => UnknownType(),
             };
         }
@@ -651,6 +663,192 @@ internal static class NativeHostApp
         // Sprint 5: gắn SID + username như dòng web_usage (chỉ khi lấy
         // được — không bao giờ ghi null, Service coi SID không phải chuỗi
         // là dòng hỏng).
+        if (CurrentUser.Sid is not null)
+        {
+            line["windows_sid"] = CurrentUser.Sid;
+        }
+
+        if (CurrentUser.UserName is not null)
+        {
+            line["username"] = CurrentUser.UserName;
+        }
+
+        return JsonSerializer.Serialize(line);
+    }
+
+    /// <summary>Trần số mẫu tìm kiếm trong một message reportSearch: extension gửi từng lượt tìm (đã chống trùng) nên 50 là quá đủ; phần vượt bị bỏ và đếm.</summary>
+    private const int MaxSearchTermsPerMessage = 50;
+
+    /// <summary>Trần độ dài cụm từ tìm kiếm ghi vào search_terms.jsonl — cùng trần với cột search_terms.term phía server (migration 28 cắt lại lần nữa).</summary>
+    private const int MaxSearchTermLength = 200;
+
+    /// <summary>
+    /// Ghi thêm các cụm từ tìm kiếm vào search_terms.jsonl (mỗi mẫu một
+    /// dòng JSON). Mẫu không hợp lệ thì bỏ qua và đếm; lỗi I/O thì trả ack
+    /// false để extension giữ hàng đợi lại gửi sau. Không bao giờ ném
+    /// exception. Không log cụm từ — chỉ đếm (như visit).
+    /// </summary>
+    private static string ReportSearch(JsonElement root)
+    {
+        if (!root.TryGetProperty("terms", out JsonElement terms)
+            || terms.ValueKind != JsonValueKind.Array)
+        {
+            Console.Error.WriteLine("[SafePC NativeHost] reportSearch thiếu mảng terms, bỏ qua.");
+            return AckJson(ok: false);
+        }
+
+        var lines = new List<string>();
+        int dropped = 0;
+        int seen = 0;
+        foreach (JsonElement sample in terms.EnumerateArray())
+        {
+            seen++;
+            if (seen > MaxSearchTermsPerMessage)
+            {
+                dropped++;
+                continue;
+            }
+
+            string? line = TryFormatSearchTermLine(sample);
+            if (line is null)
+            {
+                dropped++;
+            }
+            else
+            {
+                lines.Add(line);
+            }
+        }
+
+        if (dropped > 0)
+        {
+            Console.Error.WriteLine("[SafePC NativeHost] Bỏ qua " + dropped + " mẫu tìm kiếm không hợp lệ/vượt trần trong reportSearch.");
+        }
+
+        if (lines.Count == 0)
+        {
+            // Không có gì để ghi (kể cả mảng rỗng): coi là thành công để
+            // extension xóa hàng đợi, tránh gửi lại mãi các mẫu hỏng —
+            // cùng ngữ nghĩa reportUsage.
+            return AckJson(ok: true);
+        }
+
+        try
+        {
+            Directory.CreateDirectory(SharedDirectory);
+            // FileShare.ReadWrite: Service có thể đọc file cùng lúc để đẩy
+            // lên server mà không chặn lần ghi này.
+            using FileStream stream = new(SearchTermsFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            foreach (string line in lines)
+            {
+                writer.WriteLine(line);
+            }
+
+            writer.Flush();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine("[SafePC NativeHost] Không ghi được search_terms.jsonl: " + ex.Message);
+            return AckJson(ok: false);
+        }
+
+        return AckJson(ok: true);
+    }
+
+    /// <summary>
+    /// Kiểm tra và định dạng một mẫu tìm kiếm thành dòng JSONL
+    /// {"engine","term","blocked"?,"windows_sid"?,"username"?}. Trả về
+    /// null khi mẫu không hợp lệ:
+    /// - engine: chuỗi, trim + chữ thường, 1-32 ký tự, không khoảng
+    ///   trắng/ký tự điều khiển (id engine do extension đặt: google,
+    ///   bing, duckduckgo, yahoo, coccoc); dài hơn thì cắt ở 32 (RPC
+    ///   cũng cắt 32).
+    /// - term: chuỗi, không rỗng sau khi trim; GIỮ NGUYÊN chữ gốc (đã
+    ///   decode) như extension gửi, chỉ cắt ở 200 ký tự — không chẻ đôi
+    ///   cặp surrogate ở cuối.
+    /// - blocked: tùy chọn; có mà không phải boolean thì mẫu không hợp
+    ///   lệ (cùng độ nghiêm với visit); chỉ ghi vào dòng khi true.
+    /// windows_sid/username (Sprint 5) đóng dấu như dòng web_usage — chỉ
+    /// ghi khi lấy được, không bao giờ ghi null.
+    /// </summary>
+    private static string? TryFormatSearchTermLine(JsonElement sample)
+    {
+        if (sample.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!sample.TryGetProperty("engine", out JsonElement engineElement)
+            || engineElement.ValueKind != JsonValueKind.String
+            || engineElement.GetString() is not string rawEngine)
+        {
+            return null;
+        }
+
+        string engine = rawEngine.Trim().ToLowerInvariant();
+        if (engine.Length == 0)
+        {
+            return null;
+        }
+
+        foreach (char c in engine)
+        {
+            if (char.IsWhiteSpace(c) || char.IsControl(c))
+            {
+                return null;
+            }
+        }
+
+        if (engine.Length > 32)
+        {
+            engine = engine[..32];
+        }
+
+        if (!sample.TryGetProperty("term", out JsonElement termElement)
+            || termElement.ValueKind != JsonValueKind.String
+            || termElement.GetString() is not string term)
+        {
+            return null;
+        }
+
+        if (term.Trim().Length == 0)
+        {
+            return null;
+        }
+
+        if (term.Length > MaxSearchTermLength)
+        {
+            term = term[..MaxSearchTermLength];
+            // Không chẻ đôi cặp surrogate ở cuối chuỗi đã cắt.
+            char last = term[^1];
+            if (char.IsHighSurrogate(last))
+            {
+                term = term[..^1];
+            }
+        }
+
+        bool blocked = false;
+        if (sample.TryGetProperty("blocked", out JsonElement blockedElement))
+        {
+            if (blockedElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            {
+                return null;
+            }
+
+            blocked = blockedElement.GetBoolean();
+        }
+
+        var line = new Dictionary<string, object>
+        {
+            ["engine"] = engine,
+            ["term"] = term,
+        };
+        if (blocked)
+        {
+            line["blocked"] = true;
+        }
+
         if (CurrentUser.Sid is not null)
         {
             line["windows_sid"] = CurrentUser.Sid;
