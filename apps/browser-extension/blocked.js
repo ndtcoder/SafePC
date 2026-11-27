@@ -23,6 +23,11 @@ const REASONS = {
   "category-adult": "Trang web này thuộc danh mục nội dung người lớn, đã bị chặn theo quy tắc của phụ huynh.",
   "category-gambling": "Trang web này thuộc danh mục cờ bạc, cá cược, đã bị chặn theo quy tắc của phụ huynh.",
   "category-social": "Trang web này thuộc danh mục mạng xã hội, đã bị chặn theo quy tắc của phụ huynh.",
+  // Kiểm duyệt từ khóa tìm kiếm (0.1.11): URL trang chặn chỉ mang
+  // reason này — KHÔNG mang cụm từ đã tìm. Tiêu đề cũng đổi thành
+  // "Tìm kiếm bị chặn" (xem dưới) và nút xin mở bị ẩn: yêu cầu mở theo
+  // tên miền không áp dụng cho một lượt tìm kiếm.
+  "search-keyword": "Tìm kiếm này chứa từ khóa không phù hợp theo quy định của phụ huynh nên đã bị chặn.",
 };
 
 function normalizeBlockedDomain(raw) {
@@ -87,6 +92,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const message = REASONS[reason] || REASONS.blocked;
   const element = document.getElementById("reason");
   if (element) element.textContent = message;
+
+  // Tìm kiếm bị chặn (0.1.11): đổi tiêu đề cho đúng ngữ cảnh và DỪNG ở
+  // đây — nút "Xin phép mở trang này" chỉ dành cho trang web bị chặn
+  // theo tên miền, không áp dụng cho một lượt tìm kiếm (khung yêu cầu
+  // giữ nguyên trạng thái ẩn).
+  if (reason === "search-keyword") {
+    const heading = document.querySelector("h1");
+    if (heading) heading.textContent = "Tìm kiếm bị chặn";
+    return;
+  }
 
   const requestBox = document.getElementById("request-box");
   const button = document.getElementById("request-button");

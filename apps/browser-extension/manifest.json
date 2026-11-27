@@ -7,7 +7,7 @@
   "background": {
     "service_worker": "background.js"
   },
-  "description": "SafePC — lọc web theo domain cho máy tính của con: chặn domain (kể cả theo danh mục), giới hạn thời gian theo domain, SafeSearch. Quy tắc do phụ huynh đặt trên Dashboard.",
+  "description": "SafePC — lọc web theo domain cho máy tính của con: chặn domain (kể cả theo danh mục), giới hạn thời gian theo domain, SafeSearch, chặn từ khóa tìm kiếm. Quy tắc do phụ huynh đặt trên Dashboard.",
   "host_permissions": [
     "http://*/*",
     "https://*/*"
@@ -22,11 +22,12 @@
   "permissions": [
     "declarativeNetRequest",
     "tabs",
+    "webNavigation",
     "alarms",
     "storage",
     "nativeMessaging"
   ],
-  "version": "0.1.10",
+  "version": "0.1.11",
   "web_accessible_resources": [
     {
       "matches": [

@@ -63,6 +63,27 @@
 // domain (`usage.seconds`) vẫn gộp theo domain như trước, và lượt bị chặn
 // vẫn chỉ ghi tên miền.
 //
+// Kiểm duyệt từ khóa tìm kiếm (0.1.11, quyết định của phụ huynh
+// 27/11/2026, kiểu Microsoft Family Safety): rule website mode
+// 'block_search_keywords' trên Dashboard -> Agent hợp từ khóa vào
+// `searchGuard.blockedKeywords` trong domain_rules.json. Hai lớp thi
+// hành: (1) rule redirect DNR cho mỗi cặp (công cụ x từ khóa) ở ưu tiên
+// searchBlock (65) chuyển thẳng tới trang chặn lý do "search-keyword" —
+// khớp trên URL THÔ còn mã hóa nên chỉ bắt được biến thể mã hóa mà
+// buildSearchBlockRegex diễn đạt được; (2) watcher trích cụm từ đã
+// GIẢI MÃ từ URL điều hướng (extractSearchTerm, chỉ 5 công cụ: Google,
+// Bing, DuckDuckGo, Yahoo, Cốc Cốc), đối chiếu đã bỏ dấu
+// (searchKeywordHit) và tự chuyển tab sang trang chặn khi DNR trượt.
+// Điểm ghi chính của lớp (2) là chrome.webNavigation.onBeforeNavigate
+// — chạy khi điều hướng bắt đầu, TRƯỚC khi DNR chuyển hướng, nên lượt
+// bị DNR chặn vẫn ghi được; chrome.tabs.onUpdated là lưới phụ (bắt
+// pushState + thực hiện chuyển hướng dự phòng). Mọi lượt tìm (kể cả bị
+// chặn) được ghi qua NativeHost bằng message `reportSearch` để thống
+// kê vào Báo cáo tuần như lịch sử web (bảng search_terms, giữ 90 ngày
+// — migration 28). NGOẠI LỆ RIÊNG TƯ do phụ huynh quyết định: chỉ cụm
+// từ trên các công cụ tìm kiếm mới được trích/gửi; cụm từ KHÔNG bao
+// giờ vào URL trang chặn (chỉ có reason), không vào log.
+//
 // Mọi giờ giấc tính theo GIỜ ĐỊA PHƯƠNG của máy con. Khung giờ/ngân sách/
 // ghi đè tạm thời được đánh giá lại mỗi phút (alarm), nên thay đổi có hiệu
 // lực trong vòng ~1 phút. Khi chưa nối được NativeHost, extension mở (không
@@ -74,6 +95,13 @@ importScripts("domainUtils.js");
 
 const { normalizeDomain, domainMatches, hostnameFromUrl, pathFromUrl, localDateKey, hhmmToMinutes } =
   globalThis.SafePCDomain;
+const {
+  extractSearchTerm,
+  normalizeSearchText,
+  searchKeywordHit,
+  buildSearchBlockRegex,
+  searchEngineIds,
+} = globalThis.SafePCDomain;
 
 const NATIVE_HOST = "com.safepc.agent";
 const ALARM_REFRESH = "safepc-refresh";
@@ -82,6 +110,7 @@ const STORE_KEYS = {
   usage: "safepc_usage",
   pending: "safepc_pending",
   pendingBlocked: "safepc_pending_blocked",
+  pendingSearch: "safepc_pending_search",
   limits: "safepc_limits",
   status: "safepc_status",
   dnr: "safepc_dnr",
@@ -90,7 +119,19 @@ const MAX_PENDING = 1000;
 // Trần hàng đợi lượt chặn: mỗi lượt là một sự kiện rời rạc (không gộp theo
 // domain như usage), dedupe 60 giây/domain đã chặn spam tải lại trang.
 const MAX_PENDING_BLOCKED = 200;
+// Trần hàng đợi cụm từ tìm kiếm chưa gửi (0.1.11): mỗi lượt tìm là một
+// mẫu rời rạc {engine, term, blocked}; quá trần thì bỏ mẫu cũ nhất.
+const MAX_PENDING_SEARCH = 200;
 const MAX_DNR_RULES = 4500;
+// Ngân sách rule regex DNR cho chặn từ khóa tìm kiếm (0.1.11, sửa theo
+// review 27/11/2026): Chrome giới hạn 1000 rule regex trong bộ rule
+// động; mỗi từ khóa tốn 5 rule (một cho mỗi công cụ tìm kiếm). Chỉ dựng
+// rule DNR cho tối đa 150 từ khóa đầu tiên (150 x 5 = 750 rule), chừa
+// khoảng cho rule redirect SafeSearch và rule mẫu URL. Từ khóa ngoài
+// ngân sách VẪN bị thi hành bởi tab watcher (đối chiếu đã bỏ dấu trên
+// danh sách ĐẦY ĐỦ trong currentRules.searchGuard), chỉ là không có
+// rule DNR chặn ngay ở tầng request.
+const MAX_SEARCH_DNR_KEYWORDS = 150;
 // Đoạn xem dài nhất tính trong một lần tick (10 phút): service worker có thể
 // ngủ đông (máy sleep), đoạn dài hơn thế chắc chắn không phải xem thật.
 const MAX_SEGMENT_SECONDS = 600;
@@ -127,6 +168,12 @@ const SUB_RESOURCE_TYPES = [
 //     allowlist theo giờ/hết ngân sách (mọi mức <= 55 và cặp chặn-tất-cả
 //     15/14), nhưng KHÔNG chọc thủng focus (cặp chặn-tất-cả của focus ở
 //     59/58, cao hơn 57).
+//   - chặn từ khóa tìm kiếm 65 (0.1.11): cùng mức với redirect
+//     SafeSearch/YouTube — đều là redirect main_frame và không xung đột
+//     đích (một bên thêm tham số an toàn, một bên về trang chặn; URL sau
+//     redirect SafeSearch vẫn chứa cụm từ nên rule chặn từ khóa vẫn khớp
+//     ở lần đánh giá sau). Thấp hơn chặn tạm thời (100), cao hơn mọi mức
+//     allow để từ khóa cấm không bị allowlist mở qua.
 //   - cặp chặn-tất-cả của focus 59/58: dưới mức allow của focus (60) để
 //     domain học tập vẫn mở được, trên cho phép tạm thời (57) để cho phép
 //     tạm thời không chọc thủng giờ tập trung.
@@ -143,6 +190,7 @@ const SUB_RESOURCE_TYPES = [
 const PRIORITY = {
   tempBlock: 100,
   redirect: 65,
+  searchBlock: 65,
   focusAllow: 60,
   focusBlockAllRedirect: 59,
   focusBlockAll: 58,
@@ -168,6 +216,11 @@ let pending = {};
 // lượt, không gộp theo domain như usage. Lưu bền vững cùng usage để
 // service worker ngủ đông không làm mất lượt chặn chưa gửi.
 let pendingBlocked = [];
+// Hàng đợi cụm từ tìm kiếm chưa gửi (0.1.11): [{engine, term, blocked}]
+// — rời rạc từng lượt tìm, term là cụm từ GỐC đã giải mã (cắt 200 ký
+// tự). Lưu bền vững cùng usage; gửi qua message reportSearch trong cùng
+// chu kỳ flush với reportUsage (xem flushSearchTerms).
+let pendingSearch = [];
 // Map ruleId -> {domain, isRedirect} của các rule chặn đang áp dụng, dựng
 // từ read-back getDynamicRules sau mỗi lần rebuild — dùng để quy chiếu
 // domain khi tab tới trang chặn qua redirect DNR (xem handleBlockedPageShown).
@@ -650,6 +703,51 @@ function buildDnrRules(rules, usageSeconds, now) {
     addPair(exhausted, PRIORITY.limit, "limit");
   }
 
+  // Chặn từ khóa tìm kiếm (0.1.11): rules.searchGuard.blockedKeywords
+  // (Agent hợp từ mọi rule mode 'block_search_keywords', đã chuẩn hóa
+  // trim + chữ thường) -> một rule redirect cho mỗi cặp (công cụ x từ
+  // khóa) ở ưu tiên searchBlock (65), đích là trang chặn lý do
+  // "search-keyword" (chỉ reason — KHÔNG kèm cụm từ vào URL). Regex
+  // khớp trên URL thô còn mã hóa (xem buildSearchBlockRegex); biến thể
+  // mã hóa mà regex không diễn đạt được (gõ khác hoa/thường ở ký tự có
+  // dấu, gõ không dấu...) do tab watcher bắt dự phòng bằng đối chiếu
+  // đã bỏ dấu. searchGuard vắng/rỗng -> không dựng rule nào, và vì mỗi
+  // lần rebuild thay toàn bộ dynamic rules nên rule search cũ cũng
+  // biến mất. Khử trùng lặp theo chuỗi regex (nhiều từ khóa chuẩn hóa
+  // có thể cho cùng một mẫu).
+  // NGÂN SÁCH REGEX (sửa theo review 27/11/2026): chỉ dựng rule cho
+  // tối đa MAX_SEARCH_DNR_KEYWORDS từ khóa đầu tiên — xem hằng số đó.
+  // Rule search được áp bằng lời gọi updateDynamicRules RIÊNG (nhóm
+  // thứ ba trong rebuildDynamicRules, nhận diện qua isSearchBlockRule)
+  // để lỗi trần regex của nhóm này không đóng băng nhóm chặn chính.
+  const searchGuard =
+    rules.searchGuard && typeof rules.searchGuard === "object" && !Array.isArray(rules.searchGuard)
+      ? rules.searchGuard
+      : null;
+  const allSearchKeywords = searchGuard && Array.isArray(searchGuard.blockedKeywords)
+    ? searchGuard.blockedKeywords
+    : [];
+  const searchKeywords = allSearchKeywords.slice(0, MAX_SEARCH_DNR_KEYWORDS);
+  if (allSearchKeywords.length > searchKeywords.length) {
+    console.warn(
+      "[SafePC] Danh sách từ khóa tìm kiếm có " + allSearchKeywords.length +
+      " từ, vượt ngân sách rule DNR: chỉ dựng rule cho " + searchKeywords.length +
+      " từ đầu; " + (allSearchKeywords.length - searchKeywords.length) +
+      " từ còn lại vẫn bị tab watcher thi hành (đối chiếu đã bỏ dấu).",
+    );
+  }
+  if (searchKeywords.length > 0) {
+    const seenSearchFilters = new Set();
+    for (const keyword of searchKeywords) {
+      for (const engineId of searchEngineIds) {
+        const filter = buildSearchBlockRegex(engineId, keyword);
+        if (!filter || seenSearchFilters.has(filter)) continue;
+        seenSearchFilters.add(filter);
+        rulesOut.push(redirectRegexRule(nextId++, PRIORITY.searchBlock, filter, "search-keyword"));
+      }
+    }
+  }
+
   if (rules.safeSearch) {
     // Google dùng tham số safe=active. Bing không dùng tham số này mà dùng
     // adlt=strict (cơ chế chính thức của Bing) — xem README.md.
@@ -705,6 +803,17 @@ function isSafeSearchRedirectRule(rule) {
   );
 }
 
+// Rule chặn từ khóa tìm kiếm (0.1.11) nhận diện bằng mức ưu tiên riêng
+// searchBlock (65) — không rule nào khác dùng mức này cho redirect về
+// trang chặn (mức 65 còn lại là redirect SafeSearch, đã tách bằng
+// regexSubstitution ở trên). Dùng để tách rule search thành lời gọi
+// updateDynamicRules riêng trong rebuildDynamicRules (sửa theo review
+// 27/11/2026) và để ẩn pattern chứa từ khóa trong tóm tắt chẩn đoán
+// (buildRuleSummary).
+function isSearchBlockRule(rule) {
+  return !!rule && rule.priority === PRIORITY.searchBlock && !isSafeSearchRedirectRule(rule);
+}
+
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -732,11 +841,18 @@ function buildRuleSummary(rules) {
     const requestDomains = Array.isArray(condition.requestDomains)
       ? condition.requestDomains.filter((d) => typeof d === "string" && d.length > 0).join(",")
       : "";
+    // Rule chặn từ khóa tìm kiếm (0.1.11, sửa theo review 27/11/2026):
+    // regexFilter của chúng CHỨA TỪ KHÓA CẤM của phụ huynh ở dạng đọc
+    // được — popup chẩn đoán mở được ngay trên máy con nên không lộ
+    // pattern này, thay bằng nhãn cố định. Số lượng rule vẫn đếm đủ.
+    const pattern = isSearchBlockRule(rule)
+      ? "(từ khóa tìm kiếm)"
+      : urlFilter || regexFilter || requestDomains;
     summary.push({
       id: rule.id,
       priority: rule.priority,
       action: action.type,
-      pattern: urlFilter || regexFilter || requestDomains,
+      pattern,
     });
   }
   return summary;
@@ -795,29 +911,44 @@ async function rebuildDynamicRules() {
   let error = null;
   try {
     const rules = buildDnrRules(currentRules, usage.seconds, now);
-    const mainRules = rules.filter((rule) => !isSafeSearchRedirectRule(rule));
+    const searchRules = rules.filter(isSearchBlockRule);
+    const mainRules = rules.filter((rule) => !isSafeSearchRedirectRule(rule) && !isSearchBlockRule(rule));
     const redirectRules = rules.filter(isSafeSearchRedirectRule);
     const existing = await chrome.declarativeNetRequest.getDynamicRules();
     const removeRuleIds = existing.map((r) => r.id);
-    // Áp thành 2 lần gọi riêng (đợt sửa 17/11/2026): updateDynamicRules
-    // là nguyên tử theo từng lần gọi, nên 1 rule hỏng trong nhóm redirect
-    // không còn kéo sập cả nhóm chặn. Nhóm chặn/cho phép áp trước, kèm
-    // xóa rule cũ; nhóm redirect chỉ áp khi nhóm chặn đã đứng.
+    // Áp thành các lời gọi riêng theo nhóm (đợt sửa 17/11/2026, mở rộng
+    // 27/11/2026): updateDynamicRules là nguyên tử theo từng lần gọi,
+    // nên 1 rule hỏng trong một nhóm không kéo sập các nhóm còn lại.
+    // Nhóm chặn/cho phép áp trước, kèm xóa TOÀN BỘ rule cũ (gồm cả rule
+    // search + redirect cũ); các nhóm sau chỉ addRules và chỉ áp khi
+    // nhóm chính đã đứng. Nhóm search tách riêng vì nó ăn ngân sách
+    // rule regex riêng của Chrome (1000 rule động): lỗi trần regex ở
+    // nhóm này không được đóng băng nhóm chặn domain.
+    let mainApplied = false;
     try {
       await chrome.declarativeNetRequest.updateDynamicRules({
         removeRuleIds,
         addRules: mainRules,
       });
+      mainApplied = true;
     } catch (groupError) {
       error = errorMessage(groupError);
       console.warn("[SafePC] Không áp được nhóm rule chặn/cho phép:", groupError);
     }
-    if (error === null && redirectRules.length > 0) {
+    if (mainApplied && redirectRules.length > 0) {
       try {
         await chrome.declarativeNetRequest.updateDynamicRules({ addRules: redirectRules });
       } catch (groupError) {
         error = errorMessage(groupError);
         console.warn("[SafePC] Không áp được nhóm rule redirect SafeSearch/YouTube:", groupError);
+      }
+    }
+    if (mainApplied && searchRules.length > 0) {
+      try {
+        await chrome.declarativeNetRequest.updateDynamicRules({ addRules: searchRules });
+      } catch (groupError) {
+        if (error === null) error = errorMessage(groupError);
+        console.warn("[SafePC] Không áp được nhóm rule chặn từ khóa tìm kiếm:", groupError);
       }
     }
   } catch (buildError) {
@@ -1373,6 +1504,159 @@ async function handleBlockedPageShown(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Kiểm duyệt từ khóa tìm kiếm (0.1.11): ghi nhận lượt tìm + lưới dự phòng
+// cho DNR.
+//
+// ĐIỂM GHI CHÍNH là chrome.webNavigation.onBeforeNavigate (sửa theo
+// review 27/11/2026): sự kiện chạy khi điều hướng BẮT ĐẦU, TRƯỚC khi
+// rule DNR kịp chuyển hướng — nên URL tìm kiếm gốc luôn đến được đây,
+// kể cả lượt bị DNR chặn (nếu chỉ nghe tabs.onUpdated như bản đầu, tab
+// commit thẳng tới trang chặn và URL gốc không bao giờ xuất hiện, lượt
+// bị chặn quan trọng nhất lại không được ghi). Listener
+// tabs.onUpdated giữ vai trò lưới phụ: bắt điều hướng trong trang
+// (pushState, không sinh onBeforeNavigate mới) và thực hiện chuyển
+// hướng dự phòng bên dưới; chống trùng 30 giây gộp hai lưới thành một
+// lượt ghi duy nhất.
+//
+// Mỗi điều hướng tới trang kết quả của một trong 5 công cụ (Google,
+// Bing, DuckDuckGo, Yahoo, Cốc Cốc) đều được trích cụm từ (đã giải mã)
+// và ghi vào hàng đợi pendingSearch để gửi qua reportSearch — kể cả
+// lượt KHÔNG bị chặn (phụ huynh cần thống kê mọi cụm từ đã tìm trong
+// Báo cáo tuần, như lịch sử web). Cờ blocked tính bằng đối chiếu đã bỏ
+// dấu (searchKeywordHit) trên cụm từ đã giải mã, nên biến thể gõ không
+// dấu/khác hoa thường vẫn bị đánh dấu đúng dù rule DNR (khớp trên URL
+// thô còn mã hóa) có thể trượt.
+//
+// Khi blocked mà DNR đã trượt (tab vẫn đang ở URL tìm kiếm sau khi sự
+// kiện điều hướng tới), watcher tự chuyển tab sang trang chặn — cùng
+// mẫu với redirectTabIfBlocked: đọc lại URL hiện tại của tab trước khi
+// hành động, throttle chống lặp, đích chỉ mang reason (KHÔNG mang cụm
+// từ). Nếu DNR đã chặn trước, URL hiện tại của tab là trang chặn nên
+// nhánh này tự bỏ qua. (Ở sự kiện onBeforeNavigate, URL hiện tại của
+// tab còn là trang TRƯỚC nên nhánh chuyển hướng tự bỏ qua — việc ghi
+// nhận đã xong ở đó, còn chặn thì DNR lo; biến thể DNR trượt được lưới
+// tabs.onUpdated chuyển hướng khi URL commit.)
+//
+// Chống trùng: cùng (tab, cụm từ đã chuẩn hóa) chỉ ghi 1 lần trong 30
+// giây — một lượt tìm sinh nhiều sự kiện onUpdated (đổi trạng thái, tải
+// thêm tham số...) và trang kết quả tự làm mới cũng không được nhân
+// đôi số liệu. Hàng đợi lưu bền vững trong chrome.storage.local (trần
+// 200, bỏ cũ nhất) và flush theo cùng chu kỳ với reportUsage; Native
+// Host chưa trả lời thì giữ lại gửi sau.
+// ---------------------------------------------------------------------------
+
+const SEARCH_TERM_DEDUPE_MS = 30 * 1000;
+const SEARCH_TERM_DEDUPE_CAP = 200;
+// NativeHost chỉ nhận tối đa 50 mẫu mỗi message reportSearch: flush
+// theo từng đoạn 50, đoạn nào lỗi thì dừng và giữ phần còn lại.
+const SEARCH_FLUSH_BATCH = 50;
+const searchTermDedupe = new Map();
+
+// Danh sách từ khóa cấm hiện hành (đã chuẩn hóa phía Agent). Rules
+// thiếu/sai hình dạng thì coi như không có từ khóa nào (fail-open cho
+// việc ĐÁNH DẤU blocked; việc ghi nhận lượt tìm không phụ thuộc danh
+// sách này). Không bao giờ throw.
+function currentSearchKeywords() {
+  try {
+    const guard = currentRules && currentRules.searchGuard;
+    if (!guard || typeof guard !== "object" || Array.isArray(guard)) return [];
+    return Array.isArray(guard.blockedKeywords) ? guard.blockedKeywords : [];
+  } catch {
+    return [];
+  }
+}
+
+// Ghi nhận một lượt tìm vào hàng đợi. Trả về true khi đã ghi (false khi
+// bị chống trùng hoặc dữ liệu lạ). Chỉ engine + cụm từ + cờ blocked
+// được lưu — không URL. Không bao giờ throw.
+function recordSearchTerm(tabId, engine, term, blocked) {
+  try {
+    if (!Number.isInteger(tabId)) return false;
+    if (typeof engine !== "string" || engine.length === 0) return false;
+    if (typeof term !== "string" || term.trim().length === 0) return false;
+    const nowMs = Date.now();
+    const key = tabId + "\n" + normalizeSearchText(term);
+    const last = searchTermDedupe.get(key);
+    if (last !== undefined && nowMs - last < SEARCH_TERM_DEDUPE_MS) return false;
+    searchTermDedupe.set(key, nowMs);
+    if (searchTermDedupe.size > SEARCH_TERM_DEDUPE_CAP) {
+      for (const [oldKey, oldMs] of searchTermDedupe) {
+        if (nowMs - oldMs >= SEARCH_TERM_DEDUPE_MS) searchTermDedupe.delete(oldKey);
+      }
+    }
+    pendingSearch.push({ engine, term: term.slice(0, 200), blocked: blocked === true });
+    if (pendingSearch.length > MAX_PENDING_SEARCH) {
+      pendingSearch.splice(0, pendingSearch.length - MAX_PENDING_SEARCH);
+    }
+    void saveState();
+    return true;
+  } catch (error) {
+    console.warn("[SafePC] Không ghi được lượt tìm kiếm:", error);
+    return false;
+  }
+}
+
+// Xử lý một điều hướng tới URL tìm kiếm: ghi nhận lượt tìm, và khi cụm
+// từ chứa từ khóa cấm mà DNR chưa chuyển hướng (tab vẫn ở URL tìm
+// kiếm) thì tự chuyển sang trang chặn. Không bao giờ throw; log chỉ
+// ghi tab id + lý do, KHÔNG ghi cụm từ.
+async function handleSearchNavigation(tabId, url) {
+  try {
+    const found = extractSearchTerm(url);
+    if (!found) return;
+    const blocked = searchKeywordHit(found.term, currentSearchKeywords());
+    recordSearchTerm(tabId, found.engine, found.term, blocked);
+    if (!blocked) return;
+
+    let liveUrl = null;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && typeof tab.url === "string") liveUrl = tab.url;
+    } catch {
+      return; // Tab đã đóng trước khi đọc được.
+    }
+    if (liveUrl === null || isBlockedPageUrl(liveUrl)) return;
+    const still = extractSearchTerm(liveUrl);
+    if (!still || still.engine !== found.engine) return;
+    if (normalizeSearchText(still.term) !== normalizeSearchText(found.term)) return;
+    if (!searchKeywordHit(still.term, currentSearchKeywords())) return;
+    const target = chrome.runtime.getURL("blocked.html?reason=search-keyword");
+    if (!watcherRedirectAllowed(tabId, target)) return;
+    try {
+      await chrome.tabs.update(tabId, { url: target });
+      console.warn(
+        "[SafePC] Tab watcher: đã chuyển tab #" + tabId + " sang trang chặn (lý do: search-keyword).",
+      );
+    } catch (error) {
+      console.warn("[SafePC] Tab watcher: không chuyển được tab #" + tabId + " (search-keyword):", error);
+    }
+  } catch (error) {
+    console.warn("[SafePC] Kiểm duyệt từ khóa tìm kiếm lỗi:", error);
+  }
+}
+
+// Gửi hàng đợi cụm từ tìm kiếm về NativeHost (message reportSearch),
+// theo từng đoạn 50 mẫu (trần mỗi message của host). Đoạn nào gửi lỗi
+// thì dừng, giữ phần chưa gửi để chu kỳ sau gửi lại — cùng ngữ nghĩa
+// với flushUsage. Không hiện lỗi cho user.
+async function flushSearchTerms() {
+  const entries = pendingSearch.slice();
+  if (entries.length === 0) return;
+  let sentCount = 0;
+  for (let i = 0; i < entries.length; i += SEARCH_FLUSH_BATCH) {
+    const chunk = entries.slice(i, i + SEARCH_FLUSH_BATCH);
+    const response = await sendNativeMessage({ type: "reportSearch", terms: chunk });
+    if (!response || response.ok !== true) break;
+    sentCount += chunk.length;
+  }
+  if (sentCount > 0) {
+    // Xóa đúng số mẫu đã gửi: mẫu ghi thêm trong lúc gửi còn lại.
+    pendingSearch.splice(0, sentCount);
+    await saveState();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Nút xin mở trang trên trang chặn (0.1.9)
 // ---------------------------------------------------------------------------
 
@@ -1533,6 +1817,7 @@ async function saveState() {
       [STORE_KEYS.usage]: usage,
       [STORE_KEYS.pending]: pending,
       [STORE_KEYS.pendingBlocked]: pendingBlocked,
+      [STORE_KEYS.pendingSearch]: pendingSearch,
     });
   } catch (error) {
     console.warn("[SafePC] Không lưu được trạng thái usage:", error);
@@ -1577,17 +1862,38 @@ function isValidPendingBlocked(value) {
   );
 }
 
+// Hàng đợi cụm từ tìm kiếm đã lưu (0.1.11) phải là mảng các
+// {engine, term, blocked} hợp lệ. Dữ liệu lạ thì bỏ toàn bộ hàng đợi
+// (fail-open, không chặn lần ghi sau) — cùng mẫu isValidPendingBlocked.
+function isValidPendingSearch(value) {
+  if (!Array.isArray(value)) return false;
+  return value.every(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      typeof entry.engine === "string" &&
+      entry.engine.length > 0 &&
+      typeof entry.term === "string" &&
+      entry.term.length > 0 &&
+      typeof entry.blocked === "boolean",
+  );
+}
+
 async function loadState() {
   try {
     const stored = await chrome.storage.local.get([
       STORE_KEYS.usage,
       STORE_KEYS.pending,
       STORE_KEYS.pendingBlocked,
+      STORE_KEYS.pendingSearch,
     ]);
     if (isValidUsage(stored[STORE_KEYS.usage])) usage = stored[STORE_KEYS.usage];
     if (isValidPending(stored[STORE_KEYS.pending])) pending = stored[STORE_KEYS.pending];
     if (isValidPendingBlocked(stored[STORE_KEYS.pendingBlocked])) {
       pendingBlocked = stored[STORE_KEYS.pendingBlocked];
+    }
+    if (isValidPendingSearch(stored[STORE_KEYS.pendingSearch])) {
+      pendingSearch = stored[STORE_KEYS.pendingSearch];
     }
     rolloverIfNeeded(new Date());
   } catch (error) {
@@ -1660,6 +1966,9 @@ async function handleRefresh() {
   try {
     await refreshRulesAndRebuild();
     await flushUsage();
+    // Cụm từ tìm kiếm flush cùng chu kỳ với lượt xem (0.1.11): cùng
+    // nhịp alarm làm tươi rule, cùng nguyên tắc giữ lại khi lỗi.
+    await flushSearchTerms();
   } catch (error) {
     console.warn("[SafePC] Refresh lỗi:", error);
   }
@@ -1708,8 +2017,39 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     void handleBlockedPageShown(tabId);
     return;
   }
+  // Kiểm duyệt từ khóa tìm kiếm (0.1.11): ở listener này vai trò là
+  // LƯỚI PHỤ — ghi nhận lượt tìm + chuyển hướng dự phòng khi DNR trượt.
+  // Điểm ghi chính là webNavigation.onBeforeNavigate ngay dưới (thấy
+  // URL gốc trước khi DNR chuyển hướng); listener này bắt các điều
+  // hướng không sinh onBeforeNavigate (pushState trong trang) và là
+  // nơi nhánh chuyển hướng dự phòng chạy được (URL đã commit). Chống
+  // trùng 30 giây gộp hai lưới thành một lượt ghi. Chạy độc lập với
+  // watcher domain ở dưới; URL không phải trang kết quả tìm kiếm thì
+  // tự bỏ qua ngay.
+  void handleSearchNavigation(tabId, changeInfo.url);
   void handleTabUrlChange(tabId, changeInfo.url);
 });
+
+// Kiểm duyệt từ khóa tìm kiếm (0.1.11, sửa theo review 27/11/2026) —
+// ĐIỂM GHI CHÍNH: chrome.webNavigation.onBeforeNavigate chạy khi điều
+// hướng khung chính BẮT ĐẦU, trước khi rule DNR chuyển hướng tới trang
+// chặn, nên handleSearchNavigation luôn thấy URL tìm kiếm gốc và ghi
+// được cả lượt bị DNR chặn (blocked=true do chính hàm tính bằng đối
+// chiếu đã bỏ dấu trên cụm từ đã giải mã — không phụ thuộc DNR có khớp
+// hay không). Chỉ khung chính (frameId 0); điều hướng tới trang chặn
+// tự nó cũng sinh sự kiện này nhưng URL trang chặn không trích được
+// cụm từ nên là no-op. API vắng (bản trình duyệt lạ) thì lưới phụ
+// tabs.onUpdated ở trên vẫn ghi như bản 0.1.11 đầu.
+if (
+  chrome.webNavigation &&
+  chrome.webNavigation.onBeforeNavigate &&
+  typeof chrome.webNavigation.onBeforeNavigate.addListener === "function"
+) {
+  chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+    if (!details || details.frameId !== 0 || typeof details.url !== "string") return;
+    void handleSearchNavigation(details.tabId, details.url);
+  });
+}
 
 // Trang chặn tải xong (0.1.7): bắt trường hợp tab điều hướng từ một trang
 // chặn sang domain bị chặn khác với cùng lý do — URL không đổi nên
@@ -1723,6 +2063,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   blockedDomainByTab.delete(tabId);
+  // Dọn dấu chống trùng lượt tìm của tab đã đóng (0.1.11): khóa dedupe
+  // mang tiền tố "<tabId>\n"; tab id có thể được tái dùng nên để sót
+  // sẽ chặn nhầm lượt tìm của tab mới trong 30 giây.
+  for (const key of searchTermDedupe.keys()) {
+    if (key.startsWith(tabId + "\n")) searchTermDedupe.delete(key);
+  }
   if (tabId !== activeTabId) return;
   const nowMs = Date.now();
   closeSegment(nowMs);
