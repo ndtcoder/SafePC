@@ -4299,3 +4299,9 @@ Em thảo luận và hoàn thiện ý tưởng và ghi vào docs để thực hi
 
 ## [2026-11-27 21:3x +07] ChaMuse
 Đã thảo luận + hoàn thiện cả hai ý tưởng và ghi vào docs (PRD §2.14 giờ tin cậy + §2.15 theo dõi khi luật không chặn; ROADMAP thêm mục đợt triển khai; AMENDMENTS A-17/A-18), đang đẩy commit docs lên develop. Ý 1 hoàn thiện: giờ tin cậy = giờ server + TickCount64 quy đổi múi giờ gia đình phụ huynh đặt — chỉnh giờ/múi giờ đều không lách được, lệch >120s vẫn báo clock_drift; giới hạn trung thực: qua khởi động lại chưa có mạng chỉ có offset cuối. Ý 2 hoàn thiện: theo dõi là mặt tích hợp của luật (mặc định bật, tắt được theo luật), 3 ngữ cảnh tách rõ (luật tắt / cho phép tạm thời — trung tính không gọi vi phạm / không chặn được), ghi gộp kèm bản chụp tên+mode nên sửa luật ghi theo thông số mới, xóa thì dừng; lên Báo cáo tuần, không push tức thời; không thu dữ liệu mới.
+
+## [2026-11-27 22:28 +07] anh Tiến
+Triển khai luôn phần giờ tin cậy + theo dõi luật. / Khi nào a test xong v309 thì chỉnh sửa nốt và hỏi a xác nhận đẩy vào main
+
+## [2026-11-27 22:3x +07] ChaMuse
+Đã khởi động builder xây cả đợt (migration 31 gồm cột múi giờ gia đình + bảng rule_observations, TrustedClock trong Service, monitorRules ở publisher, Dashboard: cài đặt múi giờ + công tắc theo dõi + mục Báo cáo tuần mới + cập nhật docs riêng tư). Quy trình merge ghi nhận đúng ý anh: develop cứ tích lũy, anh test xong v309 thì em chỉnh sửa nốt (kèm lỗi anh phát hiện lúc test) rồi hỏi anh xác nhận mới merge main.
