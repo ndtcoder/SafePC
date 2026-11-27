@@ -4305,3 +4305,9 @@ Triển khai luôn phần giờ tin cậy + theo dõi luật. / Khi nào a test 
 
 ## [2026-11-27 22:3x +07] ChaMuse
 Đã khởi động builder xây cả đợt (migration 31 gồm cột múi giờ gia đình + bảng rule_observations, TrustedClock trong Service, monitorRules ở publisher, Dashboard: cài đặt múi giờ + công tắc theo dõi + mục Báo cáo tuần mới + cập nhật docs riêng tư). Quy trình merge ghi nhận đúng ý anh: develop cứ tích lũy, anh test xong v309 thì em chỉnh sửa nốt (kèm lỗi anh phát hiện lúc test) rồi hỏi anh xác nhận mới merge main.
+
+## [2026-11-27 22:59 +07] ChaMuse
+Đợt giờ tin cậy + theo dõi luật: builder XÂY XONG, mọi cổng xanh (PGlite m31 40/40, dotnet 0/0, tsc + build Dashboard). Điểm kỹ thuật chính: múi giờ gia đình đi xuống Agent qua heartbeat; ngưỡng lệch giờ siết 5 phút → 120 giây; unenforceable chỉ cài 1 trường hợp chắc chắn (domain bị cấm vẫn mở trong lúc extension mất dấu); khóa gộp observations dùng tên luật bản chụp. Đã giao reviewer độc lập kiểm kỹ (điểm nóng: families có policy UPDATE cho UI sửa múi giờ không, ngày quy thuộc usage đã theo giờ tin cậy chưa, RPC fetch giữ nguyên chữ ký).
+
+## [2026-11-27 23:04 +07] ChaMuse
+Review độc lập đợt giờ tin cậy + theo dõi luật: phần lõi ĐẠT hết (TrustedClock, migration 31 diff từng RPC an toàn, đối chiếu observations đúng, publisher không rò domain luật tắt vào danh sách chặn). Nhưng CHANGES REQUESTED vì 1 lỗi MAJOR: thẻ Múi giờ trên Dashboard báo "Đã lưu" giả cho phụ huynh thứ hai — RLS bảng families chỉ cho owner UPDATE, người không phải owner bấm lưu thì 0 dòng được ghi mà UI vẫn báo thành công (tài khoản của anh là owner nên không dính, nhưng phụ huynh thứ hai sẽ dính). Cộng 4 MINOR (khởi tạo trạng thái nghỉ lúc Service start còn dùng giờ máy; outbox cục bộ chưa cập nhật bản chụp tên khi luật đổi tên trong cửa sổ flush; PRD hứa tóm tắt trên thẻ luật chưa làm; nhãn unenforceable là suy luận theo heartbeat chứ không tuyệt đối). Đã giao fixer sửa cả 5 điểm.
