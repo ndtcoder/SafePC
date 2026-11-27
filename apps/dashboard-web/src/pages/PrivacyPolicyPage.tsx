@@ -54,6 +54,17 @@ export default function PrivacyPolicyPage() {
               Agent/Tray/extension dừng bất thường): chỉ loại sự kiện + thời điểm.
             </li>
             <li>
+              <strong>Đăng ký thông báo đẩy của phụ huynh</strong> (điểm nhận push trên
+              trình duyệt/thiết bị của phụ huynh + khóa công khai mã hóa của điểm nhận, kèm
+              nền tảng web/Android): gửi thông báo đẩy tới thiết bị của phụ huynh khi con
+              nhắn tin hoặc gửi yêu cầu mới, kể cả khi Dashboard đang đóng. Chỉ có khi phụ
+              huynh tự <strong>bật</strong> công tắc "Thông báo đẩy" trên Dashboard — đây là
+              dữ liệu của <strong>phụ huynh</strong>, không phải của con. Nội dung thông báo
+              đẩy chỉ gồm tên con và đoạn xem trước tối đa 60 ký tự của tin nhắn/yêu cầu mới
+              nhất; nội dung push được mã hóa theo chuẩn Web Push, chỉ thiết bị của phụ
+              huynh giải mã được.
+            </li>
+            <li>
               <strong>Email phụ huynh, tên hồ sơ con, tên máy</strong>: đăng nhập, phân biệt
               các con/máy.
             </li>
@@ -105,6 +116,13 @@ export default function PrivacyPolicyPage() {
             <li>
               <strong>Tin nhắn trong SafePC</strong>: giữ tới khi phụ huynh xóa dữ liệu của
               con (không tự hết hạn theo ngày như lịch sử web).
+            </li>
+            <li>
+              <strong>Đăng ký thông báo đẩy của phụ huynh</strong>: giữ tới khi phụ huynh
+              tắt thông báo đẩy trên Dashboard (xóa ngay khi tắt) hoặc điểm nhận bị dịch vụ
+              push báo đã hết hiệu lực (server tự xóa). Lịch sử đã gửi push (chỉ loại sự
+              kiện + thời điểm, không chứa nội dung tin) giữ theo nhu cầu quản lý của gia
+              đình như nhật ký hoạt động.
             </li>
             <li>
               <strong>Nhật ký hoạt động / sự kiện can thiệp / yêu cầu</strong>: giữ theo nhu
