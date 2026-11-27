@@ -101,6 +101,22 @@ Trạng thái: v1 cho Web/PWA đã xây ở cây local ngày 27/11/2026 (migrati
 - [ ] Kiểm chứng trên điện thoại thật: bật công tắc trên Dashboard (cài PWA lên màn hình chính trên iOS thì mới nhận push), con gửi tin → push tới trong tối đa ~5 phút dù Dashboard đang đóng; bấm push mở đúng tab Nhắn tin.
 - [ ] Android/FCM: để giai đoạn app Android — dùng chung bảng `push_subscriptions` (platform 'android') và cùng Edge Function, chỉ thêm đường gửi FCM.
 
+### Giờ tin cậy + theo dõi khi luật không chặn (anh Tiến yêu cầu 27/11/2026 — đã ghi thiết kế, chờ xếp đợt) ⏳
+
+Chi tiết thiết kế: PRD §2.14 (giờ tin cậy) + §2.15 (theo dõi luật), AMENDMENTS A-17 + A-18. Hai tính năng độc lập, có thể làm cùng một đợt Agent vì đều đụng tới vòng đánh giá luật và publisher.
+
+**Giờ tin cậy (PRD §2.14):**
+- [ ] Cài đặt "Múi giờ gia đình" trên Dashboard (mặc định Asia/Ho_Chi_Minh) + cột cài đặt phía backend (đọc qua đường đồng bộ luật hiện có).
+- [ ] Agent: đồng hồ tin cậy = giờ server lần đồng bộ cuối + TickCount64; mọi đánh giá luật theo giờ + ranh giới ngày chuyển sang giờ tin cậy quy đổi múi giờ gia đình.
+- [ ] Lệch > 120 giây → sự kiện `clock_drift` (đã có) + vẫn thi hành bằng giờ tin cậy; heartbeat báo độ lệch để thẻ thiết bị hiện cảnh báo.
+- [ ] Kiểm chứng máy thật: chỉnh giờ hệ thống ±, đổi múi giờ Windows, mất mạng qua đêm, khởi động lại khi chưa có mạng.
+
+**Theo dõi khi luật không chặn (PRD §2.15):**
+- [ ] Migration 31: bảng `rule_observations` (gộp theo luật/ngày/đối tượng, bản chụp tên + mode của luật, ngữ cảnh rule_disabled/temp_allowed/unenforceable, giữ 90 ngày, RLS đọc theo gia đình) + RPC đẩy theo token thiết bị + bổ sung vào xuất/xóa dữ liệu của con.
+- [ ] Publisher phát thêm `monitorRules` (luật đang tắt ở dạng chỉ-theo-dõi + luật đang bật để gắn ngữ cảnh tạm-cho-phép); Service đối chiếu mẫu sử dụng đã thu, gộp và đẩy observations.
+- [ ] Dashboard: công tắc "Theo dõi cả khi luật không chặn" trong form luật (mặc định bật), mục mới trong Báo cáo tuần + tóm tắt trên thẻ luật; cập nhật docs/09 + trang Chính sách riêng tư.
+- [ ] Kiểm chứng máy thật: tắt luật cấm domain rồi vào thử; mở khóa tạm thời rồi dùng app bị cấm; sửa luật giữa chừng (dòng cũ giữ bản chụp cũ); xóa luật (dừng ghi).
+
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
 **Tính năng nâng cao + giao diện chuyên nghiệp (theo thứ tự ưu tiên):**
