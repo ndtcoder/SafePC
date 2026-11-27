@@ -91,6 +91,25 @@ public enum ChatSessionMintStatus
     Failed,
 }
 
+/// <summary>Trạng thái một lần báo tài khoản Windows đã thấy (migration 25).</summary>
+public enum SeenAccountReportStatus
+{
+    /// <summary>Server đã ghi nhận tài khoản (upsert theo device + SID).</summary>
+    Reported,
+
+    /// <summary>Chưa ghép nối máy (chưa có device token) hoặc chưa cấu hình
+    /// Supabase — nơi gọi bỏ qua êm, không coi là lỗi.</summary>
+    NotPaired,
+
+    /// <summary>RPC chưa có trên server (migration 25 chưa áp — PostgREST
+    /// trả 404/PGRST202). Nơi gọi cảnh báo MỘT lần rồi bỏ qua mềm.</summary>
+    RpcMissing,
+
+    /// <summary>Lỗi mạng/server khác — nơi gọi thử lại ở lần hello sau
+    /// (đã có throttle theo SID nên không thành bão).</summary>
+    Failed,
+}
+
 /// <summary>
 /// Client gọi Supabase từ Agent qua PostgREST RPC (xem migration
 /// backend/supabase/migrations/20261116170000_device_rpc.sql).
@@ -592,6 +611,17 @@ public sealed class SupabaseApiClient
                     // Body lỗi không đọc được: phân loại theo mã HTTP ở dưới.
                 }
 
+                // Máy đã ghép nối nhưng CHƯA gắn hồ sơ con nào: server
+                // raise 'device_not_assigned' (migration 29, HTTP 400).
+                // Đây là trạng thái cấu hình cố định — "thử lại sau"
+                // không bao giờ tự khỏi — nên map về NotPaired để Tray
+                // báo đúng câu chưa-ghép-nối-hồ-sơ thay vì Failed chung.
+                if (body.Contains("device_not_assigned", StringComparison.Ordinal))
+                {
+                    LogThrottled(function, "Máy chưa gắn hồ sơ con (device_not_assigned) — không cấp được phiên chat.");
+                    return (ChatSessionMintStatus.NotPaired, null);
+                }
+
                 // Như SendSearchTermsAsync: chỉ 404/PGRST202 mới là "chưa
                 // áp migration 29"; lỗi khác (401/400/5xx) là Failed thường.
                 if ((int)response.StatusCode == 404 || body.Contains("PGRST202", StringComparison.Ordinal))
@@ -622,6 +652,88 @@ public sealed class SupabaseApiClient
                 LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
                 return (ChatSessionMintStatus.Failed, null);
             }
+        }
+    }
+
+    /// <summary>
+    /// Báo server một tài khoản Windows mà Tray vừa thấy trên máy này
+    /// (migration 25, RPC <c>safepc_report_seen_account</c>): phía IPC gọi
+    /// mỗi khi một phiên Tray hello (đã throttle theo SID ở phía IPC) để
+    /// Dashboard liệt kê được các tài khoản Windows khi phụ huynh gắn tài
+    /// khoản với hồ sơ con. Server upsert theo (device_id, windows_sid) —
+    /// báo lại chỉ cập nhật username/is_admin/last_seen_at. Giống
+    /// <see cref="SendChatSessionMintAsync"/>, hàm này gọi HTTP trực tiếp
+    /// thay vì qua <see cref="PostRpcAsync{T}"/> vì nơi gọi phải phân biệt
+    /// "RPC chưa áp" (404/PGRST202) với lỗi thường. Không log token: chỉ
+    /// hash của token được gửi đi như mọi RPC thiết bị.
+    /// </summary>
+    public async Task<SeenAccountReportStatus> ReportSeenAccountAsync(
+        string sid, string? username, bool isAdmin, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(sid);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Báo tài khoản đã thấy bỏ qua: " + reason + ".");
+            return SeenAccountReportStatus.NotPaired;
+        }
+
+        const string function = "safepc_report_seen_account";
+        string url = _baseUrl + "/rest/v1/rpc/" + function;
+        string json = JsonSerializer.Serialize(new
+        {
+            p_device_id = creds.DeviceId,
+            p_token_hash = Hashing.HashSecret(creds.Token),
+            p_windows_sid = sid,
+            p_windows_username = username,
+            p_is_admin = isAdmin,
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogThrottled(function, "Không nối được tới server (" + function + ").", ex);
+            return SeenAccountReportStatus.Failed;
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                string body = string.Empty;
+                try
+                {
+                    body = await response.Content.ReadAsStringAsync(ct);
+                }
+                catch (HttpRequestException)
+                {
+                    // Body lỗi không đọc được: phân loại theo mã HTTP ở dưới.
+                }
+
+                // Như SendSearchTermsAsync: chỉ 404/PGRST202 mới là "chưa
+                // áp migration 25"; lỗi khác (401/400/5xx) là Failed thường.
+                if ((int)response.StatusCode == 404 || body.Contains("PGRST202", StringComparison.Ordinal))
+                {
+                    LogThrottled(function, "RPC " + function + " chưa có trên server (migration 25 chưa áp).");
+                    return SeenAccountReportStatus.RpcMissing;
+                }
+
+                LogThrottled(function, "Server từ chối " + function + " (HTTP " + (int)response.StatusCode + ").");
+                return SeenAccountReportStatus.Failed;
+            }
+
+            // RPC trả jsonb {device_id, windows_sid, last_seen_at} nhưng
+            // nơi gọi không cần giá trị nào trong đó — HTTP 2xx là đủ xác
+            // nhận server đã upsert (như PostRpcNoResultAsync).
+            return SeenAccountReportStatus.Reported;
         }
     }
 

@@ -105,6 +105,28 @@ public sealed class IpcPipeServer : BackgroundService
     /// </summary>
     private readonly Dictionary<int, DateTimeOffset> _lastHelloBySession = new();
 
+    /// <summary>Khoảng cách tối thiểu giữa hai lần báo cùng một SID lên server (migration 25): hello lặp lại mỗi lần Tray reconnect (~2 phút) nhưng server chỉ cần last_seen_at tươi ở mức này.</summary>
+    private static readonly TimeSpan SeenAccountReportInterval = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Lần báo gần nhất theo SID (migration 25, RPC
+    /// safepc_report_seen_account): chống ghi dồn khi Tray reconnect liên
+    /// tục. Chỉ chạm dưới <see cref="_seenAccountGate"/>; mục đã quá hạn
+    /// throttle được dọn khi từ điển phình (mục quá hạn đằng nào cũng được
+    /// phép báo lại, giữ chỉ tốn bộ nhớ).
+    /// </summary>
+    private readonly Dictionary<string, DateTimeOffset> _lastSeenReportBySid = new();
+    private readonly object _seenAccountGate = new();
+
+    /// <summary>
+    /// Đã cảnh báo "RPC báo tài khoản đã thấy chưa có trên server" trong
+    /// vòng đời process này chưa (migration 25 chưa áp): mẫu cờ
+    /// _searchTermsRpcMissingWarned của AgentWorker — cảnh báo MỘT lần,
+    /// reset khi báo thành công trở lại. Chỉ chạm dưới
+    /// <see cref="_seenAccountGate"/>.
+    /// </summary>
+    private bool _seenAccountRpcMissingWarned;
+
     /// <summary>
     /// Chụp trạng thái hello của mọi phiên từng có Tray: vòng lặp watchdog
     /// của AgentWorker dùng để phát hiện Tray tắt bất thường. Trả về rỗng
@@ -929,6 +951,14 @@ public sealed class IpcPipeServer : BackgroundService
                         + (hello.Sid is null ? " (chưa gửi SID — Tray cũ)" : " (đã gửi SID)")
                         + " — lệnh khóa/cảnh báo " + (hello.IsAdmin ? "sẽ MIỄN phiên này." : "sẽ giao tới phiên này."));
 
+                    // Migration 25: báo tài khoản Windows của ĐÚNG phiên
+                    // vừa hello lên server (Dashboard liệt kê khi phụ
+                    // huynh gắn tài khoản với hồ sơ con). Fire-and-forget
+                    // có kiểm soát + throttle theo SID — xem
+                    // ReportSeenAccountInBackground; không await để luồng
+                    // đồng bộ trạng thái ngay dưới không bị trễ.
+                    ReportSeenAccountInBackground(hello, ct);
+
                     // ĐỒNG BỘ TRẠNG THÁI KHI TRAY MỚI NỐI (sửa 17/11/2026
                     // theo yêu cầu test máy thật): Tray thoát rồi chạy lại
                     // (hoặc đăng nhập lại sau khi thoát bằng PIN) mà Service
@@ -1033,6 +1063,10 @@ public sealed class IpcPipeServer : BackgroundService
                 await SendToWriterAsync(entry, IpcMessage.Create(IpcMessageTypes.RemainingTimeResponse, remainingResponse), ct);
                 break;
 
+            case IpcMessageTypes.ChatOpenRequest:
+                await HandleChatOpenAsync(message, entry, ct);
+                break;
+
             case IpcMessageTypes.PinVerifyRequest:
                 await HandlePinVerifyAsync(message, entry, ct);
                 break;
@@ -1040,6 +1074,173 @@ public sealed class IpcPipeServer : BackgroundService
             default:
                 _log.Warning("IPC: message không rõ loại, bỏ qua: " + message.Type);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Báo lên server tài khoản Windows của phiên vừa hello (migration
+    /// 25, RPC <c>safepc_report_seen_account</c>) để Dashboard liệt kê
+    /// được các tài khoản Windows trên máy khi phụ huynh gắn tài khoản
+    /// với hồ sơ con. Fire-and-forget có kiểm soát (mẫu
+    /// OnForegroundReportReceived của AgentWorker): KHÔNG await trong
+    /// luồng hello — việc đồng bộ trạng thái khóa/cảnh báo ngay sau hello
+    /// không bị trễ vì một lần gọi HTTP; lỗi được bắt trọn trong
+    /// <see cref="ReportSeenAccountCoreAsync"/> nên không bao giờ làm
+    /// hỏng luồng hello. Throttle trong bộ nhớ: mỗi SID tối đa 1 lần gọi
+    /// / 10 phút trong vòng đời process (hello lặp lại mỗi lần Tray
+    /// reconnect ~2 phút); mốc được ghi khi QUYẾT ĐỊNH gọi — server đang
+    /// lỗi hay RPC chưa áp thì nhịp gọi vẫn bị throttle, không thành bão.
+    /// </summary>
+    private void ReportSeenAccountInBackground(HelloPayload hello, CancellationToken ct)
+    {
+        string? sid = hello.Sid;
+        if (string.IsNullOrWhiteSpace(sid))
+        {
+            // Tray cũ chưa gửi SID: RPC từ chối SID rỗng (P0001) và hàng
+            // không SID không có giá trị gắn con — không có gì để báo.
+            return;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        lock (_seenAccountGate)
+        {
+            if (_lastSeenReportBySid.TryGetValue(sid, out DateTimeOffset last)
+                && now - last < SeenAccountReportInterval)
+            {
+                return;
+            }
+
+            _lastSeenReportBySid[sid] = now;
+
+            // Dọn mục đã quá hạn throttle khi từ điển phình: các SID đó
+            // đằng nào cũng được phép báo lại, giữ chỉ tốn bộ nhớ.
+            if (_lastSeenReportBySid.Count > 64)
+            {
+                var stale = new List<string>();
+                foreach (KeyValuePair<string, DateTimeOffset> pair in _lastSeenReportBySid)
+                {
+                    if (now - pair.Value >= SeenAccountReportInterval)
+                    {
+                        stale.Add(pair.Key);
+                    }
+                }
+
+                foreach (string key in stale)
+                {
+                    _lastSeenReportBySid.Remove(key);
+                }
+            }
+        }
+
+        _ = ReportSeenAccountCoreAsync(sid, hello.UserName, hello.IsAdmin, ct);
+    }
+
+    /// <summary>
+    /// Lượt báo tài khoản đã thấy chạy nền: tự bắt mọi lỗi. NotPaired và
+    /// Failed đã được <see cref="SupabaseApiClient"/> log throttled nên ở
+    /// đây không log thêm (tránh spam theo nhịp hello); riêng RpcMissing
+    /// (migration 25 chưa áp) cảnh báo MỘT lần cho cả vòng đời process —
+    /// mẫu FlushSearchTermsAsync/_searchTermsRpcMissingWarned của
+    /// AgentWorker — và reset cờ khi báo thành công trở lại để lần mất
+    /// RPC sau lại cảnh báo được.
+    /// </summary>
+    private async Task ReportSeenAccountCoreAsync(string sid, string? userName, bool isAdmin, CancellationToken ct)
+    {
+        try
+        {
+            SeenAccountReportStatus status = await _api.ReportSeenAccountAsync(sid, userName, isAdmin, ct).ConfigureAwait(false);
+            if (status == SeenAccountReportStatus.RpcMissing)
+            {
+                bool warn;
+                lock (_seenAccountGate)
+                {
+                    warn = !_seenAccountRpcMissingWarned;
+                    _seenAccountRpcMissingWarned = true;
+                }
+
+                if (warn)
+                {
+                    _log.Warning("IPC: RPC safepc_report_seen_account chưa có trên server (migration 25 chưa áp) — Dashboard chưa liệt kê được tài khoản Windows đã thấy trên máy này; sẽ tự báo lại khi migration được áp.");
+                }
+            }
+            else if (status == SeenAccountReportStatus.Reported)
+            {
+                lock (_seenAccountGate)
+                {
+                    _seenAccountRpcMissingWarned = false;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("IPC: báo tài khoản Windows đã thấy lỗi.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Cấp phiên chat cho con khi con bấm "Nhắn tin với bố mẹ" (migration
+    /// 29): Service lấy SID của phiên từ bản tin hello của ĐÚNG kết nối pipe
+    /// đã hỏi (quyền quyết định phía server — payload câu hỏi cố ý không
+    /// mang SID, xem <see cref="ChatOpenRequestPayload"/>), gọi RPC
+    /// <c>safepc_mint_chat_session</c> rồi trả URL trang chat đầy đủ về đúng
+    /// writer đã hỏi. URL chứa token phiên trong fragment: chỉ đi trên pipe
+    /// nội bộ máy, KHÔNG bao giờ ghi log (kể cả khi ghi lỗi) — log chỉ ghi
+    /// sự kiện + mã lỗi. Mọi lỗi đều có câu trả lời (fail mềm kèm mã lỗi để
+    /// Tray dịch sang câu chữ cho con), handler không ném exception ra vòng
+    /// đọc pipe.
+    /// </summary>
+    private async Task HandleChatOpenAsync(IpcMessage message, WriterEntry entry, CancellationToken ct)
+    {
+        ChatOpenRequestPayload? request = message.GetPayload<ChatOpenRequestPayload>();
+        string requestId = request?.RequestId ?? string.Empty;
+
+        async Task ReplyAsync(bool ok, string? url, string? error)
+        {
+            await SendToWriterAsync(entry, IpcMessage.Create(
+                IpcMessageTypes.ChatOpenResponse,
+                new ChatOpenResponsePayload(ok, url, error, requestId)), ct);
+        }
+
+        // SID của phiên: đọc dưới khóa như các nhánh khác (hello ghi dưới
+        // cùng khóa này). Phiên chưa hello thì null — RPC ghi theo con mặc
+        // định của máy, như các đường fallback khác.
+        string? sid;
+        lock (_writersLock)
+        {
+            sid = entry.Sid;
+        }
+
+        try
+        {
+            (ChatSessionMintStatus status, ChatSessionMintResult? result) = await _api.SendChatSessionMintAsync(sid, ct);
+            switch (status)
+            {
+                case ChatSessionMintStatus.Ok when result is not null:
+                    string chatUrl = AgentConstants.ChatPageUrl + "#t=" + Uri.EscapeDataString(result.Token);
+                    _log.Info("IPC: đã cấp phiên chat cho một Tray (hết hạn " + result.ExpiresAt.ToString("o") + "), trả URL trang chat về đúng phiên đã hỏi.");
+                    await ReplyAsync(ok: true, url: chatUrl, error: null);
+                    break;
+
+                case ChatSessionMintStatus.NotPaired:
+                    _log.Warning("IPC: xin phiên chat bị từ chối: máy chưa ghép nối (not_paired).");
+                    await ReplyAsync(ok: false, url: null, error: ChatOpenErrors.NotPaired);
+                    break;
+
+                case ChatSessionMintStatus.RpcMissing:
+                    _log.Warning("IPC: xin phiên chat bị từ chối: server chưa bật nhắn tin (chat_not_enabled, migration 29 chưa áp).");
+                    await ReplyAsync(ok: false, url: null, error: ChatOpenErrors.ChatNotEnabled);
+                    break;
+
+                default:
+                    _log.Warning("IPC: xin phiên chat thất bại (failed).");
+                    await ReplyAsync(ok: false, url: null, error: ChatOpenErrors.Failed);
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Error("IPC: xử lý yêu cầu mở nhắn tin lỗi.", ex);
+            await ReplyAsync(ok: false, url: null, error: ChatOpenErrors.Failed);
         }
     }
 
