@@ -107,6 +107,7 @@ internal static class DomainCategoryLists
                 "vk.com",
                 "whatsapp.com",
                 "x.com",
+                "zalo.me",
             },
         };
 
