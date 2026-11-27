@@ -20,6 +20,7 @@ không dùng dữ liệu để huấn luyện AI.
 | Tên miền + đường dẫn web đã xem + thời lượng (giây) | Đếm giờ web, thi hành chặn website, báo cáo tuần | Chỉ domain + đường dẫn (VD: youtube.com/watch). **Đã bỏ phần truy vấn (?...) và fragment (#...)** — không lưu link đầy đủ, không đọc nội dung trang. Lượt web bị chặn chỉ lưu tên miền, không có đường dẫn. |
 | Cụm từ tìm kiếm trên các công cụ tìm kiếm (Google, Bing, DuckDuckGo, Yahoo, Cốc Cốc) + dấu hiệu bị chặn hay không | Thi hành chặn từ khóa tìm kiếm, thống kê trong báo cáo tuần | Chỉ cụm từ con gõ vào ô tìm kiếm của các công cụ này mới được lưu (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-14). Phần truy vấn của mọi link khác vẫn bị bỏ như lịch sử web ở trên. |
 | Tin nhắn giữa phụ huynh và con trong SafePC (nội dung + mốc đã đọc) | Kênh liên lạc hai chiều trong gia đình ngay trong sản phẩm, để con khỏi dùng ứng dụng nhắn tin bên ngoài | Nội dung do CHÍNH phụ huynh và con chủ động gửi trong kênh của SafePC (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-15) — khác với nội dung chat ở ứng dụng khác, mà SafePC không đọc (mục 2). Tin nhắn có trong file xuất dữ liệu của con và bị xóa khi xóa dữ liệu của con. |
+| Đăng ký thông báo đẩy của phụ huynh (điểm nhận push trên trình duyệt/thiết bị + khóa công khai mã hóa của điểm nhận) | Gửi thông báo đẩy tới thiết bị của phụ huynh khi con nhắn tin hoặc gửi yêu cầu mới, kể cả khi Dashboard đang đóng | Chỉ có khi phụ huynh tự BẬT công tắc "Thông báo đẩy" trên Dashboard (quyết định của phụ huynh ngày 27/11/2026, xem AMENDMENTS A-16). Đây là dữ liệu của PHỤ HUYNH, không phải của con. Tắt công tắc thì đăng ký bị xóa ngay. Thông báo đẩy hiện tiêu đề + đoạn xem trước tối đa 60 ký tự của tin nhắn mới nhất; nội dung push được mã hóa theo chuẩn Web Push, chỉ thiết bị của phụ huynh giải mã được. |
 | Quy tắc phụ huynh đặt (giờ giấc, danh sách chặn, giới hạn) | Thi hành trên máy con | Do phụ huynh nhập trên Dashboard. |
 | Trạng thái máy (online/offline, đang khóa hay mở, phiên bản Agent) | Hiển thị trên Dashboard, cảnh báo khi máy offline | Heartbeat mỗi 60 giây. |
 | Yêu cầu của con (xin thêm giờ, xin mở ứng dụng/trang web) + quyết định của phụ huynh | Duyệt yêu cầu, nhật ký hoạt động | Nội dung do con/phụ huynh tự nhập (số phút, lý do ngắn). |
@@ -60,6 +61,11 @@ không dùng dữ liệu để huấn luyện AI.
   tự xóa các hàng cũ hơn mỗi ngày.
 - **Tin nhắn trong SafePC**: giữ tới khi phụ huynh xóa dữ liệu của con
   (không tự hết hạn theo ngày như lịch sử web).
+- **Đăng ký thông báo đẩy của phụ huynh**: giữ tới khi phụ huynh tắt
+  thông báo đẩy trên Dashboard (xóa ngay khi tắt) hoặc điểm nhận bị
+  dịch vụ push báo đã hết hiệu lực (server tự xóa). Lịch sử đã gửi
+  push (loại sự kiện + thời điểm, không nội dung tin) giữ theo nhu
+  cầu đối soát của gia đình như nhật ký hoạt động.
 - **Mẫu dùng ứng dụng**: mẫu chi tiết giữ 7 ngày cho việc tính giờ; số liệu
   tổng hợp theo ngày giữ 90 ngày.
 - **Nhật ký hoạt động / sự kiện can thiệp / yêu cầu**: giữ theo nhu cầu quản

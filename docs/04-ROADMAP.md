@@ -86,6 +86,21 @@ Trạng thái: đã xây ở cây local ngày 27/11/2026 (migration 29 + Dashboa
 - [ ] Anh chạy tay migration 29 qua SQL Editor — SAU migration 24 (RPC mint cần bảng ánh xạ thiết bị ↔ con của Sprint 5).
 - [ ] Đẩy GitHub cùng đợt sau test v0.1.309 + kiểm chứng trên máy thật (con mở chat từ khay, hai phía nhắn qua lại, trạng thái đã xem khớp, thu hồi phiên thì trang con báo hết hạn).
 
+### Thông báo đẩy cho phụ huynh (anh Tiến yêu cầu 27/11/2026 — BẮT BUỘC cho nhắn tin) 🔨
+
+Trạng thái: v1 cho Web/PWA đã xây ở cây local ngày 27/11/2026 (migration 30 + Edge Function `send-push-notifications` + service worker và công tắc trên Dashboard; harness migration 30 đạt 26/26), CHƯA deploy, CHƯA đẩy GitHub. Chi tiết xem PRD §2.13 và AMENDMENTS A-16. Động cơ: con xin mở chat.zalo.me 4 lần mà phụ huynh không biết vì không mở web/app — push phải tới thiết bị kể cả khi Dashboard đang đóng.
+
+- [x] Backend migration 30: bảng `push_subscriptions` (RLS chỉ chủ sở hữu; `platform` để sẵn 'web'/'android') + cột `messages.push_notified_at` + bảng `push_sends` (unique theo sự kiện × người nhận) + job cron `safepc-push-notifications` mỗi 5 phút.
+- [x] Edge Function `send-push-notifications`: quét tin chat của con (gộp theo con, xem trước ≤60 ký tự cắt ở server) + yêu cầu mới của con (gộp theo con, tối đa 1 push/con/10 phút); kênh độc lập với email; subscription chết (404/410) tự xóa; gửi bằng Web Push (VAPID) qua thư viện `web-push` chạy trong Edge Runtime.
+- [x] Dashboard: service worker `public/sw.js` (sự kiện push + bấm thông báo mở đúng trang chat / trang Yêu cầu; không cache theo thiết kế) + công tắc "Thông báo đẩy" cạnh chuông thông báo ở header (bật: xin quyền + đăng ký subscription; tắt: hủy đăng ký + xóa dòng; thiếu `VITE_VAPID_PUBLIC_KEY` thì disable kèm ghi chú, không crash).
+- [ ] **Anh làm tay — tạo cặp khóa VAPID:** chạy `npx web-push generate-vapid-keys` trên máy của anh, giữ private key ở nơi an toàn (KHÔNG gửi qua chat, KHÔNG đưa vào repo).
+- [ ] **Anh làm tay — đặt secret Supabase** (Edge Functions → Secrets): `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` (từ cặp khóa trên) + `VAPID_SUBJECT` = `mailto:admin@ndt.ap.vn`.
+- [ ] **Anh làm tay — đặt biến Vercel** cho project Dashboard: `VITE_VAPID_PUBLIC_KEY` = public key ở trên (Production) rồi Redeploy.
+- [ ] **Anh làm tay — deploy Edge Function** `send-push-notifications` (tắt Verify JWT như 3 function hiện có).
+- [ ] **Anh chạy tay migration 30** qua SQL Editor — SAU migration 29 — và THAY placeholder `<DAT_SECRET_CUA_ANH>` trong lệnh cron bằng WEEKLY_REPORT_SECRET thật trước khi chạy (như migration 11/12).
+- [ ] Kiểm chứng trên điện thoại thật: bật công tắc trên Dashboard (cài PWA lên màn hình chính trên iOS thì mới nhận push), con gửi tin → push tới trong tối đa ~5 phút dù Dashboard đang đóng; bấm push mở đúng tab Nhắn tin.
+- [ ] Android/FCM: để giai đoạn app Android — dùng chung bảng `push_subscriptions` (platform 'android') và cùng Edge Function, chỉ thêm đường gửi FCM.
+
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
 **Tính năng nâng cao + giao diện chuyên nghiệp (theo thứ tự ưu tiên):**
