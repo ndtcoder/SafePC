@@ -4236,3 +4236,51 @@ Báo cáo: nhánh develop đã tạo từ head main b5414b5 (repo có 3 nhánh: 
 
 ## [2026-11-27 17:36 +07] ChaMuse
 Báo cáo tổng kết: mọi thứ đã lên develop (13 commit ahead main: nhắn tin 9, migration 25/26 3, CI 1; head b069c5b). Nhắn tin qua 2 vòng review (sửa 2 lỗi trung bình), harness 43/43. Migration 25/26 review APPROVED (21/21 + 23/23), Service đã nối lời gọi M25. Phát hiện CI không chạy trên develop (ci.yml chỉ trigger main) — đã sửa ci.yml trên develop (thêm develop + workflow_dispatch), run #334 XANH cả 4 job, Tray 19/19, IPC 13/13, có bản cài v0.1.334 (gồm nhắn tin) tải được; đã ghi danh sách build. Việc của anh khi rảnh: áp migration 25 → 26 → 29 (điều kiện đã đủ hết). Tư vấn merge: đợt develop này là một update lớn mạch lạc, nên merge lên main sau khi anh test xong v0.1.309 cuối tuần.
+
+## [2026-11-27 18:34 +07] ChaMuse (tin chủ động)
+Hai việc về Diệu Linh từ Family Safety hôm nay: (1) Con xin mở chat.zalo.me 4 lần chiều nay 14:26–14:50, dồn dập 24 phút — quyết định nằm ở family.microsoft.com, chỉ còn ý nghĩa tối nay; nhắn tin SafePC chưa live nên Zalo là đường duy nhất tối nay. (2) Báo cáo tuần 20–26/11: 25 lượt tìm kiếm bị gắn cờ, tất cả quanh một cụm từ nhạy cảm về ảnh người lớn — bước nhảy so với các kỳ trước (0, rồi 2 lượt "zalo"). Đề xuất tạo luật "Chặn từ khóa tìm kiếm" từ mẫu trên Dashboard (tích sẵn nhóm người lớn), nói rõ luật chỉ có hiệu lực khi máy con chạy extension 0.1.11 + agent v0.1.332. Kèm 2 nút chọn: đã xử lý Zalo / tạo luật giúp anh.
+
+## [2026-11-27 18:36 +07] Anh Tiến
+Anh đã xử lý trên Family Safety rồi
+
+## [2026-11-27 18:36 +07] ChaMuse
+Xác nhận đã đóng việc Zalo. Nhắc nhẹ: nút tạo luật chặn từ khóa vẫn còn đó khi anh muốn.
+
+## [2026-11-27 18:37 +07] Anh Tiến
+Tạo luật chặn từ khóa giúp anh
+
+## [2026-11-27 18:37 +07] ChaMuse
+Đã nhận và đang tạo luật trên Dashboard cho hồ sơ Diệu Linh theo đúng mẫu (chỉ nhóm Nội dung người lớn, 15 từ, không thêm nhóm khác) — xong em báo lại kèm kiểm chứng.
+
+## [2026-11-27 18:38 +07] Anh Tiến
+Việc con xin vào zalo 4 lần mà a ko biết chính là lý do a muốn tạo phần nhắn tin cho app SafePC. Yêu cầu là phải có push notification (cả trên android và pwa) để a ko bị miss tin dù đang ko bật app/web
+
+## [2026-11-27 18:40 +07] ChaMuse
+Đã ghi yêu cầu push là BẮT BUỘC cho nhắn tin (thay quyết định hoãn trước đây). Đã khởi động xây: Web Push cho PWA ngay đợt này (migration 30 + service worker + Edge Function quét 5 phút/lần), phạm vi gồm tin nhắn mới của con VÀ yêu cầu của con (đúng bài học vụ Zalo); Android/FCM dùng chung backend, làm ở giai đoạn app Android. Nhắc: thẻ đăng nhập tạo luật từ khóa vẫn đang chờ anh nhập.
+
+## [2026-11-27 18:43 +07] ChaMuse
+Báo: đăng nhập Dashboard bị từ chối — trang báo "Email hoặc mật khẩu không đúng" với thông tin anh vừa nhập (ductien246@gmail.com), luật chưa tạo được. Đã cho tác vụ thử lại: sẽ có thẻ bảo mật mới để anh nhập lại; lưu ý dùng đúng email đã đăng ký tài khoản phụ huynh SafePC + mật khẩu hiện tại. Phương án khác: anh tự tạo luật trong ~2 phút trên Dashboard, hoặc tiếp quản trình duyệt tự đăng nhập.
+
+## [2026-11-27 18:44 +07] ChaMuse
+Luật "Chặn từ khóa tìm kiếm" ĐÃ TẠO XONG cho Diệu Linh lúc 18:42 (sau khi anh nhập lại mật khẩu đúng qua tiếp quản): đang bật, chỉ nhóm Nội dung người lớn (16+/18+), tổng 15 từ khóa, không nhóm khác/không từ riêng; tổng luật của con tăng 8 → 9. Lưu ý hiệu lực: chỉ chặn thật khi máy con chạy extension 0.1.11 + agent v0.1.332 trở lên — cuối tuần anh test v0.1.309 thì luật có sẵn nhưng chưa "cắn".
+
+## [2026-11-27 18:45 +07] Anh Tiến
+Em tìm trên các bộ filter phổ biến trên mạng để tự update từ khóa hoặc phân loại domain theo các nhóm trên nhé. Như vậy ngoài kiểm duyệt tìm kiếm chúng ta còn có kiểm duyệt domain theo nhóm (danh sách domain từng nhóm tìm trên mạng)
+
+## [2026-11-27 18:47 +07] ChaMuse
+Đã khởi động nghiên cứu các bộ filter list công khai (StevenBlack, UT1 Toulouse, Block List Project, hagezi, oisd...) — đối chiếu giấy phép + số lượng + ánh xạ sang 6 nhóm; domain mở rộng từ 3 nhóm hạt giống (54 domain) thành 6 nhóm theo đúng taxonomy từ khóa. Lưu ý trung thực: list gốc rất lớn (người lớn >100k) mà extension có trần ~30k rule DNR nên sẽ nhập có chọn lọc theo ngân sách; đợt xây danh sách chạy sau đợt push để tránh đụng file.
+
+## [2026-11-27 18:48 +07] ChaMuse
+Nghiên cứu filter list XONG, báo cáo ở hidden_files/filter-lists-research.md. Kết quả chính: StevenBlack (MIT) porn 76.801/gambling 6.723/social 3.808; UT1 (CC BY-SA) là nguồn duy nhất có bạo lực (~450)/game (35.396)/phim (3.874), adult 4,6 triệu không dùng nguyên; HaGeZi/OISD là GPL-3.0; Energized có NC nên loại. Ngân sách DNR đề xuất ~19.500 domain (adult 8.000/gambling 4.000/social 2.500/phim 2.000/game 2.500/bạo lực 500), chọn lọc theo giao nhau ≥2 nguồn → Top 1M. Từ khóa: LDNOOBW V2 (CC0) có 1.031 từ tiếng Việt cho nhóm người lớn (cần rà tay); KHÔNG có list công khai cho từ khóa cờ bạc/game/phim/mạng xã hội — biên tập tay + học từ thống kê thật. Đang hỏi anh chốt giấy phép: chỉ nguồn sạch (em khuyên) hay dùng cả GPL kèm ghi công.
+
+## [2026-11-27 18:52 +07] ChaMuse
+Đợt push notification: builder XÂY XONG ở cây local, cổng tự chạy đạt (harness M30 26/26, logic function 23/23, Dashboard build xanh kể cả khi thiếu VAPID key, quét bí mật 0). Đã giao reviewer độc lập kiểm chứng lại từ đầu; đạt thì đẩy develop. Bước tay của anh (VAPID + secret) sẽ tổng hợp ở báo cáo cuối.
+
+## [2026-11-27 18:54 +07] Anh Tiến
+Chỉ dùng nguồn sạch (MIT/CC/Unlicense) — em khuyên phương án này
+
+## [2026-11-27 18:55 +07] ChaMuse
+Đã ghi quyết định giấy phép vào bộ nhớ. Đồng thời báo: review độc lập đợt push = APPROVED (chạy lại toàn bộ cổng: harness 26/26, build xanh, quét bí mật 0), còn 3 điểm MINOR (cắt preview có thể rơi dấu ở biên 60 ký tự; trang chính sách công khai chưa cập nhật mục push; nhãn trạng thái quét ghi 'sent' chưa trung thực) — đã giao fixer sửa, xong sẽ đẩy develop. Đợt danh sách bắt đầu ngay sau đó với nguồn sạch.
+
+## [2026-11-27 19:04 +07] ChaMuse
+Đợt push notification ĐÃ ĐẨY LÊN DEVELOP (9 commit 642a343→64760fc, head develop 64760fc, 22 commit ahead main; API GitHub xác nhận A-16 đã có trên develop). Đang kiểm tra CI của commit Dashboard cuối (85377b9). Đợt danh sách 6 nhóm domain + từ khóa ĐÃ KHỞI ĐỘNG xây với nguồn sạch. Tổng hợp bước tay của anh để nhắn tin + push chạy thật: áp migration 25 → 26 → 29 → 30; VAPID + 3 secret + deploy function + VITE_VAPID_PUBLIC_KEY trên Vercel.
