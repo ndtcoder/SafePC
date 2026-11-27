@@ -82,7 +82,7 @@ Trạng thái: đã xây ở cây local ngày 27/11/2026 (migration 29 + Dashboa
 - [x] Backend migration 29: bảng `messages` (RLS: gia đình đọc, phụ huynh tự gửi, con chỉ ghi qua RPC) + bảng `chat_sessions` (token phiên 12 giờ, chỉ lưu hash, không policy cho user thường) + RPC mint/fetch/send/mark_read theo token phiên, RPC phụ huynh mark_read + revoke phiên; mở rộng RPC xóa dữ liệu con (migration 15) thêm messages + chat_sessions.
 - [x] Dashboard: tab "Nhắn tin" trong hồ sơ con (polling 5 giây, trạng thái Đã xem/Đã gửi) + trang chat của con `/nhan-tin` ngoài RequireAuth (chỉ 3 RPC theo token phiên) + mục "Tin nhắn" trong xuất dữ liệu con (phiên nhắn tin không xuất — thông tin xác thực).
 - [x] Cập nhật ranh giới riêng tư: lưu NỘI DUNG tin nhắn của kênh hai chiều trong sản phẩm (cả hai phía đều là người tham gia) — đã ghi vào PRD §2.13, Chính sách riêng tư (trang công khai + docs/09) và AMENDMENTS A-15; ranh giới không đọc nội dung chat ở ứng dụng khác giữ nguyên.
-- [ ] Móc nối Agent: mục mở nhắn tin trong menu khay → Service gọi `safepc_mint_chat_session` bằng token thiết bị (kèm SID của phiên) → mở trình duyệt tới `/nhan-tin#t=<token>` (builder Agent phụ trách).
+- [x] Móc nối Agent: mục mở nhắn tin trong menu khay → Service gọi `safepc_mint_chat_session` bằng token thiết bị (kèm SID của phiên) → mở trình duyệt tới `/nhan-tin#t=<token>` (đã xây xong ở cây local).
 - [ ] Anh chạy tay migration 29 qua SQL Editor — SAU migration 24 (RPC mint cần bảng ánh xạ thiết bị ↔ con của Sprint 5).
 - [ ] Đẩy GitHub cùng đợt sau test v0.1.309 + kiểm chứng trên máy thật (con mở chat từ khay, hai phía nhắn qua lại, trạng thái đã xem khớp, thu hồi phiên thì trang con báo hết hạn).
 
