@@ -10,6 +10,7 @@ import RulesPage from './RulesPage'
 import ProfileReportTab from './ProfileReportTab'
 import TimeBankTab from './TimeBankTab'
 import ChildDataTab from './ChildDataTab'
+import ChatPanel from '../components/ChatPanel'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -18,6 +19,7 @@ const TABS = [
   { key: 'quy-tac', label: 'Quy tắc' },
   { key: 'bao-cao', label: 'Báo cáo' },
   { key: 'ngan-hang-gio', label: 'Ngân hàng giờ' },
+  { key: 'nhan-tin', label: 'Nhắn tin' },
   { key: 'du-lieu', label: 'Dữ liệu' },
 ] as const
 
@@ -34,8 +36,8 @@ function tabClassName({ isActive }: { isActive: boolean }): string {
 }
 
 /**
- * Hồ sơ của một con: năm tab Thiết bị / Quy tắc / Báo cáo / Ngân hàng
- * giờ / Dữ liệu, tất cả lọc theo đúng con đó. Tab Thiết bị và Quy tắc tái dùng
+ * Hồ sơ của một con: các tab Thiết bị / Quy tắc / Báo cáo / Ngân hàng
+ * giờ / Nhắn tin / Dữ liệu, tất cả lọc theo đúng con đó. Tab Thiết bị và Quy tắc tái dùng
  * trang cũ với childIdFilter nên mọi thao tác (khóa/mở, PIN, ghép nối,
  * thêm quy tắc, ghi đè) đều như trang độc lập, chỉ khác là không lẫn
  * sang con khác. Tab Dữ liệu xuất/xóa dữ liệu của đúng con này.
@@ -131,6 +133,14 @@ export default function ProfilePage() {
       {tab === 'bao-cao' && <ProfileReportTab childId={child.id} childName={child.display_name} />}
       {tab === 'ngan-hang-gio' && (
         <TimeBankTab key={child.id} childId={child.id} childName={child.display_name} />
+      )}
+      {tab === 'nhan-tin' && (
+        <ChatPanel
+          key={child.id}
+          childId={child.id}
+          childName={child.display_name}
+          familyId={child.family_id}
+        />
       )}
       {tab === 'du-lieu' && (
         <ChildDataTab key={child.id} childId={child.id} childName={child.display_name} />

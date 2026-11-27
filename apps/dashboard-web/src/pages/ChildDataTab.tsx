@@ -33,6 +33,7 @@ import type {
   Child,
   Command,
   Device,
+  Message,
   NotificationSend,
   PairingCode,
   Rule,
@@ -69,6 +70,7 @@ function emptyCounts(): CountMap {
     commands: null,
     app_usage: null,
     web_visits: null,
+    messages: null,
     audit_logs: null,
     time_bank_grants: null,
     notification_sends: null,
@@ -179,6 +181,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         { key: 'commands', run: countCommands },
         { key: 'app_usage', run: () => countByChild('app_usage') },
         { key: 'web_visits', run: () => countByChild('web_visits') },
+        { key: 'messages', run: () => countByChild('messages') },
         { key: 'audit_logs', run: () => countByChildOrDevice('audit_logs') },
         { key: 'time_bank_grants', run: () => countByChild('time_bank_grants') },
         { key: 'notification_sends', run: () => countByChildOrDevice('notification_sends') },
@@ -344,6 +347,18 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         }
         return throwOnError<WebVisit>(result.data as WebVisit[] | null, result.error)
       })
+      const messages = await readSection<Message>('messages', async (from, to) => {
+        const { data, error: queryError } = await client
+          .from('messages')
+          .select(
+            'id, family_id, child_id, device_id, sender_role, sender_user_id, body, parent_read_at, child_read_at, created_at',
+          )
+          .eq('child_id', childId)
+          .order('created_at')
+          .order('id')
+          .range(from, to)
+        return throwOnError<Message>(data as Message[] | null, queryError)
+      })
       const auditLogs = await readSection<AuditLog>('audit_logs', async (from, to) => {
         if (devicesUnavailable) throw deviceListUnknown
         const { data, error: queryError } = await client
@@ -399,6 +414,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         commands,
         appUsage,
         webVisits,
+        messages,
         auditLogs,
         timeBankGrants,
         notificationSends,
@@ -417,6 +433,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         commands.length +
         appUsage.length +
         webVisits.length +
+        messages.length +
         auditLogs.length +
         timeBankGrants.length +
         notificationSends.length +
@@ -484,7 +501,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         <div className="space-y-4">
           <p className="text-sm text-slate-700">
             Tải toàn bộ dữ liệu còn lưu của {childName} thành một file JSON: hồ sơ, thiết bị, quy tắc,
-            yêu cầu, lệnh, lịch sử dùng app, lịch sử web, nhật ký kiểm tra, lịch sử thưởng giờ, thông
+            yêu cầu, lệnh, lịch sử dùng app, lịch sử web, tin nhắn với phụ huynh, nhật ký kiểm tra, lịch sử thưởng giờ, thông
             báo đã gửi và mã ghép nối. Lịch sử dùng app và lịch sử web chỉ giữ 90 ngày gần nhất. File
             chỉ chứa dữ liệu của đúng con này trong gia đình của bạn.
           </p>
@@ -606,7 +623,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
                   <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
                     <p className="font-medium">Bạn sắp xóa toàn bộ dữ liệu của {childName}.</p>
                     <p className="mt-1">
-                      Hồ sơ, thiết bị, quy tắc, yêu cầu, lệnh, lịch sử dùng app/web, nhật ký, lịch sử thưởng
+                      Hồ sơ, thiết bị, quy tắc, yêu cầu, lệnh, lịch sử dùng app/web, tin nhắn, nhật ký, lịch sử thưởng
                       giờ và mã ghép nối của con sẽ bị xóa vĩnh viễn khỏi máy chủ. Agent trên máy của con sẽ
                       ngừng đồng bộ.
                     </p>
