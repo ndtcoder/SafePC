@@ -16,6 +16,10 @@ export interface Family {
   owner_id: string
   name: string
   created_at: string
+  // Múi giờ gia đình (tên IANA, migration 31). Truy vấn best-effort
+  // riêng ở FamilyTimezoneSection — chưa áp dụng migration 31 thì
+  // trường này vắng mặt, Agent dùng mặc định 'Asia/Ho_Chi_Minh'.
+  timezone?: string
 }
 
 /**
@@ -85,6 +89,40 @@ export interface EnforcementSnapshot {
   appBlocks: string[]
   domainRulesActive: boolean
   focusActive: boolean
+  // Giờ tin cậy (migration 31): độ lệch đồng hồ máy so với giờ tin
+  // cậy (giây, dương = máy chạy trước) + cờ đã đồng bộ giờ server
+  // trong phiên chạy này của Agent. Agent cũ không ghi hai trường
+  // này → undefined, Dashboard không hiện cảnh báo.
+  clockDriftSeconds?: number | null
+  clockVerified?: boolean
+}
+
+/** Ngữ cảnh một dòng theo dõi khi luật không chặn (migration 31). */
+export type RuleObservationContext = 'rule_disabled' | 'temp_allowed' | 'unenforceable'
+
+/**
+ * Một dòng GỘP theo dõi khi luật không chặn (bảng rule_observations,
+ * migration 31): con dùng app/domain/giờ thuộc diện một luật cấm mà
+ * luật không chặn lúc đó. rule_name/rule_mode là BẢN CHỤP lúc ghi
+ * (luật bị xóa thì rule_id = null nhưng dòng vẫn còn tới hạn 90
+ * ngày). day là ngày theo giờ tin cậy quy đổi múi giờ gia đình.
+ */
+export interface RuleObservation {
+  id: string
+  family_id: string
+  child_id: string
+  device_id: string | null
+  rule_id: string | null
+  rule_name: string
+  rule_mode: string
+  target: string
+  context: RuleObservationContext
+  occurrence_count: number
+  total_seconds: number
+  first_seen_at: string
+  last_seen_at: string
+  day: string
+  created_at: string
 }
 
 export interface Rule {

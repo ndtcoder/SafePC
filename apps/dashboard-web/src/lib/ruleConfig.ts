@@ -2306,3 +2306,14 @@ export function buildPresetRules(presetId: PresetId): PresetRule[] {
       ]
   }
 }
+
+/**
+ * Mặt theo dõi khi luật không chặn (migration 31, PRD §2.15): luật
+ * cấm mang khóa config `observe`. Vắng mặt (luật tạo trước đợt này,
+ * hoặc phụ huynh chưa từng tắt) = BẬT — chỉ giá trị false tường minh
+ * mới tắt. Agent đọc cùng quy ước này (RPC monitor rules + matcher),
+ * nên Dashboard và Agent không lệch nhau.
+ */
+export function ruleObserveEnabled(config: Record<string, unknown> | null | undefined): boolean {
+  return config?.observe !== false
+}

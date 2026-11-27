@@ -627,6 +627,7 @@ export function parseEnforcementSnapshot(value: unknown): EnforcementSnapshot | 
     Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
   const atRaw = record['at']
   const vRaw = record['v']
+  const driftRaw = record['clockDriftSeconds']
   return {
     v: typeof vRaw === 'number' && Number.isFinite(vRaw) ? vRaw : 1,
     at: typeof atRaw === 'string' ? atRaw : '',
@@ -637,6 +638,9 @@ export function parseEnforcementSnapshot(value: unknown): EnforcementSnapshot | 
     appBlocks: stringList(record['appBlocks']),
     domainRulesActive: record['domainRulesActive'] === true,
     focusActive: record['focusActive'] === true,
+    clockDriftSeconds:
+      typeof driftRaw === 'number' && Number.isFinite(driftRaw) ? Math.round(driftRaw) : null,
+    clockVerified: record['clockVerified'] === true,
   }
 }
 

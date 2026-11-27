@@ -9,6 +9,7 @@ import type {
   NotificationSend,
   PairingCode,
   Rule,
+  RuleObservation,
   TimeBankGrant,
   WebVisit,
 } from './types'
@@ -32,6 +33,7 @@ export type ChildDataSectionKey =
   | 'commands'
   | 'app_usage'
   | 'web_visits'
+  | 'rule_observations'
   | 'messages'
   | 'audit_logs'
   | 'time_bank_grants'
@@ -49,6 +51,7 @@ export const CHILD_DATA_SECTIONS: Array<{
   { key: 'commands', label: 'Lệnh', description: 'Lệnh phụ huynh đã gửi xuống máy của con.' },
   { key: 'app_usage', label: 'Lịch sử dùng app', description: 'Thời gian dùng từng app trên máy của con.' },
   { key: 'web_visits', label: 'Lịch sử web', description: 'Tên miền và đường dẫn đã xem (đường dẫn bỏ phần truy vấn, chỉ có từ bản extension mới).' },
+  { key: 'rule_observations', label: 'Quan sát luật không chặn', description: 'Ghi nhận khi con dùng app/website thuộc diện luật lúc luật đang tắt, được cho phép tạm thời hoặc không chặn được (migration 31).' },
   { key: 'messages', label: 'Tin nhắn', description: 'Tin nhắn hai chiều giữa phụ huynh và con trong kênh nhắn tin của SafePC.' },
   { key: 'audit_logs', label: 'Nhật ký kiểm tra', description: 'Sự kiện can thiệp và thi hành gắn với con.' },
   { key: 'time_bank_grants', label: 'Thưởng giờ', description: 'Lịch sử thưởng / thu hồi giờ của ngân hàng giờ.' },
@@ -100,6 +103,7 @@ export interface ChildDataExportInput {
   commands: Command[]
   appUsage: AppUsage[]
   webVisits: WebVisit[]
+  ruleObservations: RuleObservation[]
   messages: Message[]
   auditLogs: AuditLog[]
   timeBankGrants: TimeBankGrant[]
@@ -174,6 +178,7 @@ export function buildChildDataExport(input: ChildDataExportInput): ChildDataExpo
       commands: section('commands', input.commands.map(toRow)),
       app_usage: section('app_usage', input.appUsage.map(toRow)),
       web_visits: section('web_visits', input.webVisits.map(toRow)),
+      rule_observations: section('rule_observations', input.ruleObservations.map(toRow)),
       messages: section('messages', input.messages.map(toRow)),
       audit_logs: section('audit_logs', input.auditLogs.map(toRow)),
       time_bank_grants: section('time_bank_grants', input.timeBankGrants.map(toRow)),
@@ -256,6 +261,12 @@ export interface ChildDataDeleteCounts {
    */
   messages?: number
   chat_sessions?: number
+  /**
+   * Số dòng quan sát luật đã xóa (migration 31). TÙY CHỌN như hai
+   * khóa trên: server chưa áp migration 31 thì RPC không trả khóa
+   * này.
+   */
+  rule_observations?: number
 }
 
 export interface ChildDataDeleteResult {
@@ -279,9 +290,10 @@ const DELETE_COUNT_KEYS: Array<keyof ChildDataDeleteCounts> = [
   'pairing_codes',
 ]
 
-const OPTIONAL_DELETE_COUNT_KEYS: Array<'messages' | 'chat_sessions'> = [
+const OPTIONAL_DELETE_COUNT_KEYS: Array<'messages' | 'chat_sessions' | 'rule_observations'> = [
   'messages',
   'chat_sessions',
+  'rule_observations',
 ]
 
 /** Kiểm tra kết quả RPC có đúng hình dạng không trước khi hiển thị số liệu. */
