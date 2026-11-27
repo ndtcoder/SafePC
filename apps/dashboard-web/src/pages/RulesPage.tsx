@@ -90,6 +90,7 @@ import {
   websiteListSelectionFromMode,
   websiteModeFromListSelection,
   websiteTempOverrideAction,
+  ruleObserveEnabled,
   type AllowlistByTimeDraft,
   type AppAllowlistByTimeDraft,
   type AppBlockByTimeDraft,
@@ -471,6 +472,9 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   const [appAllowlistByTimeDraft, setAppAllowlistByTimeDraft] =
     useState<AppAllowlistByTimeDraft>(emptyAppAllowlistByTimeDraft())
   const [forcedBreakDraft, setForcedBreakDraft] = useState<ForcedBreakDraft>(emptyForcedBreakDraft())
+  // Mặt theo dõi khi luật không chặn (migration 31): mặc định BẬT
+  // như quy ước config.observe vắng mặt = bật.
+  const [observeDraft, setObserveDraft] = useState(true)
   const [savingRule, setSavingRule] = useState(false)
 
   // Ghi đè tạm thời gửi từ form quy tắc (khi chọn "Tạm thời — đếm ngược"):
@@ -818,6 +822,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     setAppBlockByTimeDraft(emptyAppBlockByTimeDraft())
     setAppAllowlistByTimeDraft(emptyAppAllowlistByTimeDraft())
     setForcedBreakDraft(emptyForcedBreakDraft())
+    setObserveDraft(true)
   }
 
   const handleCreateFamily = async () => {
@@ -927,6 +932,7 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     }
     setFormChildId(rule.child_id)
     setRuleName(rule.name ?? '')
+    setObserveDraft(ruleObserveEnabled(rule.config))
     setEditingRule(rule)
     // Mở đúng nhóm accordion của rule và cuộn tới form (danh sách hiện
     // hành đang ở đầu trang, form tạo/sửa ở phía dưới).
@@ -1028,6 +1034,36 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
     } finally {
       setSavingRule(false)
     }
+  }
+
+  /**
+   * Lựa chọn hiện tại của form có thuộc phạm vi theo dõi khi luật
+   * không chặn không (migration 31, PRD §2.15): các luật giờ giấc
+   * (giới hạn ngày / khung giờ / giờ ngủ), chặn app (luôn luôn hoặc
+   * theo giờ), chặn website (luôn luôn hoặc theo giờ) và giờ tập
+   * trung. Cho phép tạm thời (lựa chọn "Tạm thời"), danh sách cho
+   * phép, giới hạn theo app/domain, tìm kiếm an toàn, chặn từ khóa
+   * tìm kiếm và nghỉ bắt buộc nằm ngoài phạm vi đợt này.
+   */
+  const currentObserveApplicable = (): boolean => {
+    if (formType === 'daily_limit' || formType === 'time_window' || formType === 'bedtime') {
+      return true
+    }
+    if (formType === 'website') {
+      if (websiteFormKind === 'focus') return true
+      if (websiteFormKind !== 'list' || websiteTimeKind === 'temporary') return false
+      const mode = websiteModeFromListSelection(
+        websiteListKind,
+        websiteTimeKind === 'by_time' ? 'by_time' : 'always',
+      )
+      return mode === 'block_domains' || mode === 'block_domains_by_time'
+    }
+    if (appFormKind !== 'list' || appTimeKind === 'temporary') return false
+    const mode = appModeFromListSelection(
+      appListKind,
+      appTimeKind === 'by_time' ? 'by_time' : 'always',
+    )
+    return mode === 'app_block' || mode === 'app_block_by_time'
   }
 
   const handleSubmitRule = async (event: FormEvent) => {
@@ -1176,6 +1212,13 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
           config = buildAllowlistByTimeConfig(allowlistByTimeDraft)
         }
       }
+    }
+
+    // Mặt theo dõi khi luật không chặn (migration 31): ghi khóa
+    // observe vào config cho các mode thuộc phạm vi theo dõi. Mode
+    // ngoài phạm vi giữ nguyên config như trước (không thêm khóa lạ).
+    if (currentObserveApplicable()) {
+      config = { ...config, observe: observeDraft }
     }
 
     setSavingRule(true)
@@ -2183,6 +2226,32 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                 )}
                   </CreateSection>
                 </div>
+
+                {/* Công tắc theo dõi khi luật không chặn (migration
+                    31): chỉ hiện cho các mode thuộc phạm vi theo dõi
+                    và không phải lựa chọn tạm thời. */}
+                {createOpen !== null && currentObserveApplicable() && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={observeDraft}
+                        onChange={(e) => setObserveDraft(e.target.checked)}
+                      />
+                      <span>
+                        <span className="font-medium">Theo dõi cả khi luật không chặn</span>
+                        <span className="mt-0.5 block text-slate-500">
+                          Khi bật, Báo cáo tuần sẽ ghi nhận những lần con dùng ứng dụng /
+                          trang web / khung giờ thuộc diện luật này trong lúc luật đang tắt,
+                          đang được cho phép tạm thời, hoặc không chặn được — để bố mẹ biết
+                          luật có đang che đúng chỗ cần che hay không. Chỉ ghi từ dữ liệu
+                          sử dụng vốn đã thu, không thu thêm dữ liệu mới.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                )}
 
                 {/* Nút gửi chỉ hiện khi có nhóm đang mở (khi sửa thì nhóm
                     của rule luôn mở) — tránh bấm gửi khi chưa thấy form. */}

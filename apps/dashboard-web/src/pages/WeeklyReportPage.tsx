@@ -41,6 +41,7 @@ import {
   countRuleEnforcement,
   currentStateWarnings,
   dailyTotals,
+  dateKeyLocal,
   driftMinutes,
   ENFORCEMENT_ACTIONS,
   filterTamperForChild,
@@ -73,6 +74,7 @@ import {
 } from '../components/ui'
 import WebHistorySearch from './WebHistorySearch'
 import SearchTermsReport from './SearchTermsReport'
+import RuleObservationsReport from './RuleObservationsReport'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -999,6 +1001,17 @@ export default function WeeklyReportPage() {
             childName={selectedChild?.display_name ?? 'Con'}
             weekStartIso={range.start.toISOString()}
             weekEndIso={range.end.toISOString()}
+          />
+        </div>
+      )}
+
+      {selectedChildId !== '' && (
+        <div className="mt-4 sm:mt-6">
+          <RuleObservationsReport
+            childId={selectedChildId}
+            childName={selectedChild?.display_name ?? 'Con'}
+            startDay={dateKeyLocal(range.start)}
+            endDay={dateKeyLocal(new Date(range.end.getTime() - 1))}
           />
         </div>
       )}

@@ -1166,6 +1166,50 @@ export default function DevicesPage({ childIdFilter }: { childIdFilter?: string 
                         </span>
                       </dd>
                     </div>
+                    {/* Giờ tin cậy (migration 31): cảnh báo khi đồng hồ
+                        máy lệch > 120 giây so với giờ tin cậy trong
+                        snapshot thi hành mới nhất. Snapshot của Agent
+                        cũ không có trường này → không hiện gì (tương
+                        thích ngược); snapshot cũ (> 5 phút) cũng
+                        không cảnh báo vì độ lệch có thể đã hết. */}
+                    {enforcementSnapshot &&
+                      !enforcementStale &&
+                      enforcementSnapshot.clockDriftSeconds != null &&
+                      Math.abs(enforcementSnapshot.clockDriftSeconds) > 120 && (
+                        <div className="flex justify-between gap-4">
+                          <dt className="shrink-0 text-slate-500">Đồng hồ máy</dt>
+                          <dd className="min-w-0 break-words text-right">
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                              Lệch khoảng{' '}
+                              {Math.max(
+                                1,
+                                Math.round(Math.abs(enforcementSnapshot.clockDriftSeconds) / 60),
+                              )}{' '}
+                              phút so với giờ tin cậy
+                            </span>
+                            <span className="mt-1 block text-xs text-slate-500">
+                              Luật giờ giấc vẫn thi hành theo giờ tin cậy (giờ máy chủ) nên
+                              chỉnh giờ trên máy không lách được luật. Phụ huynh nên kiểm tra
+                              lại ngày giờ trên máy của con.
+                            </span>
+                          </dd>
+                        </div>
+                      )}
+                    {enforcementSnapshot &&
+                      !enforcementStale &&
+                      enforcementSnapshot.clockVerified === false &&
+                      !(
+                        enforcementSnapshot.clockDriftSeconds != null &&
+                        Math.abs(enforcementSnapshot.clockDriftSeconds) > 120
+                      ) && (
+                        <div className="flex justify-between gap-4">
+                          <dt className="shrink-0 text-slate-500">Đồng hồ máy</dt>
+                          <dd className="min-w-0 break-words text-right text-xs text-slate-500">
+                            Chưa đồng bộ được giờ với máy chủ trong lần chạy này — Agent đang
+                            dùng mốc đồng bộ gần nhất.
+                          </dd>
+                        </div>
+                      )}
                     <div className="flex justify-between gap-4">
                       <dt className="shrink-0 text-slate-500">Ngày thêm</dt>
                       <dd className="min-w-0 break-words text-right text-slate-800">{formatDateTimeVi(device.created_at)}</dd>

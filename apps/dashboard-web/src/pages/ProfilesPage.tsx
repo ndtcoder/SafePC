@@ -15,6 +15,7 @@ import {
   secondaryButtonClassName,
 } from '../components/ui'
 import FamilyInviteSection from '../components/FamilyInviteSection'
+import FamilyTimezoneSection from '../components/FamilyTimezoneSection'
 import MfaSection from '../components/MfaSection'
 
 type LoadState = 'loading' | 'ready' | 'error'
@@ -113,6 +114,9 @@ export default function ProfilesPage() {
           <FamilyInviteSection />
         </div>
         <div className="mt-6">
+          <FamilyTimezoneSection />
+        </div>
+        <div className="mt-6">
           <MfaSection />
         </div>
       </div>
@@ -188,6 +192,9 @@ export default function ProfilesPage() {
       </div>
       <div className="mt-6">
         <FamilyInviteSection />
+      </div>
+      <div className="mt-6">
+        <FamilyTimezoneSection />
       </div>
       <div className="mt-6">
         <MfaSection />

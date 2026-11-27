@@ -49,9 +49,24 @@ export default function PrivacyPolicyPage() {
               bị xóa khi phụ huynh xóa dữ liệu của con.
             </li>
             <li>
+              <strong>Ghi nhận khi luật không chặn</strong> (tên luật do phụ huynh đặt, ứng
+              dụng/trang web/khung giờ thuộc diện luật, số lần và tổng thời lượng, kèm ngữ
+              cảnh luật đang tắt / đang được cho phép tạm thời / không chặn được): cho phụ
+              huynh thấy trong Báo cáo tuần những hoạt động thuộc diện luật mà luật không
+              chặn lúc đó, để biết luật có đang che đúng chỗ cần che hay không. Đây{' '}
+              <strong>không phải loại dữ liệu mới</strong> — SafePC chỉ gắn thêm liên kết tới
+              luật vào dữ liệu sử dụng vốn đã thu ở trên, không thu thêm bất cứ nội dung nào
+              khác. Giữ 90 ngày; có trong file xuất dữ liệu của con và bị xóa khi phụ huynh
+              xóa dữ liệu của con.
+            </li>
+            <li>
               <strong>Quy tắc phụ huynh đặt, trạng thái máy, yêu cầu của con</strong> và quyết
               định của phụ huynh, <strong>sự kiện can thiệp</strong> (đổi giờ hệ thống,
-              Agent/Tray/extension dừng bất thường): chỉ loại sự kiện + thời điểm.
+              Agent/Tray/extension dừng bất thường): chỉ loại sự kiện + thời điểm. Múi giờ
+              gia đình do phụ huynh đặt là một cài đặt của phụ huynh; luật theo giờ được thi
+              hành bằng giờ máy chủ đã đồng bộ quy đổi sang múi giờ đó (giờ tin cậy), nên
+              việc con chỉnh giờ hệ thống hay đổi múi giờ trên máy chỉ tạo sự kiện can thiệp
+              chứ không thay đổi được cách thi hành luật.
             </li>
             <li>
               <strong>Đăng ký thông báo đẩy của phụ huynh</strong> (điểm nhận push trên
@@ -108,6 +123,10 @@ export default function PrivacyPolicyPage() {
             <li>
               <strong>Từ khóa tìm kiếm</strong>: giữ <strong>90 ngày</strong>, tự xóa các hàng
               cũ hơn mỗi ngày.
+            </li>
+            <li>
+              <strong>Ghi nhận khi luật không chặn</strong>: giữ <strong>90 ngày</strong>, tự
+              xóa các hàng cũ hơn mỗi ngày.
             </li>
             <li>
               <strong>Mẫu dùng ứng dụng</strong>: mẫu chi tiết giữ 7 ngày; số liệu tổng hợp

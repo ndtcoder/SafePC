@@ -37,6 +37,7 @@ import type {
   NotificationSend,
   PairingCode,
   Rule,
+  RuleObservation,
   TimeBankGrant,
   WebVisit,
 } from '../lib/types'
@@ -70,6 +71,7 @@ function emptyCounts(): CountMap {
     commands: null,
     app_usage: null,
     web_visits: null,
+    rule_observations: null,
     messages: null,
     audit_logs: null,
     time_bank_grants: null,
@@ -181,6 +183,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         { key: 'commands', run: countCommands },
         { key: 'app_usage', run: () => countByChild('app_usage') },
         { key: 'web_visits', run: () => countByChild('web_visits') },
+        { key: 'rule_observations', run: () => countByChild('rule_observations') },
         { key: 'messages', run: () => countByChild('messages') },
         { key: 'audit_logs', run: () => countByChildOrDevice('audit_logs') },
         { key: 'time_bank_grants', run: () => countByChild('time_bank_grants') },
@@ -347,6 +350,21 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         }
         return throwOnError<WebVisit>(result.data as WebVisit[] | null, result.error)
       })
+      const ruleObservations = await readSection<RuleObservation>(
+        'rule_observations',
+        async (from, to) => {
+          const { data, error: queryError } = await client
+            .from('rule_observations')
+            .select(
+              'id, family_id, child_id, device_id, rule_id, rule_name, rule_mode, target, context, occurrence_count, total_seconds, first_seen_at, last_seen_at, day, created_at',
+            )
+            .eq('child_id', childId)
+            .order('day')
+            .order('id')
+            .range(from, to)
+          return throwOnError<RuleObservation>(data as RuleObservation[] | null, queryError)
+        },
+      )
       const messages = await readSection<Message>('messages', async (from, to) => {
         const { data, error: queryError } = await client
           .from('messages')
@@ -414,6 +432,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         commands,
         appUsage,
         webVisits,
+        ruleObservations,
         messages,
         auditLogs,
         timeBankGrants,
@@ -433,6 +452,7 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         commands.length +
         appUsage.length +
         webVisits.length +
+        ruleObservations.length +
         messages.length +
         auditLogs.length +
         timeBankGrants.length +
