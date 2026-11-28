@@ -89,6 +89,15 @@ public static class AgentConstants
     /// </summary>
     public const string ExitPinHashCacheFileName = "exit_pin_hash.dat";
 
+    /// <summary>
+    /// Tên file lưu bộ token Google Drive của phụ huynh (migration 32):
+    /// refresh token + client id/secret, mã hóa DPAPI + khóa ACL SYSTEM +
+    /// Admins như device_token.dat (xem DriveTokenStore phía Service).
+    /// Nằm cùng thư mục dữ liệu %ProgramData%\SafePC. Token KHÔNG bao giờ
+    /// ghi log.
+    /// </summary>
+    public const string DriveTokenFileName = "drive_token.dat";
+
     /// <summary>Ngưỡng cảnh báo trước khi hết giờ: còn 15/5/1 phút (docs/01-PRD.md mục 2.3).</summary>
     public static readonly int[] WarningThresholdMinutes = { 15, 5, 1 };
 }
@@ -180,4 +189,18 @@ public static class StateKeys
 
     /// <summary>Cờ khóa cưỡng chế của riêng một con: "forced_lock_" + childId dạng "N".</summary>
     public static string ForcedLockForChild(Guid childId) => ForcedLock + "_" + childId.ToString("N");
+
+    // --- Chụp màn hình (migration 32) ---
+
+    /// <summary>Lần cuối đã gửi sự kiện can thiệp drive_disconnected lên server (ISO-8601 UTC), để chống spam tối đa 1 lần/giờ như các tamper event khác.</summary>
+    public const string TamperDriveDisconnectedLastSent = "tamper_drive_disconnected_last_sent";
+
+    /// <summary>Ngày (yyyy-MM-dd theo giờ tin cậy, múi giờ gia đình) lần dọn Drive theo hạn giữ gần nhất — việc dọn chỉ chạy 1 lần/ngày. Vắng mặt = chưa dọn lần nào.</summary>
+    public const string ScreenCleanupDay = "screen_cleanup_day";
+
+    /// <summary>Hash (hex) của refresh token Drive đã bị Google thu hồi (invalid_grant) và đã báo drive_disconnected: fetch lại mà vẫn nhận đúng token này thì KHÔNG thử upload nữa, chờ phụ huynh kết nối lại Drive (token mới khác hẳn). Vắng mặt = không có token bị thu hồi nào đang chờ.</summary>
+    public const string ScreenRevokedDriveTokenHash = "screen_revoked_drive_token_hash";
+
+    /// <summary>Average-hash (hex 32 ký tự, 16x16 grayscale) của ảnh gần nhất ĐÃ upload thành công của một con: "screen_last_hash_" + childId dạng "N". Ảnh mới tương đồng quá ngưỡng thì bỏ upload (khử trùng lặp).</summary>
+    public static string ScreenLastHashForChild(Guid childId) => "screen_last_hash_" + childId.ToString("N");
 }

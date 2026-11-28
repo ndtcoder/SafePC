@@ -314,6 +314,141 @@ public sealed class ChatSessionMintResult
 }
 
 /// <summary>
+/// Một hàng cài đặt chụp màn hình theo hồ sơ con (bảng
+/// <c>child_screen_settings</c>, migration 32), trả về bởi RPC
+/// <c>safepc_fetch_screen_settings</c> cho MỌI con của máy này. Phụ huynh
+/// bật/tắt trên Dashboard; <see cref="Enabled"/> = true là chụp ngay —
+/// không có lớp đồng ý nào phía server hay phía con (quyết định anh Tiến
+/// 28/11/2026, mô hình sửa 11:16: con chỉ được THÔNG BÁO minh bạch hằng
+/// tuần qua Tray). <see cref="IntervalMinutes"/> là nhịp chụp nội bộ —
+/// không bao giờ hiển thị phía con. <see cref="RetentionDays"/> là hạn
+/// giữ ảnh trên Drive của phụ huynh, Service tự dọn thư mục ngày quá hạn.
+/// </summary>
+public sealed class ScreenSettingsRecord
+{
+    [JsonPropertyName("child_id")]
+    public Guid ChildId { get; set; }
+
+    [JsonPropertyName("child_name")]
+    public string ChildName { get; set; } = string.Empty;
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("interval_minutes")]
+    public int IntervalMinutes { get; set; }
+
+    [JsonPropertyName("retention_days")]
+    public int RetentionDays { get; set; }
+}
+
+/// <summary>
+/// Một dòng metadata ảnh chụp màn hình đã upload lên Drive của phụ huynh,
+/// khớp phần tử của mảng batch (tham số <c>p_items</c>) trong RPC
+/// <c>safepc_push_screenshot_meta</c> (migration 32). Ảnh thật nằm trên
+/// Drive phụ huynh (file id trong <see cref="DriveFileId"/>); Supabase
+/// chỉ giữ danh mục này. Server suy hồ sơ con TỪNG MẪU qua
+/// <see cref="WindowsSid"/> (ánh xạ migration 24, fallback con mặc định
+/// của máy) như mẫu usage — <see cref="ChildId"/> RPC không đọc, chỉ là
+/// giá trị Service đã đối chiếu nội bộ khi tạo record.
+/// <see cref="Day"/> là ngày chụp theo giờ tin cậy quy đổi múi giờ gia
+/// đình (yyyy-MM-dd) — cũng là tên thư mục ngày trên Drive, để việc dọn
+/// theo hạn giữ đối chiếu được hai phía.
+/// </summary>
+public sealed class ScreenshotMetaRecord
+{
+    [JsonPropertyName("child_id")]
+    public Guid ChildId { get; set; }
+
+    /// <summary>SID tài khoản Windows của phiên đã chụp (từ metadata
+    /// hàng đợi screen_queue): RPC dùng trường này để ghi metadata đúng
+    /// hồ sơ con trên máy dùng chung. Thiếu SID thì server rơi về con
+    /// mặc định của máy.</summary>
+    [JsonPropertyName("windows_sid")]
+    public string? WindowsSid { get; set; }
+
+    [JsonPropertyName("day")]
+    public string Day { get; set; } = string.Empty;
+
+    [JsonPropertyName("captured_at")]
+    public DateTimeOffset CapturedAt { get; set; }
+
+    [JsonPropertyName("drive_file_id")]
+    public string DriveFileId { get; set; } = string.Empty;
+
+    [JsonPropertyName("size_bytes")]
+    public long SizeBytes { get; set; }
+
+    [JsonPropertyName("width")]
+    public int Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int Height { get; set; }
+}
+
+/// <summary>
+/// Kết quả RPC <c>safepc_fetch_drive_token</c> (migration 32): bộ thông
+/// tin OAuth Google Drive của phụ huynh (refresh token + client của ứng
+/// dụng) để Service đổi access token và upload thẳng lên Drive phụ huynh
+/// (scope drive.file). RPC trả null khi phụ huynh chưa kết nối Drive.
+/// MỌI trường trong đây đều là secret hoặc đi kèm secret: KHÔNG bao giờ
+/// ghi log; Service chỉ lưu refresh token + client vào file DPAPI + ACL
+/// SYSTEM/Admins trên máy con (xem DriveTokenStore phía Service).
+/// </summary>
+public sealed class DriveTokenResult
+{
+    [JsonPropertyName("refresh_token")]
+    public string RefreshToken { get; set; } = string.Empty;
+
+    [JsonPropertyName("google_email")]
+    public string? GoogleEmail { get; set; }
+
+    [JsonPropertyName("client_id")]
+    public string ClientId { get; set; } = string.Empty;
+
+    [JsonPropertyName("client_secret")]
+    public string ClientSecret { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Metadata đi kèm mỗi ảnh trong hàng đợi <c>screen_queue</c> (file
+/// <c>&lt;tên&gt;.json</c> cạnh <c>&lt;tên&gt;.jpg</c>): Tray ghi khi chụp,
+/// Service đọc để đối chiếu SID → hồ sơ con như mẫu web usage (Sprint 5).
+/// Chỉ chứa SID của phiên đã chụp + thời điểm + kích thước sau thu nhỏ —
+/// không chứa nội dung màn hình hay đường dẫn.
+/// </summary>
+public sealed class ScreenshotQueueMetadata
+{
+    [JsonPropertyName("windows_sid")]
+    public string? WindowsSid { get; set; }
+
+    [JsonPropertyName("captured_at")]
+    public DateTimeOffset CapturedAt { get; set; }
+
+    [JsonPropertyName("width")]
+    public int Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int Height { get; set; }
+
+    /// <summary>Drive file id khi ảnh đã upload thành công nhưng đẩy
+    /// metadata lên server chưa thành công (Service ghi bổ sung vào file
+    /// json sau lần upload): lần thử lại chỉ đẩy metadata, không upload
+    /// lại ảnh (tránh trùng ảnh trên Drive). Vắng mặt = chưa upload.</summary>
+    [JsonPropertyName("drive_file_id")]
+    public string? DriveFileId { get; set; }
+
+    /// <summary>Average-hash (hex) của ảnh, Service tính và ghi bổ sung
+    /// cùng lúc với <see cref="DriveFileId"/> sau khi upload thành công.
+    /// Hash "ảnh gần nhất" trong device_state CHỈ được cập nhật sau khi
+    /// đẩy metadata lên server thành công — file json giữ hash này để
+    /// lần thử lại (chỉ đẩy metadata) vẫn còn hash mà ghi đúng thời
+    /// điểm đó. Vắng mặt = ảnh không giải mã được để tính hash.</summary>
+    [JsonPropertyName("hash")]
+    public string? HashHex { get; set; }
+}
+
+/// <summary>
 /// Một hàng ánh xạ thiết bị ↔ hồ sơ con ↔ tài khoản Windows (bảng
 /// <c>device_child_accounts</c>, migration 24, Sprint 5): tài khoản Windows
 /// có SID này trên máy này là hồ sơ con <c>ChildId</c>. Agent tải danh sách

@@ -43,6 +43,9 @@ public static class IpcMessageTypes
 
     /// <summary>Service -> Tray: trả lời <see cref="ChatOpenRequest"/> — URL trang chat đầy đủ (kèm token phiên trong fragment) hoặc mã lỗi trong <see cref="ChatOpenErrors"/>.</summary>
     public const string ChatOpenResponse = "chat-open-response";
+
+    /// <summary>Service -> Tray: trạng thái chụp màn hình HIỆU LỰC cho phiên/con của Tray nhận (migration 32). Service chỉ gửi tới phiên console đang active (SendToSessionAsync) khi con của phiên đó có cài đặt — Tray không tự suy ra con của mình. Xem <see cref="ScreenCaptureStatePayload"/>.</summary>
+    public const string ScreenCaptureState = "screen-capture-state";
 }
 
 /// <summary>
@@ -201,3 +204,17 @@ public sealed record ChatOpenRequestPayload(string RequestId);
 /// <c>Url</c> null. <c>RequestId</c> vọng lại id của câu hỏi.
 /// </summary>
 public sealed record ChatOpenResponsePayload(bool Ok, string? Url, string? Error, string RequestId);
+
+/// <summary>
+/// Payload của <see cref="IpcMessageTypes.ScreenCaptureState"/>: Service báo
+/// cho Tray của phiên console đang active biết chụp màn hình có đang hiệu
+/// lực cho con của phiên đó hay không (quyết định anh Tiến 28/11/2026 —
+/// phụ huynh bật/tắt theo từng con trên Dashboard, KHÔNG có đồng ý phía
+/// con; enabled=true là chụp ngay). <c>IntervalMinutes</c> là nhịp chụp
+/// NỘI BỘ giữa Service và Tray: TUYỆT ĐỐI không hiển thị con số này trong
+/// bất kỳ UI nào phía con (menu khay chỉ hiện "Chụp màn hình: đang bật").
+/// <c>ChildId</c> để Tray khóa mốc "đã hiện thông báo minh bạch hàng tuần"
+/// theo từng con trong state cục bộ của Tray; null khi tắt hoặc chưa rõ
+/// con (Tray khi đó không chụp và không hiện thông báo).
+/// </summary>
+public sealed record ScreenCaptureStatePayload(bool Enabled, int IntervalMinutes, Guid? ChildId);
