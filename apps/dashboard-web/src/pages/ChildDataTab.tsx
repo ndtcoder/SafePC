@@ -31,6 +31,7 @@ import type {
   AppUsage,
   AuditLog,
   Child,
+  ChildScreenSettings,
   Command,
   Device,
   Message,
@@ -38,6 +39,7 @@ import type {
   PairingCode,
   Rule,
   RuleObservation,
+  ScreenshotMetadata,
   TimeBankGrant,
   WebVisit,
 } from '../lib/types'
@@ -77,6 +79,8 @@ function emptyCounts(): CountMap {
     time_bank_grants: null,
     notification_sends: null,
     pairing_codes: null,
+    screen_settings: null,
+    screenshots: null,
   }
 }
 
@@ -189,6 +193,9 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         { key: 'time_bank_grants', run: () => countByChild('time_bank_grants') },
         { key: 'notification_sends', run: () => countByChildOrDevice('notification_sends') },
         { key: 'pairing_codes', run: () => countByChild('pairing_codes') },
+        // Bảng cài đặt chụp màn hình có tên khác khóa mục (migration 32).
+        { key: 'screen_settings', run: () => countByChild('child_screen_settings') },
+        { key: 'screenshots', run: () => countByChild('screenshot_metadata') },
       ]
       const settled = await Promise.allSettled(jobs.map((j) => j.run()))
       if (seq !== loadSeqRef.current) return
@@ -421,6 +428,30 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
           .range(from, to)
         return throwOnError<PairingCode>(data as PairingCode[] | null, queryError)
       })
+      const screenSettings = await readSection<ChildScreenSettings>(
+        'screen_settings',
+        async (from, to) => {
+          const { data, error: queryError } = await client
+            .from('child_screen_settings')
+            .select('child_id, family_id, enabled, interval_minutes, retention_days, updated_by, updated_at')
+            .eq('child_id', childId)
+            .order('child_id')
+            .range(from, to)
+          return throwOnError<ChildScreenSettings>(data as ChildScreenSettings[] | null, queryError)
+        },
+      )
+      const screenshots = await readSection<ScreenshotMetadata>('screenshots', async (from, to) => {
+        // Chỉ DANH MỤC (thời điểm + id file Drive + kích thước): ảnh
+        // thật nằm trên Drive của phụ huynh, không qua file xuất này.
+        const { data, error: queryError } = await client
+          .from('screenshot_metadata')
+          .select('id, family_id, child_id, device_id, captured_at, day, drive_file_id, size_bytes, width, height, created_at')
+          .eq('child_id', childId)
+          .order('captured_at')
+          .order('id')
+          .range(from, to)
+        return throwOnError<ScreenshotMetadata>(data as ScreenshotMetadata[] | null, queryError)
+      })
 
       const now = new Date()
       const exportObject = buildChildDataExport({
@@ -438,6 +469,8 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         timeBankGrants,
         notificationSends,
         pairingCodes,
+        screenSettings,
+        screenshots,
         truncatedSections,
         unavailableSections,
       })
@@ -457,7 +490,9 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
         auditLogs.length +
         timeBankGrants.length +
         notificationSends.length +
-        pairingCodes.length
+        pairingCodes.length +
+        screenSettings.length +
+        screenshots.length
       setExportMessage(
         `Đã tải file xuất dữ liệu của ${child.display_name} (${totalRows} hàng).` +
           (truncatedSections.length > 0
@@ -522,8 +557,13 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
           <p className="text-sm text-slate-700">
             Tải toàn bộ dữ liệu còn lưu của {childName} thành một file JSON: hồ sơ, thiết bị, quy tắc,
             yêu cầu, lệnh, lịch sử dùng app, lịch sử web, tin nhắn với phụ huynh, nhật ký kiểm tra, lịch sử thưởng giờ, thông
-            báo đã gửi và mã ghép nối. Lịch sử dùng app và lịch sử web chỉ giữ 90 ngày gần nhất. File
+            báo đã gửi, mã ghép nối, cài đặt chụp màn hình và danh mục ảnh chụp màn hình. Lịch sử dùng app và lịch sử web chỉ giữ 90 ngày gần nhất. File
             chỉ chứa dữ liệu của đúng con này trong gia đình của bạn.
+          </p>
+          <p className="text-sm text-slate-600">
+            Riêng ảnh chụp màn hình: file xuất chỉ gồm <strong>danh mục</strong> (thời điểm chụp, id file,
+            kích thước) — ảnh thật nằm trên <strong>Google Drive của chính bạn</strong>, hãy tải hoặc xóa
+            chúng trực tiếp trong Drive. SafePC không tải hộ ảnh qua máy chủ.
           </p>
           <p className="text-sm text-slate-600">
             File không chứa hash token của máy, hash mã PIN hay hash mã ghép nối — đó là thông tin xác thực,
@@ -594,6 +634,12 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
                 tác.</strong> Dữ liệu cấp gia đình (mẫu quy tắc, lời mời, lịch sử gửi email) không bị xóa.
                 Trước khi xóa, hãy xuất dữ liệu ở trên nếu bạn muốn giữ một bản sao.
               </p>
+              <p className="text-sm text-slate-600">
+                Lưu ý về ảnh chụp màn hình: ảnh thật nằm trên <strong>Google Drive của bạn</strong> — xóa dữ
+                liệu của con ở đây chỉ xóa <strong>cài đặt chụp và danh mục ảnh</strong> trên máy chủ SafePC,
+                không xóa file trên Drive. File trên Drive do bạn tự quản lý và xóa trong Google Drive;
+                khi tính năng còn bật và máy của con còn online, Agent tự dọn ảnh quá hạn giữ trên Drive.
+              </p>
               <div className="overflow-hidden rounded-lg border border-slate-200">
                 <table className="w-full text-sm">
                   <tbody>
@@ -644,8 +690,9 @@ export default function ChildDataTab({ childId, childName }: { childId: string; 
                     <p className="font-medium">Bạn sắp xóa toàn bộ dữ liệu của {childName}.</p>
                     <p className="mt-1">
                       Hồ sơ, thiết bị, quy tắc, yêu cầu, lệnh, lịch sử dùng app/web, tin nhắn, nhật ký, lịch sử thưởng
-                      giờ và mã ghép nối của con sẽ bị xóa vĩnh viễn khỏi máy chủ. Agent trên máy của con sẽ
-                      ngừng đồng bộ.
+                      giờ, mã ghép nối, cài đặt chụp màn hình và danh mục ảnh của con sẽ bị xóa vĩnh viễn khỏi máy chủ. Agent trên máy của con sẽ
+                      ngừng đồng bộ. File ảnh thật trên Google Drive của bạn không bị xóa bởi thao tác này —
+                      hãy tự xóa thư mục SafePC của con trong Drive nếu muốn.
                     </p>
                   </div>
                   <Field

@@ -12,7 +12,7 @@ export default function PrivacyPolicyPage() {
       <div className="mb-6 flex flex-col items-center gap-2 text-center">
         <img src="/icons/icon.svg" alt="Logo SafePC" className="h-14 w-14" />
         <p className="text-xl font-bold tracking-tight text-slate-900">SafePC</p>
-        <p className="text-sm text-slate-600">Chính sách riêng tư — cập nhật 27/11/2026</p>
+        <p className="text-sm text-slate-600">Chính sách riêng tư — cập nhật 28/11/2026</p>
       </div>
       <div className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 text-sm leading-relaxed text-slate-700 shadow-sm sm:p-6">
         <p>
@@ -80,6 +80,20 @@ export default function PrivacyPolicyPage() {
               huynh giải mã được.
             </li>
             <li>
+              <strong>Ảnh chụp màn hình định kỳ — CHỈ khi phụ huynh tự bật cho hồ sơ con</strong>{' '}
+              (mặc định tắt): ảnh toàn bộ màn hình chính của máy con theo mức chụp phụ huynh
+              chọn (1–30 phút). Ảnh được tải thẳng từ máy con lên{' '}
+              <strong>Google Drive riêng của phụ huynh</strong> — SafePC chỉ được quyền thấy
+              các file do chính SafePC tạo ra trong Drive đó (quyền drive.file), ảnh{' '}
+              <strong>không đi qua và không lưu trên máy chủ SafePC</strong>; máy chủ chỉ giữ
+              danh mục thời điểm chụp, kích thước và mã file Drive để phụ huynh xem danh sách.
+              Phụ huynh quyết định bật/tắt và tắt được bất cứ lúc nào; khi tính năng đang bật,
+              máy của con hiện <strong>thông báo hàng tuần</strong> cho con biết màn hình đang
+              được chụp và bố mẹ có quyền xem ảnh. Ảnh có thể chứa nội dung riêng tư con đang
+              xem — vì vậy tính năng chỉ bật sau khi phụ huynh xác nhận đã cân nhắc kỹ ngay
+              trên Dashboard. Xem thêm mục 4 về thời hạn giữ ảnh.
+            </li>
+            <li>
               <strong>Email phụ huynh, tên hồ sơ con, tên máy</strong>: đăng nhập, phân biệt
               các con/máy.
             </li>
@@ -88,10 +102,12 @@ export default function PrivacyPolicyPage() {
         <section>
           <h2 className="mb-2 text-base font-semibold text-slate-900">2. SafePC KHÔNG thu thập</h2>
           <p>
-            Không chụp màn hình, không ghi phím, không đọc nội dung chat/email/file của con,
-            không bật micro, camera, định vị; không tiêu đề cửa sổ, không nội dung trang web,
-            không mật khẩu (mật khẩu do Supabase Auth quản lý); không quảng cáo, không theo
-            dõi hành vi ngoài phạm vi quản lý máy tính trong gia đình.
+            Không ghi phím, không đọc nội dung chat/email/file của con, không bật micro,
+            camera, định vị; không tiêu đề cửa sổ, không nội dung trang web, không mật khẩu
+            (mật khẩu do Supabase Auth quản lý); không quảng cáo, không theo dõi hành vi
+            ngoài phạm vi quản lý máy tính trong gia đình. Ảnh chụp màn hình là{' '}
+            <strong>ngoại lệ duy nhất</strong> và chỉ tồn tại khi phụ huynh chủ động bật
+            theo mục 1 — SafePC không bao giờ tự bật tính năng này.
           </p>
         </section>
         <section>
@@ -135,6 +151,14 @@ export default function PrivacyPolicyPage() {
             <li>
               <strong>Tin nhắn trong SafePC</strong>: giữ tới khi phụ huynh xóa dữ liệu của
               con (không tự hết hạn theo ngày như lịch sử web).
+            </li>
+            <li>
+              <strong>Ảnh chụp màn hình</strong> (chỉ khi phụ huynh bật): giữ theo hạn phụ
+              huynh chọn — <strong>14 / 30 / 90 / 180 ngày</strong> — trên Google Drive của
+              phụ huynh; quá hạn, máy của con tự xóa ảnh cũ trên Drive khi máy còn online.
+              Danh mục ảnh trên máy chủ SafePC đi cùng hạn giữ đó. Phụ huynh xóa ảnh bất cứ
+              lúc nào trực tiếp trong Drive của mình; xóa dữ liệu của con trên Dashboard xóa
+              cài đặt chụp và danh mục, còn file ảnh trên Drive do phụ huynh tự quản lý.
             </li>
             <li>
               <strong>Đăng ký thông báo đẩy của phụ huynh</strong>: giữ tới khi phụ huynh
