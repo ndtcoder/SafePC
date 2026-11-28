@@ -4314,3 +4314,24 @@ Review độc lập đợt giờ tin cậy + theo dõi luật: phần lõi ĐẠ
 
 ## [2026-11-27 23:21 +07] ChaMuse
 Đợt giờ tin cậy + theo dõi luật HOÀN TẤT: fixer sửa xong 5 điểm review (em tự kiểm chứng lại 3 điểm chính trong code), đã đẩy 7 commit lên develop (head 9c5d8cd, 39 commit ahead main). CI run #356 XANH — Tray 19/19, IPC 13/13, bản cài v0.1.356 tải được (95,1 MB); run #359 Dashboard XANH. Đã ghi v0.1.356 vào danh sách build. Việc tay của anh thêm: áp migration 31 sau 30 (thứ tự đầy đủ 25 → 26 → 29 → 30 → 31). Merge main vẫn chờ anh test xong v309 + xác nhận như đã chốt.
+
+## [2026-11-28 10:46 +07] Anh Tiến
+Lập nghiên cứu 2 hướng chức năng mới: (1) chụp ảnh màn hình máy con theo định kỳ (1/2/5/10/15/30 phút), phụ huynh cân nhắc + đồng ý về lưu trữ, nén <1MB/ảnh, lưu Google Drive tối đa 1–6 tháng, có thanh toán nếu muốn lưu dài hơn 2 tuần; (2) app SafePC trên Android + iPhone để khóa điện thoại của con, app phụ huynh cũng trên cả hai nền tảng, có lựa chọn áp chung chính sách như máy tính hoặc chính sách riêng (thời gian dùng, app cho phép, web cho phép...).
+
+## [2026-11-28 10:46 +07] ChaMuse
+Đã khởi động 2 nghiên cứu song song (chụp màn hình + app điện thoại), viết thành tài liệu trong docs/. Lưu ý đã nói rõ với anh: hướng chụp màn hình là mở lại quyết định loại khỏi kế hoạch ngày 17/11 vì riêng tư — nghiên cứu cứ làm, còn triển khai cần anh xác nhận riêng sau khi xem nghiên cứu.
+
+## [2026-11-28 10:52 +07] ChaMuse
+Hai nghiên cứu HOÀN TẤT, đã thành tài liệu docs/11-RESEARCH-SCREENSHOTS.md + docs/12-RESEARCH-MOBILE-APPS.md, đẩy develop (commit 255511c, đầu nhánh mới). Tóm tắt đã báo anh: chụp màn hình khả thi (mặc định đề xuất 5 phút, ~36MB/ngày, giữ 14 ngày trên Drive riêng của phụ huynh, 15GB free giữ >1 năm; "trả phí" = phụ huynh tự mua Google One nếu muốn giữ lâu; đồng ý 2 lớp + con ≥7 tuổi tự đồng ý theo NĐ 13/2023; triển khai cần anh xác nhận riêng vì mở lại quyết định 17/11). App điện thoại: Android khóa cứng được qua Device Owner (cần reset máy), iOS giới hạn cứng (không khóa cứng từ xa/báo cáo chi tiết; cần Apple Developer 99 USD/năm + máy Mac build); chính sách "lõi chung + ghi đè theo platform + nhóm app theo ý định"; lộ trình 6 giai đoạn. Đã liệt kê câu hỏi chốt chờ anh quyết cho cả hai hướng.
+
+## [2026-11-28 11:10 +07] Anh Tiến
+Trả lời 5 câu hỏi chốt: (1) chụp màn hình CÓ triển khai, có mức 1 phút; (2) con không đồng ý thì báo phụ huynh giải quyết, chỉ dừng khi phụ huynh chốt dừng, phụ huynh tự thuyết phục con ấn đồng ý; (3) KHÔNG chi phí — chỉ dùng free, mất phí thì skip; (4) Android chia 2 trường hợp cài để phụ huynh chọn tương ứng; (5) điện thoại các con: Xiaomi Redmi 10C, Samsung Galaxy S8.
+
+## [2026-11-28 11:10 +07] ChaMuse
+Đã ghi 5 quyết định vào bộ nhớ + khởi động đợt xây chụp màn hình (kèm ghi A-19/A-20 vào docs). Đã diễn giải lại cho anh: mô hình đồng ý = không chụp khi chưa có lần ấn đồng ý hiện hành của con, con từ chối → tạm dừng + báo anh, anh quyết dừng hẳn hay thuyết phục; hệ quả "chỉ free": bỏ app iPhone cho con + bỏ cả hai store, Android đi đường APK trực tiếp, phụ huynh iPhone dùng PWA; hai máy của các con đều Android nên không thiệt gì lúc này.
+
+## [2026-11-28 11:16 +07] Anh Tiến
+Sửa: chỉ thông báo 1 tuần/lần rằng con bị chụp màn hình và phụ huynh có quyền check ảnh (không nói định kỳ bao lâu). Phụ huynh fix cứng có bật chụp hay không.
+
+## [2026-11-28 11:17 +07] ChaMuse
+Đã chuyển yêu cầu sửa cho builder đang xây (ngắt việc viết theo mô hình cũ): bỏ cổng đồng ý của con, phụ huynh quyết định cứng bật/tắt, máy con hiện thông báo 1 lần/tuần (lần đầu ngay khi chụp hiệu lực) không nêu tần suất; đã sửa lại ghi nhớ quyết định trong MEMORY.
