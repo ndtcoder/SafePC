@@ -151,10 +151,16 @@ public sealed class DriveUploader
     /// token cục bộ → fetch mỗi lần; đã có → tối đa mỗi 15 phút một lần
     /// fetch qua RPC <c>safepc_fetch_drive_token</c>): server trả token
     /// KHÁC → thay bản cục bộ (phụ huynh kết nối lại bằng tài khoản
-    /// Google khác); server trả null trong khi cục bộ đang có token →
-    /// XÓA token cục bộ + NoToken (phụ huynh đã ngắt kết nối trên
-    /// Dashboard — RPC <c>safepc_disconnect_drive</c> xóa hẳn hàng
-    /// token — hoặc token bị thu hồi phía server); token đang giữ trùng
+    /// Google khác); server XÁC NHẬN trống (RPC thành công, kết quả
+    /// null) trong khi cục bộ đang có token → XÓA token cục bộ +
+    /// NoToken (phụ huynh đã ngắt kết nối trên Dashboard — RPC
+    /// <c>safepc_disconnect_drive</c> xóa hẳn hàng
+    /// token — hoặc token bị thu hồi phía server); đối chiếu gặp LỖI
+    /// TẠM THỜI (mất mạng, HTTP lỗi, migration 32 chưa áp) → GIỮ
+    /// NGUYÊN token cục bộ, đi tiếp đường refresh như bình thường,
+    /// không xóa gì (đợt cứng hóa 28/11: bản trước fetch gộp mọi lý
+    /// do thành null nên mất mạng đúng tick đối chiếu có thể xóa oan
+    /// token cục bộ + access token còn hạn); token đang giữ trùng
     /// hash token đã bị thu hồi (device_state) → NoToken (chờ phụ huynh
     /// kết nối lại, không thử upload bằng token chết); access token
     /// cache còn hạn → Ready; cuối cùng đổi refresh token lấy access
@@ -171,17 +177,28 @@ public sealed class DriveUploader
             || DateTimeOffset.UtcNow - _lastServerReconcileAt.Value >= ServerReconcileInterval;
         if (reconcileDue)
         {
-            DriveTokenResult? fetched = await _api.FetchDriveTokenAsync(ct);
-            if (fetched is null)
+            (DriveTokenFetchStatus fetchStatus, DriveTokenResult? fetched) =
+                await _api.FetchDriveTokenExAsync(ct);
+            if (fetchStatus == DriveTokenFetchStatus.TransientError)
             {
+                // Không đối chiếu được trạng thái server (mất mạng, HTTP
+                // lỗi, migration 32 chưa áp, chưa ghép nối...): GIỮ
+                // NGUYÊN token cục bộ, không xóa gì, không dập mốc đối
+                // chiếu (lần Ensure sau thử lại ngay) và đi tiếp xuống
+                // đường refresh bằng token cục bộ như bình thường. Chưa
+                // có token cục bộ thì ở dưới sẽ trả NoToken như cũ.
                 if (_credentials is not null)
                 {
-                    // Server không còn token trong khi máy đang giữ một
-                    // token: ngắt kết nối phía Dashboard/server. (Client
-                    // không phân biệt được null do lỗi mạng tạm thời —
-                    // chấp nhận: lần Ensure sau, khi chưa có token cục
-                    // bộ, sẽ fetch lại ngay và nhận lại token nếu server
-                    // vẫn còn, nên trạng thái tự lành sau một tick.)
+                    _log.Warning("Drive: không đối chiếu được token với server lần này (lỗi tạm thời) — giữ nguyên token cục bộ.");
+                }
+            }
+            else if (fetchStatus == DriveTokenFetchStatus.ServerEmpty)
+            {
+                // Server XÁC NHẬN không còn token (RPC thành công, kết
+                // quả null): phụ huynh đã ngắt kết nối phía
+                // Dashboard/server. CHỈ trạng thái này mới xóa cục bộ.
+                if (_credentials is not null)
+                {
                     _lastServerReconcileAt = DateTimeOffset.UtcNow;
                     InvalidateLocalTokens();
                     _log.Info("Drive: server không còn token Drive của phụ huynh (đã ngắt kết nối trên Dashboard?) — đã xóa token cục bộ, dừng upload cho tới khi kết nối lại.");
@@ -189,26 +206,29 @@ public sealed class DriveUploader
 
                 return DriveAccessStatus.NoToken;
             }
-
-            _lastServerReconcileAt = DateTimeOffset.UtcNow;
-            if (_credentials is null)
+            else
             {
-                _credentials = fetched;
-                _store.Save(fetched);
-                _log.Info("Drive: đã nhận token Drive của phụ huynh từ server và lưu mã hóa trên máy.");
-            }
-            else if (!IsSameToken(_credentials, fetched))
-            {
-                // Token trên server đã ĐỔI (phụ huynh kết nối lại, có
-                // thể bằng tài khoản Google khác): thay bản cục bộ, bỏ
-                // access token + cache thư mục của tài khoản cũ (id thư
-                // mục không dùng chéo tài khoản được).
-                _accessToken = null;
-                _accessTokenExpiresAt = default;
-                _folderIds.Clear();
-                _credentials = fetched;
-                _store.Save(fetched);
-                _log.Info("Drive: token Drive trên server đã thay đổi — đã thay token cục bộ bằng token mới từ server.");
+                // HasToken: fetched chắc chắn có token dùng được.
+                _lastServerReconcileAt = DateTimeOffset.UtcNow;
+                if (_credentials is null)
+                {
+                    _credentials = fetched!;
+                    _store.Save(fetched!);
+                    _log.Info("Drive: đã nhận token Drive của phụ huynh từ server và lưu mã hóa trên máy.");
+                }
+                else if (!IsSameToken(_credentials, fetched!))
+                {
+                    // Token trên server đã ĐỔI (phụ huynh kết nối lại, có
+                    // thể bằng tài khoản Google khác): thay bản cục bộ, bỏ
+                    // access token + cache thư mục của tài khoản cũ (id thư
+                    // mục không dùng chéo tài khoản được).
+                    _accessToken = null;
+                    _accessTokenExpiresAt = default;
+                    _folderIds.Clear();
+                    _credentials = fetched!;
+                    _store.Save(fetched!);
+                    _log.Info("Drive: token Drive trên server đã thay đổi — đã thay token cục bộ bằng token mới từ server.");
+                }
             }
         }
 

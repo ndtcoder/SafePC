@@ -142,6 +142,26 @@ public enum SeenAccountReportStatus
     Failed,
 }
 
+/// <summary>Trạng thái một lần lấy token Drive của phụ huynh (migration 32).</summary>
+public enum DriveTokenFetchStatus
+{
+    /// <summary>Server CÓ token: kết quả <see cref="DriveTokenResult"/> đi kèm dùng được.</summary>
+    HasToken,
+
+    /// <summary>Server KHÔNG còn token: lời gọi RPC thành công (HTTP 200)
+    /// và kết quả là JSON null — phụ huynh chưa kết nối Drive, đã ngắt
+    /// kết nối trên Dashboard (RPC safepc_disconnect_drive xóa hẳn hàng
+    /// token) hoặc token đã bị đánh dấu thu hồi phía server. CHỈ trạng
+    /// thái này mới được phép kết luận "server trống".</summary>
+    ServerEmpty,
+
+    /// <summary>Không đối chiếu được trạng thái server: lỗi mạng, HTTP
+    /// lỗi (gồm 404/PGRST202 khi migration 32 chưa áp), body không đọc
+    /// được, hoặc máy chưa ghép nối/chưa cấu hình. Nơi gọi phải GIỮ
+    /// nguyên trạng thái cục bộ — không được suy ra "server trống".</summary>
+    TransientError,
+}
+
 /// <summary>
 /// Client gọi Supabase từ Agent qua PostgREST RPC (xem migration
 /// backend/supabase/migrations/20261116170000_device_rpc.sql).
@@ -477,27 +497,107 @@ public sealed class SupabaseApiClient
     /// <c>safepc_fetch_drive_token</c>): {refresh_token, google_email,
     /// client_id, client_secret}. Trả về null khi phụ huynh chưa kết nối
     /// Drive, chưa ghép nối máy, lỗi mạng, hoặc RPC chưa có trên server —
-    /// nơi gọi phân biệt "chưa kết nối" bằng cache cục bộ (đã từng có
-    /// token mà nay fetch không ra thì chỉ dừng upload êm, không báo lỗi
-    /// giả). KHÔNG bao giờ ghi log bất kỳ trường nào của kết quả.
+    /// bản rút gọn của <see cref="FetchDriveTokenExAsync"/> cho nơi gọi
+    /// không cần phân biệt lý do null. KHÔNG bao giờ ghi log bất kỳ
+    /// trường nào của kết quả.
     /// </summary>
     public async Task<DriveTokenResult?> FetchDriveTokenAsync(CancellationToken ct)
+    {
+        (DriveTokenFetchStatus status, DriveTokenResult? result) = await FetchDriveTokenExAsync(ct);
+        return status == DriveTokenFetchStatus.HasToken ? result : null;
+    }
+
+    /// <summary>
+    /// Lấy token Drive kèm TRẠNG THÁI 3 ngả (migration 32, đợt cứng hóa
+    /// nhỏ 28/11): <see cref="DriveTokenFetchStatus.ServerEmpty"/> CHỈ
+    /// khi lời gọi RPC thành công (HTTP 200) và kết quả là JSON null;
+    /// mọi lỗi mạng / HTTP lỗi / body không đọc được / chưa ghép nối
+    /// đều là <see cref="DriveTokenFetchStatus.TransientError"/>. Gọi
+    /// HTTP trực tiếp thay vì qua <see cref="PostRpcAsync{T}"/> (vốn gộp
+    /// mọi lý do thành default) vì nơi gọi (DriveUploader đối chiếu
+    /// token với server mỗi 15 phút) chỉ được XÓA token cục bộ khi chắc
+    /// chắn server trống — mất mạng đúng tick đối chiếu mà xóa thì mất
+    /// oan một tick upload và access token còn hạn. KHÔNG bao giờ ghi
+    /// log bất kỳ trường nào của token.
+    /// </summary>
+    public async Task<(DriveTokenFetchStatus Status, DriveTokenResult? Result)> FetchDriveTokenExAsync(
+        CancellationToken ct)
     {
         if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
         {
             LogThrottled("not-ready", "Fetch drive token bỏ qua: " + reason + ".");
-            return null;
+            return (DriveTokenFetchStatus.TransientError, null);
         }
 
-        DriveTokenResult? result = await PostRpcAsync<DriveTokenResult>(
-            "safepc_fetch_drive_token",
-            new
+        const string function = "safepc_fetch_drive_token";
+        string url = _baseUrl + "/rest/v1/rpc/" + function;
+        string json = JsonSerializer.Serialize(new
+        {
+            p_device_id = creds.DeviceId,
+            p_token_hash = Hashing.HashSecret(creds.Token),
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogThrottled(function, "Không nối được tới server (" + function + ").", ex);
+            return (DriveTokenFetchStatus.TransientError, null);
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
             {
-                p_device_id = creds.DeviceId,
-                p_token_hash = Hashing.HashSecret(creds.Token),
-            },
-            ct);
-        return result is null || string.IsNullOrWhiteSpace(result.RefreshToken) ? null : result;
+                string detail = await TryReadErrorMessageAsync(response, ct);
+                LogThrottled(function, "Server từ chối " + function + " (HTTP " + (int)response.StatusCode + ")" + detail + ".");
+                return (DriveTokenFetchStatus.TransientError, null);
+            }
+
+            string body;
+            try
+            {
+                body = await response.Content.ReadAsStringAsync(ct);
+            }
+            catch (HttpRequestException ex)
+            {
+                LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
+                return (DriveTokenFetchStatus.TransientError, null);
+            }
+
+            // HTTP 200 + body rỗng hoặc JSON null = RPC chạy được và
+            // server không có token cho gia đình này: trạng thái trống
+            // THẬT, phân biệt dứt khoát với mọi lỗi ở trên.
+            if (string.IsNullOrWhiteSpace(body) || body.Trim() == "null")
+            {
+                return (DriveTokenFetchStatus.ServerEmpty, null);
+            }
+
+            DriveTokenResult? result;
+            try
+            {
+                result = JsonSerializer.Deserialize<DriveTokenResult>(body, JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                LogThrottled(function, "Không đọc được kết quả " + function + ".", ex);
+                return (DriveTokenFetchStatus.TransientError, null);
+            }
+
+            // Kết quả có hình nhưng thiếu refresh token: không dùng
+            // được và cũng không phải lỗi tạm thời — coi như server
+            // không có token dùng được.
+            return result is null || string.IsNullOrWhiteSpace(result.RefreshToken)
+                ? (DriveTokenFetchStatus.ServerEmpty, null)
+                : (DriveTokenFetchStatus.HasToken, result);
+        }
     }
 
     /// <summary>
