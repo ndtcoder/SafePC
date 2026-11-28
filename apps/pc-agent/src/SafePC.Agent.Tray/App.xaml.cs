@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -48,6 +49,8 @@ public partial class App : System.Windows.Application
     private TrayIconManager? _tray;
     private IpcPipeClient? _ipc;
     private ForegroundSampler? _sampler;
+    private ScreenCapturer? _screenCapturer;
+    private ScreenNoticeWindow? _screenNoticeWindow;
     private LocalLogger? _log;
     private LockWindow? _lockWindow;
     private WarningWindow? _warningWindow;
@@ -129,6 +132,11 @@ public partial class App : System.Windows.Application
         _sampler = new ForegroundSampler(_ipc, _log);
         _sampler.Start();
         _log.Info("Tray khởi động: bước 4/6 — sampler foreground đã khởi động.");
+
+        // Module chụp màn hình (migration 32): chưa chụp gì cho tới khi
+        // Service báo trạng thái hiệu lực qua IPC — mặc định TẮT.
+        _screenCapturer = new ScreenCapturer(_log);
+        _log.Info("Tray khởi động: module chụp màn hình sẵn sàng (đang tắt, chờ trạng thái từ Service).");
 
         // Cửa sổ neo ẩn (0x0, ngoài màn hình): giữ vòng đời app khi không có
         // cửa sổ nào hiện. KHÔNG dùng làm Owner cho cửa sổ nào nữa — xem ghi
@@ -603,6 +611,26 @@ public partial class App : System.Windows.Application
                             }
                             break;
 
+                        case IpcMessageTypes.ScreenCaptureState:
+                            ScreenCaptureStatePayload? screenState = message.GetPayload<ScreenCaptureStatePayload>();
+                            if (screenState is not null)
+                            {
+                                try
+                                {
+                                    _screenCapturer?.UpdateState(screenState);
+                                    _tray?.SetScreenStatus(screenState.Enabled ? "Chụp màn hình: đang bật" : "Chụp màn hình: đang tắt");
+                                    if (screenState.Enabled)
+                                    {
+                                        CheckScreenNotice(screenState.ChildId);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    _log?.Error("Tray: xử lý trạng thái chụp màn hình lỗi (đã bắt, Tray tiếp tục chạy).", ex);
+                                }
+                            }
+                            break;
+
                         case IpcMessageTypes.ChatOpenResponse:
                             ChatOpenResponsePayload? chatResult = message.GetPayload<ChatOpenResponsePayload>();
                             if (chatResult is not null && chatResult.RequestId == _chatOpenRequestId)
@@ -722,6 +750,112 @@ public partial class App : System.Windows.Application
         {
             _log?.Error("Tray: Dispatcher.BeginInvoke cho IPC '" + message.Type + "' lỗi.", ex);
         }
+    }
+
+    /// <summary>Khoảng cách tối thiểu giữa hai lần hiện thông báo minh bạch chụp màn hình cho cùng một con (quyết định 28/11/2026: 1 lần/tuần).</summary>
+    private static readonly TimeSpan ScreenNoticeInterval = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// File state cục bộ của Tray: mốc đã hiện thông báo minh bạch chụp
+    /// màn hình theo từng con ({child_id: ISO-8601 UTC}). Nằm ở
+    /// LocalApplicationData của PHIÊN này (không lên server, không dùng
+    /// chung giữa các tài khoản Windows) — đúng thiết kế "mốc đã hiện
+    /// theo từng con lưu state cục bộ trên máy".
+    /// </summary>
+    private string ScreenNoticeStatePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "SafePC", "screen_notice.json");
+
+    /// <summary>
+    /// Kiểm tra thông báo minh bạch chụp màn hình cho con của phiên này
+    /// (chạy trên UI thread): chưa từng hiện cho con đó, hoặc lần hiện
+    /// gần nhất đã ≥ 7 ngày → hiện <see cref="ScreenNoticeWindow"/>. Chỉ
+    /// ghi mốc khi con bấm "Đã hiểu"; đăng nhập lại trong cùng tuần
+    /// không hiện lại (mốc bền trong file). Đang hiện một cửa sổ rồi thì
+    /// không mở thêm. Mọi lỗi file đều bỏ qua mềm (lần trạng thái sau
+    /// kiểm tra lại) — thông báo không bao giờ được làm hỏng Tray.
+    /// </summary>
+    private void CheckScreenNotice(Guid? childId)
+    {
+        if (childId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_screenNoticeWindow is { IsVisible: true })
+            {
+                return;
+            }
+
+            Dictionary<string, string> marks = LoadScreenNoticeMarks();
+            string key = childId.Value.ToString("D");
+            if (marks.TryGetValue(key, out string? lastText)
+                && DateTimeOffset.TryParse(lastText, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out DateTimeOffset lastShown)
+                && DateTimeOffset.UtcNow - lastShown < ScreenNoticeInterval)
+            {
+                return;
+            }
+
+            var window = new ScreenNoticeWindow();
+            window.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_screenNoticeWindow, window))
+                {
+                    _screenNoticeWindow = null;
+                }
+
+                if (window.Acknowledged)
+                {
+                    try
+                    {
+                        Dictionary<string, string> updated = LoadScreenNoticeMarks();
+                        updated[key] = DateTimeOffset.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+                        string? directory = Path.GetDirectoryName(ScreenNoticeStatePath);
+                        if (!string.IsNullOrEmpty(directory))
+                        {
+                            Directory.CreateDirectory(directory);
+                        }
+
+                        File.WriteAllText(ScreenNoticeStatePath, JsonSerializer.Serialize(updated));
+                        _log?.Info("Tray: đã ghi mốc thông báo minh bạch chụp màn hình cho con của phiên này (7 ngày mới hiện lại).");
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Error("Tray: ghi mốc thông báo chụp màn hình lỗi (lần sau sẽ hiện lại).", ex);
+                    }
+                }
+
+                _log?.Info("Tray: cửa sổ thông báo chụp màn hình đã đóng.");
+            };
+            _screenNoticeWindow = window;
+            window.Show();
+            _log?.Info("Tray: cửa sổ thông báo minh bạch chụp màn hình đã hiện.");
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("Tray: kiểm tra/hiện thông báo chụp màn hình lỗi (đã bắt, Tray tiếp tục chạy).", ex);
+        }
+    }
+
+    /// <summary>Đọc mốc thông báo đã lưu. File thiếu/hỏng thì coi như chưa từng hiện.</summary>
+    private Dictionary<string, string> LoadScreenNoticeMarks()
+    {
+        try
+        {
+            if (File.Exists(ScreenNoticeStatePath))
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(ScreenNoticeStatePath))
+                    ?? new Dictionary<string, string>();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            _log?.Warning("Tray: đọc mốc thông báo chụp màn hình lỗi (coi như chưa hiện): " + ex.Message);
+        }
+
+        return new Dictionary<string, string>();
     }
 
     /// <summary>
@@ -1184,6 +1318,15 @@ public partial class App : System.Windows.Application
         try
         {
             _sampler?.Dispose();
+        }
+        catch
+        {
+            // Bỏ qua lỗi khi dọn dẹp lúc thoát.
+        }
+
+        try
+        {
+            _screenCapturer?.Dispose();
         }
         catch
         {

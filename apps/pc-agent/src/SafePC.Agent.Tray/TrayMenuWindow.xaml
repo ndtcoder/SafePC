@@ -24,6 +24,8 @@
     </Window.Resources>
     <Border Background="White" BorderBrush="#FFABADB3" BorderThickness="1">
         <StackPanel>
+            <TextBlock x:Name="ScreenStatusText" Padding="12,8" FontSize="13" Foreground="#FF444444" />
+            <Separator x:Name="ScreenStatusSeparator" Margin="0,4" />
             <Button Content="Xem thời gian còn lại" Click="RemainingButton_Click" />
             <Button Content="Nhắn tin với bố mẹ" Click="ChatButton_Click" />
             <Button Content="Xin thêm giờ" Click="ExtraTimeButton_Click" />

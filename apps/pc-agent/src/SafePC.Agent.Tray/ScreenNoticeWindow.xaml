@@ -1,0 +1,11 @@
+<Window x:Class="SafePC.Agent.Tray.ScreenNoticeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SafePC — Thông báo" Width="420" Height="220"
+        WindowStartupLocation="CenterScreen" Topmost="True" ResizeMode="NoResize">
+    <StackPanel Margin="20" VerticalAlignment="Center">
+        <TextBlock TextWrapping="Wrap" FontSize="15"
+                   Text="Màn hình máy này đang được SafePC chụp lại và bố mẹ có quyền xem các ảnh đó." />
+        <Button Content="Đã hiểu" Width="100" Margin="0,20,0,0" HorizontalAlignment="Right" Click="OkButton_Click" />
+    </StackPanel>
+</Window>

@@ -41,7 +41,7 @@ public partial class TrayMenuWindow : Window
     /// </summary>
     private DateTimeOffset _shownAt;
 
-    public TrayMenuWindow(LocalLogger log, Action showRemainingTime, Action openChat, Action showExtraTime, Action requestExit)
+    public TrayMenuWindow(LocalLogger log, Action showRemainingTime, Action openChat, Action showExtraTime, Action requestExit, string? screenStatusText = null)
     {
         ArgumentNullException.ThrowIfNull(log);
         ArgumentNullException.ThrowIfNull(showRemainingTime);
@@ -56,6 +56,19 @@ public partial class TrayMenuWindow : Window
         _requestExit = requestExit;
 
         InitializeComponent();
+
+        // Dòng trạng thái chụp màn hình (migration 32): chỉ hiện khi App
+        // đã nhận trạng thái từ Service; câu chữ chỉ là đang bật/đang
+        // tắt, không tần suất (minh bạch theo quyết định 28/11/2026).
+        if (string.IsNullOrWhiteSpace(screenStatusText))
+        {
+            ScreenStatusText.Visibility = Visibility.Collapsed;
+            ScreenStatusSeparator.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            ScreenStatusText.Text = screenStatusText;
+        }
 
         Loaded += (_, _) => _shownAt = DateTimeOffset.UtcNow;
         Deactivated += (_, _) =>

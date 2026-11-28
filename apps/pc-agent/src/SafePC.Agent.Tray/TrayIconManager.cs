@@ -38,6 +38,11 @@ public sealed class TrayIconManager : IDisposable
     private readonly Action _showExtraTime;
     private readonly Action _requestExit;
     private TrayMenuWindow? _menuWindow;
+
+    // Dòng trạng thái chụp màn hình trong menu (migration 32): App đặt
+    // qua SetScreenStatus mỗi khi Service báo trạng thái mới. Chỉ là
+    // "Chụp màn hình: đang bật/đang tắt" — TUYỆT ĐỐI không kèm tần suất.
+    private volatile string? _screenStatusText;
     private DateTimeOffset _menuClosedAt;
     private DateTimeOffset _menuOpenedAt;
     private bool _disposed;
@@ -138,7 +143,7 @@ public sealed class TrayIconManager : IDisposable
         {
             CloseMenu();
 
-            var menu = new TrayMenuWindow(_log, _showRemainingTime, _openChat, _showExtraTime, _requestExit)
+            var menu = new TrayMenuWindow(_log, _showRemainingTime, _openChat, _showExtraTime, _requestExit, _screenStatusText)
             {
                 // KHÔNG đặt Owner: menu là cửa sổ top-level độc lập. Gán Owner
                 // là cửa sổ neo 0x0 + ShowActivated=false đã khiến cửa sổ con
@@ -253,6 +258,9 @@ public sealed class TrayIconManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    /// <summary>Đặt dòng trạng thái chụp màn hình hiện trong menu lần mở sau (null = không hiện dòng nào). Chỉ nhận câu chữ trạng thái, không tần suất.</summary>
+    public void SetScreenStatus(string? text) => _screenStatusText = text;
 
     /// <summary>Chỉ dùng cho --self-test: mở menu y hệt chuột phải, trả về cửa sổ menu để kiểm tra.</summary>
     internal TrayMenuWindow? OpenMenuForTest()
