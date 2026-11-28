@@ -4344,3 +4344,15 @@ Review độc lập đợt chụp màn hình: CHANGES REQUESTED — phần lõi 
 
 ## [2026-11-28 11:40 +07] ChaMuse
 Review vòng 2: APPROVED — cả 4 MAJOR + 4 MINOR đã sửa đúng (điểm mờ M3(c): mất mạng đúng tick đối chiếu 15 phút thì token cục bộ bị xóa oan nhưng tự lành sau 1 tick, không mất dữ liệu/không spam — chấp nhận được, cứng hóa để đợt sau). Đã đẩy develop xong 11 commit (head e65aeba), CI #369 XANH (Tray 19/19, IPC 13/13), bản cài v0.1.369 tải được — đợt chụp màn hình hoàn tất phía code; còn chờ anh: áp migration 32 (sau 25→26→29→30→31), tạo Google OAuth client + 2 secret + redirect URI, deploy connect-google-drive (tắt Verify JWT) + deploy lại 2 function thông báo. Chưa kiểm chứng máy thật.
+
+## [2026-11-28 13:37 +07] Anh Tiến
+Em đang làm gì bên SafePC? Hay chờ anh gì để tiếp tục?
+
+## [2026-11-28 13:37 +07] ChaMuse
+Trả lời: hiện không có việc nào đang chạy — đợt chụp màn hình đã xong sáng nay (develop, CI #369, v0.1.369). Đang chờ anh 4 việc tay: (1) test v0.1.309 + extension cuối tuần này — cổng merge develop → main; (2) áp migration 25→26→29→30→31→32; (3) việc VAPID/deploy cho push; (4) việc Google OAuth/deploy cho chụp màn hình. Việc em tự làm tiếp được không cần chờ: đợt cứng hóa nhỏ trên develop (token Drive 3 trạng thái, sửa slice DNR, tóm tắt quan sát trên thẻ luật, cập nhật STATE.md) — đã mời anh bấm nút nếu muốn em làm luôn.
+
+## [2026-11-28 13:38 +07] Anh Tiến
+Làm tiếp đợt cứng hóa nhỏ trên develop (bấm nút duyệt ở tin trước).
+
+## [2026-11-28 13:38 +07] ChaMuse
+Đã khởi động đợt cứng hóa nhỏ trên develop gồm 4 việc: (1) token Drive 3 trạng thái — hết xóa oan khi mất mạng; (2) sửa slice DNR + extension 0.1.13; (3) tóm tắt quan sát tuần trên thẻ luật; (4) cập nhật STATE.md. Quy trình như thường lệ: xây → review độc lập → đẩy develop → kiểm CI → báo anh kèm zip extension mới.
