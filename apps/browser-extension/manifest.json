@@ -27,7 +27,7 @@
     "storage",
     "nativeMessaging"
   ],
-  "version": "0.1.12",
+  "version": "0.1.13",
   "web_accessible_resources": [
     {
       "matches": [

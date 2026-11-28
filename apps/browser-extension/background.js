@@ -833,26 +833,42 @@ function buildDnrRules(rules, usageSeconds, now) {
   // hướng (watcher đánh giá trên toàn bộ rules.blocked, kể cả lý do
   // theo danh mục) — cùng mẫu "DNR cho phần đầu, watcher cho toàn bộ"
   // như chặn từ khóa tìm kiếm. Ghi warn để chẩn đoán thấy rõ.
+  // CỨNG HÓA 0.1.13: số cặp được lắp tính TRƯỚC từ ngân sách còn lại
+  // và phần thừa bị bỏ từ CUỐI HÀNG ĐỢI (đúng các cặp danh mục ưu tiên
+  // thấp nhất — domain gõ tay nằm đầu hàng đợi nên không bao giờ bị
+  // bỏ ở bước này). Trước đây vòng lắp dừng giữa chừng theo cùng ngân
+  // sách nhưng bước cắt cuối mù ở cuối hàm có thể cắt nhầm rule loại
+  // khác (block-all của focus/allowlist nằm ngay trước đoạn hàng đợi
+  // trong mảng) khi riêng các loại rule không-xếp-hàng đã vượt trần.
   if (blockedDnrQueue.length > 0) {
-    let addedDomains = 0;
-    for (const item of blockedDnrQueue) {
-      if (rulesOut.length + 2 > MAX_DNR_RULES) break;
-      rulesOut.push(redirectRule(nextId++, PRIORITY.blocked, item.domain, item.reason));
-      rulesOut.push(blockRule(nextId++, PRIORITY.blocked, item.domain));
-      addedDomains++;
-    }
-    if (addedDomains < blockedDnrQueue.length) {
+    const remainingBudget = MAX_DNR_RULES - rulesOut.length;
+    const fittableDomains = Math.max(0, Math.floor(remainingBudget / 2));
+    let queueToBuild = blockedDnrQueue;
+    if (queueToBuild.length > fittableDomains) {
+      const droppedDomains = queueToBuild.length - fittableDomains;
+      queueToBuild = queueToBuild.slice(0, fittableDomains);
       console.warn(
         "[SafePC] Danh sách chặn có " + blockedDnrQueue.length +
-        " domain, vượt ngân sách rule DNR: chỉ dựng rule tầng request cho " + addedDomains +
-        " domain đầu (ưu tiên domain gõ tay rồi danh mục); " + (blockedDnrQueue.length - addedDomains) +
-        " domain còn lại vẫn bị tab watcher thi hành ở tầng điều hướng.",
+        " domain, vượt ngân sách rule DNR: chỉ dựng rule tầng request cho " + fittableDomains +
+        " domain đầu (ưu tiên domain gõ tay rồi danh mục); " + droppedDomains +
+        " domain cuối hàng đợi vẫn bị tab watcher thi hành ở tầng điều hướng.",
       );
+    }
+    for (const item of queueToBuild) {
+      rulesOut.push(redirectRule(nextId++, PRIORITY.blocked, item.domain, item.reason));
+      rulesOut.push(blockRule(nextId++, PRIORITY.blocked, item.domain));
     }
   }
 
   if (rulesOut.length > MAX_DNR_RULES) {
-    console.warn("[SafePC] Quá nhiều DNR rules, đã cắt xuống " + MAX_DNR_RULES + ".");
+    // Lưới an toàn CUỐI CÙNG (0.1.13): chỉ còn chạm tới khi riêng các
+    // loại rule không-xếp-hàng đã vượt trần — bước cắt hàng đợi ở trên
+    // không bao giờ cắt rule loại khác. Đếm số rule bị cắt vào warn để
+    // chẩn đoán thấy rõ bất thường thay vì cắt lặng.
+    console.warn(
+      "[SafePC] Quá nhiều DNR rules (" + rulesOut.length + "), đã cắt bỏ " +
+      (rulesOut.length - MAX_DNR_RULES) + " rule ở cuối xuống " + MAX_DNR_RULES + ".",
+    );
     return rulesOut.slice(0, MAX_DNR_RULES);
   }
   return rulesOut;
