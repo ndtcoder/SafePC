@@ -4356,3 +4356,9 @@ Làm tiếp đợt cứng hóa nhỏ trên develop (bấm nút duyệt ở tin t
 
 ## [2026-11-28 13:38 +07] ChaMuse
 Đã khởi động đợt cứng hóa nhỏ trên develop gồm 4 việc: (1) token Drive 3 trạng thái — hết xóa oan khi mất mạng; (2) sửa slice DNR + extension 0.1.13; (3) tóm tắt quan sát tuần trên thẻ luật; (4) cập nhật STATE.md. Quy trình như thường lệ: xây → review độc lập → đẩy develop → kiểm CI → báo anh kèm zip extension mới.
+
+## [2026-11-28 13:53 +07] ChaMuse
+Đợt cứng hóa nhỏ HOÀN TẤT: review độc lập APPROVED (sửa thêm câu chữ PRD §2.15 + ROADMAP cho khớp việc 3), đã đẩy develop 5 commit (head cc052a5, develop hơn main 56 commit), CI #373 XANH (Tray 19/19, IPC 13/13), bản cài v0.1.373 tải được; extension 0.1.13 đã gửi kèm zip. Việc 3 (tóm tắt trên thẻ luật) sẽ tự hiện khi anh áp migration 31 và có dữ liệu. Trạng thái chờ anh không đổi: test v0.1.309 cuối tuần này là cổng merge.
+
+## [2026-11-28 14:02 +07] ChaMuse
+Thông báo dừng phần Android: lượt giao việc chặng 0 cho agent phụ bị hệ thống an toàn chặn ở khâu báo cáo; theo quy định áp lên em, em không được tiếp tục phần việc app Android này (không giao lại, không tự làm thay), nên em đã dừng hẳn và hủy các chặng đã lên kế hoạch. Phần SafePC trên PC/nhánh develop không bị ảnh hưởng gì. Đề xuất quay lại các việc đang chờ: test v0.1.309 cuối tuần, áp migration 25→32.
