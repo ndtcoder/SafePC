@@ -1,4 +1,4 @@
-import { describeRuleConfig, formatDateTimeVi, ruleTypeLabel } from '../lib/format'
+import { describeRuleConfig, formatDateTimeVi, formatDurationVi, ruleTypeLabel } from '../lib/format'
 import {
   RULE_CATEGORY_THEME,
   hasCustomRuleName,
@@ -25,6 +25,7 @@ export function RuleCard({
   category,
   enforcing,
   enforcingStale = false,
+  observationSummary,
   expanded,
   toggling,
   confirmingDelete,
@@ -41,6 +42,13 @@ export function RuleCard({
   enforcing: boolean
   /** Snapshot thi hành đã quá cũ (hơn 5 phút): highlight bớt đậm + gắn nhãn "Dữ liệu cũ". */
   enforcingStale?: boolean
+  /**
+   * Tóm tắt theo dõi khi luật không chặn (bảng rule_observations,
+   * migration 31) của tuần hiện tại cho rule này — chỉ truyền khi rule
+   * có bật mặt theo dõi và có ít nhất một dòng ghi nhận trong tuần;
+   * vắng mặt thì thẻ không hiện dòng tóm tắt.
+   */
+  observationSummary?: { count: number; totalSeconds: number }
   expanded: boolean
   toggling: boolean
   confirmingDelete: boolean
@@ -124,6 +132,13 @@ export function RuleCard({
           {rule.enabled ? 'Đang bật' : 'Đang tắt'}
         </button>
       </div>
+      {observationSummary && (
+        <p className="px-3 pb-2 text-xs text-slate-500">
+          Theo dõi tuần này: {observationSummary.count} lượt ·{' '}
+          {formatDurationVi(observationSummary.totalSeconds)} thuộc diện luật này lúc luật không
+          chặn — chi tiết ở Báo cáo tuần.
+        </p>
+      )}
       {expanded && (
         <div className="border-t border-slate-100 px-3 py-3">
           <ul className="space-y-0.5 text-sm text-slate-600">
