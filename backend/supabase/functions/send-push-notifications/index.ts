@@ -26,6 +26,14 @@
 //   khi gia đình không có subscription nào — thì đóng
 //   push_notified_at để không quét lại vô hạn; phụ huynh bật push
 //   sau đó không nhận lại tin cũ (tin cũ vẫn ở trong Dashboard).
+// - Sự kiện cảnh báo phụ huynh (kind 'parent_alert', migration 32):
+//   hàng audit_logs loại 'drive_disconnected' (Agent báo token Drive
+//   bị thu hồi/hết hiệu lực qua safepc_push_tamper_event). Chống
+//   trùng theo từng phụ huynh bằng hàng push_sends (kind, ref_id =
+//   id hàng audit, user_id) như yêu cầu; mỗi sự kiện 1 push, không
+//   gộp, không throttle riêng — sự kiện này hiếm (chỉ khi kết nối
+//   Drive thật sự mất) và cùng một đợt mất kết nối Agent chỉ ghi một
+//   hàng audit nhờ RPC đánh dấu revoked_at nguyên tử phía server.
 // - Sự kiện yêu cầu: requests còn 'pending' chưa có hàng push_sends
 //   (kind = 'child_request'). Gộp theo con thành 1 push; chống dồn
 //   dập tối đa 1 push yêu cầu / con / 10 phút (yêu cầu trong cửa sổ
@@ -324,6 +332,52 @@ export function buildRequestPushPayload(input: {
   };
 }
 
+/** Các loại sự kiện audit_logs được đẩy qua kind 'parent_alert' (migration 32). */
+export const PARENT_ALERT_ACTIONS = ["drive_disconnected"] as const;
+
+export interface AuditRowLike {
+  id: string;
+  child_id: string | null;
+  action: string;
+  created_at: string;
+}
+
+/**
+ * Sự kiện cảnh báo phụ huynh có đáng đẩy không: đúng loại trong
+ * PARENT_ALERT_ACTIONS và tạo trong 24 giờ gần nhất (như mọi sự
+ * kiện khác của function này).
+ */
+export function shouldPushParentAlert(row: AuditRowLike, nowMs: number): boolean {
+  if (!(PARENT_ALERT_ACTIONS as readonly string[]).includes(row.action)) return false;
+  const age = ageMs(row.created_at, nowMs);
+  return age !== null && age >= 0 && age <= EVENT_LOOKBACK_MS;
+}
+
+/** Payload push cho một sự kiện cảnh báo phụ huynh: bấm vào mở tab Chụp màn hình của con liên quan. */
+export function buildParentAlertPushPayload(input: {
+  childName: string | null;
+  childId: string | null;
+  action: string;
+}): PushPayload {
+  const name = input.childName ? oneLine(input.childName) : null;
+  if (input.action === "drive_disconnected") {
+    return {
+      title: "Mất kết nối Google Drive",
+      body: name
+        ? `Drive lưu ảnh chụp màn hình của ${name} đã mất kết nối. Vào tab Chụp màn hình để kết nối lại.`
+        : "Drive lưu ảnh chụp màn hình đã mất kết nối. Vào tab Chụp màn hình để kết nối lại.",
+      url: input.childId ? `/ho-so/${input.childId}/chup-man-hinh` : "/ho-so",
+      tag: `safepc-drive-alert-${input.childId ?? "family"}`,
+    };
+  }
+  return {
+    title: "Cảnh báo SafePC",
+    body: "Có sự kiện cần phụ huynh xem lại trên Dashboard.",
+    url: "/ho-so",
+    tag: "safepc-parent-alert",
+  };
+}
+
 /**
  * Che endpoint khi log: chỉ giữ host + 6 ký tự cuối của path.
  * Endpoint là định danh đăng ký của thiết bị phụ huynh — không log
@@ -394,7 +448,15 @@ interface RequestRow {
   created_at: string;
 }
 
-type PushKind = "chat_message" | "child_request";
+interface AuditRow {
+  id: string;
+  child_id: string | null;
+  device_id: string | null;
+  action: string;
+  created_at: string;
+}
+
+type PushKind = "chat_message" | "child_request" | "parent_alert";
 type PushOutcome = "sent" | "skipped" | "throttled" | "failed" | "would_send" | "would_skip";
 
 interface PushEventResult {
@@ -468,6 +530,7 @@ async function deliverToUser(
 /** Ghi hàng push_sends cho một loạt (sự kiện × phụ huynh); trùng khóa thì bỏ qua. */
 async function recordPushSends(
   client: DbClient,
+  kind: PushKind,
   rows: Array<{
     family_id: string;
     ref_id: string;
@@ -478,7 +541,7 @@ async function recordPushSends(
 ): Promise<void> {
   if (rows.length === 0) return;
   const { error } = await client.from("push_sends").upsert(
-    rows.map((r) => ({ kind: "child_request", ...r })),
+    rows.map((r) => ({ kind, ...r })),
     { onConflict: "kind,ref_id,user_id", ignoreDuplicates: true },
   );
   if (error) throw error;
@@ -686,6 +749,7 @@ async function scanFamily(
       if (!dryRun && decidedIds.length > 0) {
         await recordPushSends(
           client,
+          "child_request",
           decidedIds.flatMap((refId) =>
             parentIds.map((userId) => ({
               family_id: familyId,
@@ -738,10 +802,76 @@ async function scanFamily(
           });
         }
       }
-      await recordPushSends(client, rowsToRecord);
+      await recordPushSends(client, "child_request", rowsToRecord);
       if (group.childId !== null) pushedChildrenThisSweep.add(group.childId);
       pushesSent += 1;
       events.push({ kind: "child_request", key, status: "sent" });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Sự kiện cảnh báo phụ huynh: audit_logs 'drive_disconnected'
+  // (kind 'parent_alert' trong push_sends, migration 32)
+  // ------------------------------------------------------------------
+  const { data: auditData, error: auditError } = await client
+    .from("audit_logs")
+    .select("id, child_id, device_id, action, created_at")
+    .eq("family_id", familyId)
+    .in("action", [...PARENT_ALERT_ACTIONS])
+    .gte("created_at", lookbackIso)
+    .order("created_at", { ascending: true })
+    .limit(SCAN_LIMIT);
+  if (auditError) throw auditError;
+  const alertRows = ((auditData ?? []) as AuditRow[]).filter((r) => shouldPushParentAlert(r, nowMs));
+  if (alertRows.length > 0) {
+    // Đã xử lý ở kênh push = đã có hàng push_sends parent_alert cho
+    // sự kiện đó (bất kỳ phụ huynh nào) — cùng mẫu chống trùng của
+    // sự kiện yêu cầu; dấu của email (notification_sends) không liên
+    // quan.
+    const { data: handledAlertData, error: handledAlertError } = await client
+      .from("push_sends")
+      .select("ref_id")
+      .eq("family_id", familyId)
+      .eq("kind", "parent_alert")
+      .in("ref_id", alertRows.map((r) => r.id));
+    if (handledAlertError) throw handledAlertError;
+    const handledAlertIds = new Set(
+      ((handledAlertData ?? []) as Array<{ ref_id: string }>).map((r) => r.ref_id),
+    );
+    for (const row of alertRows) {
+      if (handledAlertIds.has(row.id)) continue;
+      const key = `audit:${row.id}`;
+      if (pushesSent >= MAX_PUSHES_PER_FAMILY) break;
+      const payload = buildParentAlertPushPayload({
+        childName: row.child_id ? (childNameById.get(row.child_id) ?? null) : null,
+        childId: row.child_id,
+        action: row.action,
+      });
+      if (dryRun) {
+        events.push({ kind: "parent_alert", key, status: "would_send" });
+        pushesSent += 1;
+        continue;
+      }
+      const alertRecords: Array<{
+        family_id: string;
+        ref_id: string;
+        user_id: string;
+        child_id: string | null;
+        status: "sent" | "failed" | "skipped";
+      }> = [];
+      for (const parentId of parentIds) {
+        const outcome = await deliverToUser(client, subsByUser.get(parentId) ?? [], payload);
+        alertRecords.push({
+          family_id: familyId,
+          ref_id: row.id,
+          user_id: parentId,
+          child_id: row.child_id,
+          status: outcome === "sent" ? "sent" : outcome === "failed" ? "failed" : "skipped",
+        });
+      }
+      await recordPushSends(client, "parent_alert", alertRecords);
+      pushesSent += 1;
+      events.push({ kind: "parent_alert", key, status: "sent" });
     }
   }
 
