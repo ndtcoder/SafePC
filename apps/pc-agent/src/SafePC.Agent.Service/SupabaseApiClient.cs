@@ -379,6 +379,153 @@ public sealed class SupabaseApiClient
     }
 
     /// <summary>
+    /// Tải cài đặt chụp màn hình của MỌI hồ sơ con trên máy này (migration
+    /// 32, RPC <c>safepc_fetch_screen_settings</c>): mỗi hàng là
+    /// {child_id, child_name, enabled, interval_minutes, retention_days}.
+    /// Trả về null khi chưa sẵn sàng, lỗi mạng, HOẶC RPC chưa có trên
+    /// server (migration 32 chưa áp — PostgREST trả 404): nơi gọi PHẢI giữ
+    /// nguyên cache cài đặt cũ khi nhận null. Danh sách rỗng (không null)
+    /// nghĩa là máy chưa có cài đặt nào — coi như mọi con đều tắt.
+    /// </summary>
+    public async Task<IReadOnlyList<ScreenSettingsRecord>?> FetchScreenSettingsAsync(CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Fetch screen settings bỏ qua: " + reason + ".");
+            return null;
+        }
+
+        List<ScreenSettingsRecord>? settings = await PostRpcAsync<List<ScreenSettingsRecord>>(
+            "safepc_fetch_screen_settings",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+            },
+            ct);
+        return settings;
+    }
+
+    /// <summary>
+    /// Đẩy metadata các ảnh chụp màn hình vừa upload lên Drive phụ huynh
+    /// (migration 32, RPC <c>safepc_push_screenshot_meta</c>, tham số
+    /// batch tên <c>p_items</c>). Ảnh thật KHÔNG đi qua đây — chỉ danh
+    /// mục {day, captured_at, drive_file_id, size_bytes, width, height,
+    /// windows_sid}; server suy hồ sơ con TỪNG MẪU qua windows_sid như
+    /// usage (trường child_id trong record chỉ để Service đối chiếu nội
+    /// bộ, RPC không đọc). Trả về true chỉ khi server xác nhận đã nhận;
+    /// nơi gọi chỉ xóa file local SAU khi cả upload Drive lẫn đẩy
+    /// metadata đều thành công.
+    /// </summary>
+    public async Task<bool> PushScreenshotMetaAsync(IReadOnlyList<ScreenshotMetaRecord> records, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        if (records.Count == 0)
+        {
+            return true;
+        }
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Gửi screenshot meta bỏ qua: " + reason + ". Dữ liệu giữ lại để gửi sau.");
+            return false;
+        }
+
+        JsonElement? result = await PostRpcAsync<JsonElement>(
+            "safepc_push_screenshot_meta",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_items = records,
+            },
+            ct);
+        return result.HasValue;
+    }
+
+    /// <summary>
+    /// Xóa metadata ảnh của một con trong một ngày (migration 32, RPC
+    /// <c>safepc_purge_screenshot_meta</c>) — gọi sau khi Service đã xóa
+    /// xong thư mục ngày đó trên Drive trong đợt dọn theo hạn giữ. RPC
+    /// không cần kết quả nên dùng đường no-result (chỉ HTTP 2xx).
+    /// </summary>
+    public async Task<bool> PurgeScreenshotMetaAsync(Guid childId, string day, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(day);
+
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Purge screenshot meta bỏ qua: " + reason + ".");
+            return false;
+        }
+
+        return await PostRpcNoResultAsync(
+            "safepc_purge_screenshot_meta",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+                p_child_id = childId,
+                p_day = day,
+            },
+            ct);
+    }
+
+    /// <summary>
+    /// Lấy bộ token Google Drive của phụ huynh (migration 32, RPC
+    /// <c>safepc_fetch_drive_token</c>): {refresh_token, google_email,
+    /// client_id, client_secret}. Trả về null khi phụ huynh chưa kết nối
+    /// Drive, chưa ghép nối máy, lỗi mạng, hoặc RPC chưa có trên server —
+    /// nơi gọi phân biệt "chưa kết nối" bằng cache cục bộ (đã từng có
+    /// token mà nay fetch không ra thì chỉ dừng upload êm, không báo lỗi
+    /// giả). KHÔNG bao giờ ghi log bất kỳ trường nào của kết quả.
+    /// </summary>
+    public async Task<DriveTokenResult?> FetchDriveTokenAsync(CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Fetch drive token bỏ qua: " + reason + ".");
+            return null;
+        }
+
+        DriveTokenResult? result = await PostRpcAsync<DriveTokenResult>(
+            "safepc_fetch_drive_token",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+            },
+            ct);
+        return result is null || string.IsNullOrWhiteSpace(result.RefreshToken) ? null : result;
+    }
+
+    /// <summary>
+    /// Báo server biết kết nối Drive đã mất (migration 32, RPC
+    /// <c>safepc_report_drive_disconnected</c>): gọi khi Google từ chối
+    /// refresh token (invalid_grant) — phụ huynh đã thu hồi quyền hoặc
+    /// token hết hạn. Dashboard đọc trạng thái này để nhắc phụ huynh kết
+    /// nối lại. RPC không cần kết quả nên dùng đường no-result.
+    /// </summary>
+    public async Task<bool> ReportDriveDisconnectedAsync(CancellationToken ct)
+    {
+        if (!TryGetCredentials(out DeviceCredentials? creds, out string? reason))
+        {
+            LogThrottled("not-ready", "Báo drive disconnected bỏ qua: " + reason + ".");
+            return false;
+        }
+
+        return await PostRpcNoResultAsync(
+            "safepc_report_drive_disconnected",
+            new
+            {
+                p_device_id = creds.DeviceId,
+                p_token_hash = Hashing.HashSecret(creds.Token),
+            },
+            ct);
+    }
+
+    /// <summary>
     /// Tải ánh xạ (hồ sơ con ↔ tài khoản Windows) của máy này (Sprint 5, RPC
     /// migration 24 <c>safepc_fetch_device_child_accounts</c>). Trả về null
     /// khi chưa sẵn sàng, lỗi mạng, HOẶC RPC chưa có trên server (migration

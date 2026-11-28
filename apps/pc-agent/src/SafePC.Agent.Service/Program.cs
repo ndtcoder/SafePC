@@ -54,6 +54,11 @@ builder.ConfigureServices((context, services) =>
     services.AddSingleton<DomainRulesPublisher>();
     services.AddSingleton<ForegroundState>();
     services.AddSingleton<TrayQueryState>();
+    // Chụp màn hình (migration 32): kho token Drive (DPAPI, cùng thư mục
+    // dữ liệu với device_token.dat) + uploader Drive + luồng xử lý.
+    services.AddSingleton(new DriveTokenStore(Path.Combine(programData, AgentConstants.DriveTokenFileName)));
+    services.AddSingleton<DriveUploader>();
+    services.AddSingleton<ScreenshotService>();
     services.AddHttpClient<SupabaseApiClient>();
 
     // IpcPipeServer vừa là singleton (để AgentWorker gửi message xuống Tray)

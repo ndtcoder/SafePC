@@ -64,6 +64,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly ForegroundState _foregroundState;
     private readonly TrayQueryState _queryState;
     private readonly TrustedClock _clock;
+    private readonly ScreenshotService _screenshots;
 
     // Chống spam yêu cầu xin mở domain: domain đã gửi thành công thì không
     // gửi lại trong 5 phút (xem DomainRequestThrottle).
@@ -377,7 +378,8 @@ public sealed class AgentWorker : BackgroundService
         DomainRulesPublisher publisher,
         ForegroundState foregroundState,
         TrayQueryState queryState,
-        TrustedClock clock)
+        TrustedClock clock,
+        ScreenshotService screenshots)
     {
         _log = log;
         _outbox = outbox;
@@ -389,6 +391,7 @@ public sealed class AgentWorker : BackgroundService
         _foregroundState = foregroundState;
         _queryState = queryState;
         _clock = clock;
+        _screenshots = screenshots;
 
         // Thi hành app NGAY khi nhận báo cáo foreground mới (18/11/2026):
         // handler chỉ kích hoạt fire-and-forget, không bao giờ chặn thread
@@ -503,8 +506,13 @@ public sealed class AgentWorker : BackgroundService
         // động lại trong phiên của user (xem TrayWatchdogLoopAsync). Vòng
         // này độc lập như các vòng khác: lỗi thì chỉ log, không chết Service.
         Task trayWatchdog = TrayWatchdogLoopAsync(stoppingToken);
+        // Chụp màn hình (migration 32): vòng riêng 60 giây — đồng bộ cài
+        // đặt theo con, báo trạng thái hiệu lực xuống Tray phiên console,
+        // xử lý hàng đợi ảnh + upload Drive + dọn hạn giữ (xem
+        // ScreenshotService). Độc lập như các vòng khác: lỗi chỉ log.
+        Task screenCapture = ScreenCaptureLoopAsync(stoppingToken);
 
-        await Task.WhenAll(heartbeat, polling, flushing, ruleCheck, trayWatchdog);
+        await Task.WhenAll(heartbeat, polling, flushing, ruleCheck, trayWatchdog, screenCapture);
         _log.Info("SafePC Agent Service dừng.");
     }
 
@@ -710,6 +718,38 @@ public sealed class AgentWorker : BackgroundService
             catch (Exception ex)
             {
                 _log.Error("Watchdog Tray lỗi.", ex);
+            }
+
+            if (!await WaitAsync(TimeSpan.FromSeconds(60), ct))
+            {
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Vòng chụp màn hình (migration 32, mỗi 60 giây): phân giải ngữ cảnh
+    /// phiên console/con đang active như vòng rules rồi giao cho
+    /// <see cref="ScreenshotService.TickAsync"/> — đồng bộ cài đặt, báo
+    /// trạng thái xuống Tray, xử lý hàng đợi ảnh. Mọi lỗi đều chỉ log —
+    /// vòng này không bao giờ làm chết Service.
+    /// </summary>
+    private async Task ScreenCaptureLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                ActiveContext active = await GetActiveContextAsync(ct);
+                await _screenshots.TickAsync(active.ConsoleSessionId, active.Status, active.ChildId, active.Links, active.DefaultChildId, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Vòng chụp màn hình lỗi.", ex);
             }
 
             if (!await WaitAsync(TimeSpan.FromSeconds(60), ct))

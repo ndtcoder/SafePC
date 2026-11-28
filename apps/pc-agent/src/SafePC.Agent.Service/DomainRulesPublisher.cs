@@ -72,6 +72,9 @@ public sealed class DomainRulesPublisher
     /// <summary>File NativeHost ghi đè mỗi khi extension liên hệ (chỉ chứa timestamp UTC ISO), Service đọc để báo extension còn sống.</summary>
     public static string ExtensionHeartbeatFilePath => Path.Combine(SharedDirectory, "extension_heartbeat.txt");
 
+    /// <summary>Thư mục hàng đợi ảnh chụp màn hình (migration 32): Tray ghi cặp &lt;tên&gt;.jpg + &lt;tên&gt;.json, Service đọc, upload Drive rồi xóa. Cùng gốc shared với domain_rules.json để hưởng cùng mô hình thư mục; ACL riêng do ScreenshotService đặt (Users cần quyền ghi file).</summary>
+    public static string ScreenQueueDirectory => Path.Combine(SharedDirectory, "screen_queue");
+
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private readonly OutboxStore _outbox;

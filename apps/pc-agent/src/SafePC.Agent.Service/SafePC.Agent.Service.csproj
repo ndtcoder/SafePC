@@ -14,6 +14,8 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
     <!-- ACL cho Named Pipe IPC (docs/03-SECURITY.md mục 4). Package này không có bản 8.x — bản ổn định mới nhất là 6.0.0. -->
     <PackageReference Include="System.Security.AccessControl" Version="6.0.0" />
+    <!-- Thu nhỏ ảnh 16x16 để tính average-hash khử trùng lặp ảnh chụp màn hình (migration 32, xem ScreenshotHash). Chỉ chạy trên Windows (target net8.0-windows). -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
