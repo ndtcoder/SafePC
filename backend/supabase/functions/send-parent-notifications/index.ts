@@ -2,7 +2,8 @@
 //
 // Gửi email thông báo cho phụ huynh khi có sự kiện cần chú ý (PRD §2.8):
 // con xin thêm giờ / xin mở ứng dụng, phát hiện can thiệp (đổi giờ, Agent
-// khởi động lại, mất extension, Service dừng), và máy offline bất thường
+// khởi động lại, mất extension, Service dừng, mất kết nối Google Drive —
+// loại 'drive_disconnected' thêm ở migration 32), và máy offline bất thường
 // (quá 48 giờ không thấy tín hiệu). Chạy quét định kỳ mỗi 5 phút qua
 // pg_cron + pg_net (migration 12), hoặc gọi tay để gửi thử.
 //
@@ -161,7 +162,7 @@ export const TAMPER_THROTTLE_MS = 6 * 3600 * 1000;
 /** Mỗi con tối đa 1 email yêu cầu mỗi giờ (chống spam nút "xin thêm giờ"). */
 export const REQUEST_THROTTLE_MS = 3600 * 1000;
 
-export const TAMPER_ACTIONS = ["clock_drift", "agent_restart", "extension_missing", "service_stopped", "tray_stopped"] as const;
+export const TAMPER_ACTIONS = ["clock_drift", "agent_restart", "extension_missing", "service_stopped", "tray_stopped", "drive_disconnected"] as const;
 export type TamperAction = (typeof TAMPER_ACTIONS)[number];
 
 export function tamperActionLabel(action: string): string {
@@ -176,6 +177,8 @@ export function tamperActionLabel(action: string): string {
       return "Service SafePC đã dừng";
     case "tray_stopped":
       return "Tray SafePC dừng bất thường";
+    case "drive_disconnected":
+      return "Mất kết nối Google Drive (nơi lưu ảnh chụp màn hình)";
     default:
       return action;
   }
