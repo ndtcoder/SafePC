@@ -4335,3 +4335,9 @@ Sửa: chỉ thông báo 1 tuần/lần rằng con bị chụp màn hình và ph
 
 ## [2026-11-28 11:17 +07] ChaMuse
 Đã chuyển yêu cầu sửa cho builder đang xây (ngắt việc viết theo mô hình cũ): bỏ cổng đồng ý của con, phụ huynh quyết định cứng bật/tắt, máy con hiện thông báo 1 lần/tuần (lần đầu ngay khi chụp hiệu lực) không nêu tần suất; đã sửa lại ghi nhớ quyết định trong MEMORY.
+
+## [2026-11-28 11:29 +07] ChaMuse
+Đợt chụp màn hình xây xong ở cây local theo đúng mô hình anh sửa 11:16 (đã rà grep: không còn tàn dư cổng đồng ý; UI phía con không chứa tần suất). Cổng tự kiểm: harness m32 43/43, dotnet 0/0, Dashboard build xanh, quét bí mật 0. Đã giao reviewer độc lập kiểm tra (trọng tâm: bảo mật token Drive, RLS settings tránh lặp lỗi "Đã lưu giả", logic thông báo tuần, dọn Drive theo hạn giữ). Việc tay của anh để chạy thật: tạo Google OAuth client + đặt 2 secret + đăng ký redirect URI, deploy function connect-google-drive, áp migration 32 (sau 31).
+
+## [2026-11-28 11:33 +07] ChaMuse
+Review độc lập đợt chụp màn hình: CHANGES REQUESTED — phần lõi + mô hình 11:16 + bảo mật token ĐẠT, nhưng 4 lỗi MAJOR ở đường nối Agent↔server: (M1) client gửi sai tên tham số RPC (p_batch thay vì p_items) khiến đẩy metadata luôn thất bại — ảnh lên Drive nhưng Dashboard trống; (M2) record thiếu windows_sid nên metadata ghi về con mặc định trên máy dùng chung; (M3) ngắt Drive trên Dashboard không dừng được Agent (token cục bộ không đối chiếu lại server) — kiểm soát riêng tư hỏng; (M4) Tray khởi động lại trong cùng phiên không nhận lại trạng thái chụp (chỉ gửi khi chữ ký đổi, không có hello-sync). Cộng 4 MINOR (race ghi .json, dọn Drive ngừng khi tắt hết chụp, PRD §2.16 lệch code 3 chỗ, hash khử trùng lặp ghi sớm). Đã giao fixer sửa cả 8 điểm + rà chéo toàn bộ seam RPC của migration 32.
