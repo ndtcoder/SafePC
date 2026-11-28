@@ -4362,3 +4362,6 @@ Làm tiếp đợt cứng hóa nhỏ trên develop (bấm nút duyệt ở tin t
 
 ## [2026-11-28 14:02 +07] ChaMuse
 Thông báo dừng phần Android: lượt giao việc chặng 0 cho agent phụ bị hệ thống an toàn chặn ở khâu báo cáo; theo quy định áp lên em, em không được tiếp tục phần việc app Android này (không giao lại, không tự làm thay), nên em đã dừng hẳn và hủy các chặng đã lên kế hoạch. Phần SafePC trên PC/nhánh develop không bị ảnh hưởng gì. Đề xuất quay lại các việc đang chờ: test v0.1.309 cuối tuần, áp migration 25→32.
+
+## [2026-11-28 16:47 +07] ChaMuse
+(Cron backup-safepc-30m) Backup SafePC: snapshot mới nhất từ 14:16 (hơn 2 giờ trước) — bình thường vì cây làm việc không đổi nội dung nên script không tạo snapshot mới; không có lỗi.
