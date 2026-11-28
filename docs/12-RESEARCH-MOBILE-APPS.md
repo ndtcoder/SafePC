@@ -1,5 +1,7 @@
 # Nghiên cứu Hướng 2 — App điện thoại SafePC (Android + iPhone)
 
+> **Trạng thái: ĐÃ CHỐT HƯỚNG 28/11/2026 — xem AMENDMENTS A-20 (chỉ dùng free: bỏ iPhone cho con + bỏ store, Android APK 2 chế độ cài).**
+
 > Tài liệu nghiên cứu trong docs/, lập ngày 28/11/2026. CHỈ là tài liệu nghiên cứu — chưa phải quyết định triển khai.
 > Yêu cầu của anh Tiến: tạo app SafePC trên Android và iPhone để khóa điện thoại của con; app cho bố mẹ quản lý cũng có trên Android + iPhone; có lựa chọn áp CHUNG chính sách bảo vệ như trên máy tính hoặc chính sách RIÊNG cho điện thoại (thời gian dùng, app cho phép, web cho phép...).
 > Bối cảnh: SafePC hiện quản lý máy tính Windows (Agent C#.NET + extension trình duyệt), backend Supabase dùng chung, Dashboard React PWA trên Vercel. Mục tiêu <100 user, dịch vụ free là chính.

@@ -117,6 +117,15 @@ Chi tiết thiết kế: PRD §2.14 (giờ tin cậy) + §2.15 (theo dõi luật
 - [ ] Dashboard: công tắc "Theo dõi cả khi luật không chặn" trong form luật (mặc định bật), mục mới trong Báo cáo tuần + tóm tắt trên thẻ luật; cập nhật docs/09 + trang Chính sách riêng tư. — Đã xong: công tắc trong form luật, mục "Hoạt động thuộc diện luật đang không chặn" trong Báo cáo tuần, mục xuất dữ liệu con, docs/09 + trang Chính sách riêng tư. CHƯA làm: tóm tắt tuần này trên thẻ luật (để đợt sau).
 - [ ] Kiểm chứng máy thật: tắt luật cấm domain rồi vào thử; mở khóa tạm thời rồi dùng app bị cấm; sửa luật giữa chừng (dòng cũ giữ bản chụp cũ); xóa luật (dừng ghi).
 
+### Chụp màn hình định kỳ (anh Tiến quyết TRIỂN KHAI 28/11/2026 — ĐÃ XÂY ở cây local, chờ kiểm chứng máy thật + chờ anh áp migration 32 + tạo OAuth client) 🔨
+
+Chi tiết: PRD §2.16, AMENDMENTS A-19, nghiên cứu nền docs/11 (lưu ý: mô hình triển khai theo quyết định 11:16 của anh Tiến — phụ huynh quyết định cứng, con thông báo 1 lần/tuần không nêu tần suất — KHÁC thiết kế cổng đồng ý trong docs/11).
+
+- [x] Xây ở cây local: migration 32 + chụp/nén/upload Drive trong Agent (mức 1/2/5/10/15/30 phút, tối đa 1280px, JPEG q72, lưu Drive riêng của phụ huynh qua OAuth `drive.file`, giữ mặc định 14 ngày, chọn 14/30/90/180) + cài đặt/xem ảnh trên Dashboard + thông báo hằng tuần cho con trên máy con + Tray luôn hiện trạng thái chụp, không chụp khi màn hình khóa.
+- [ ] **Anh áp migration 32** qua SQL Editor (theo thứ tự sau các migration đang chờ).
+- [ ] **Anh tạo Google OAuth client + đặt secret** để luồng "Kết nối Google Drive" của phụ huynh hoạt động.
+- [ ] Kiểm chứng máy thật: bật chụp → ảnh lên đúng Drive của phụ huynh; thông báo tuần hiện trên máy con; tắt tính năng thì dừng chụp từ lượt kế tiếp; quá hạn giữ thì ảnh bị xóa.
+
 ### Đã phê duyệt 17/11/2026 — thực hiện dần (chi tiết trong PRD §2.8–2.10)
 
 **Tính năng nâng cao + giao diện chuyên nghiệp (theo thứ tự ưu tiên):**
@@ -144,10 +153,11 @@ Chi tiết thiết kế: PRD §2.14 (giờ tin cậy) + §2.15 (theo dõi luật
 - [ ] 7 mục nội dung: tổng quan so với tuần trước, giờ theo ngày kèm giới hạn, top 5 app/domain, số lần thi hành, yêu cầu xin giờ, cảnh báo, gợi ý tự động.
 - [ ] Xuất PDF để sau.
 
-### Giai đoạn 2 — Android cho phụ huynh ⏳
-- [ ] Tính năng nâng cao đã chốt ngày 17/11/2026 — sẵn sàng thảo luận khi bắt đầu.
-- [ ] Capacitor wrapper, push notification, màn hình nhanh (khóa/mở, duyệt yêu cầu).
-- [ ] Build APK thử nghiệm, sau đó AAB lên Play Console (khi anh Tiến sẵn sàng, phí đăng ký Play Console 25 USD một lần — ngoài phạm vi free, để sau).
+### Giai đoạn 2 — App điện thoại (hướng đã chốt lại theo AMENDMENTS A-20 ngày 28/11/2026) ⏳
+Chi tiết nghiên cứu: docs/12-RESEARCH-MOBILE-APPS.md — lộ trình trong tài liệu đó được điều chỉnh theo A-20: CHỈ DÙNG FREE (mất phí thì bỏ), bỏ giai đoạn app iPhone cho con + bỏ phát hành qua cửa hàng.
+- [ ] App phụ huynh: Android có thể đóng gói Capacitor khi cần; trên iPhone dùng PWA hiện tại (KHÔNG mua Apple Developer 99 USD/năm, không lên App Store).
+- [ ] App con Android: phát hành bằng file APK cài trực tiếp (KHÔNG mua Play Console 25 USD, không qua Play Store), 2 chế độ cài cho phụ huynh chọn — cài thường (không reset máy, khóa mềm) và Device Owner (reset máy, khóa cứng).
+- [ ] Thiết bị đích trước mắt của gia đình: Xiaomi Redmi 10C + Samsung Galaxy S8 (đều Android).
 
 ## Quy trình làm việc chung (áp cho mọi app của anh Tiến)
 

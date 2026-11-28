@@ -1,5 +1,7 @@
 # Nghiên cứu Hướng 1: Chụp ảnh màn hình máy con theo định kỳ
 
+> **Trạng thái: ĐÃ DUYỆT TRIỂN KHAI 28/11/2026 — quyết định chi tiết: xem AMENDMENTS A-19 (lưu ý: mô hình triển khai theo quyết định 11:16 của anh Tiến KHÁC thiết kế cổng đồng ý trong tài liệu này).**
+
 > Tài liệu nghiên cứu trong docs/ — CHƯA phải quyết định triển khai.
 > Ngày nghiên cứu: 28/11/2026. Người yêu cầu: anh Tiến.
 > Yêu cầu gốc: chụp màn hình định kỳ (mức 1/2/5/10/15/30 phút); phụ huynh cân nhắc kỹ và đồng ý về lưu trữ dữ liệu; nén ảnh < 1MB/ảnh; lưu Google Drive, giữ tối đa 1–6 tháng, "có kèm thanh toán nếu muốn lưu dài hơn 2 tuần".

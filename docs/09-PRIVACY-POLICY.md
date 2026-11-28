@@ -1,6 +1,6 @@
 # Chính sách riêng tư — SafePC
 
-Cập nhật lần cuối: 27/11/2026. Áp dụng cho gia đình sử dụng SafePC (bản dùng
+Cập nhật lần cuối: 28/11/2026. Áp dụng cho gia đình sử dụng SafePC (bản dùng
 trong gia đình, dưới 100 người dùng).
 
 > Bản web công khai của tài liệu này: Dashboard → trang đăng nhập →
@@ -27,11 +27,34 @@ không dùng dữ liệu để huấn luyện AI.
 | Yêu cầu của con (xin thêm giờ, xin mở ứng dụng/trang web) + quyết định của phụ huynh | Duyệt yêu cầu, nhật ký hoạt động | Nội dung do con/phụ huynh tự nhập (số phút, lý do ngắn). |
 | Sự kiện can thiệp (đổi giờ hệ thống, Agent/Tray/extension dừng bất thường) | Cảnh báo phụ huynh | Chỉ loại sự kiện + thời điểm, không nội dung. Ghi chú giờ tin cậy (AMENDMENTS A-17): luật theo giờ được thi hành bằng giờ máy chủ đã đồng bộ quy đổi sang múi giờ gia đình do phụ huynh đặt — con chỉnh giờ hệ thống hay đổi múi giờ trên máy không thay đổi được thi hành, chỉ tạo sự kiện can thiệp khi lệch quá 120 giây. |
 | Email phụ huynh, tên hồ sơ con, tên máy | Đăng nhập, phân biệt các con/máy | Tên con do phụ huynh đặt (tên hiển thị, không bắt buộc tên thật). |
+| Ảnh chụp màn hình định kỳ của máy con + metadata (thời điểm chụp, kích thước, định danh file) | Để phụ huynh xem lại hoạt động trên màn hình của con | **Chỉ khi phụ huynh tự BẬT** tính năng này cho hồ sơ con (mặc định tắt; quyết định của phụ huynh ngày 28/11/2026, xem AMENDMENTS A-19 và mục riêng ngay dưới đây). Ảnh lưu trên Google Drive của chính phụ huynh — SafePC chỉ giữ metadata, không lưu ảnh trên server. |
+
+### Ảnh chụp màn hình định kỳ (chỉ khi phụ huynh bật)
+
+- Tính năng này **mặc định TẮT**; chỉ thu khi phụ huynh chủ động bật cho
+  từng hồ sơ con và đã xác nhận hiểu rằng ảnh có thể chứa nội dung nhạy
+  cảm con đang xem hoặc gõ trên màn hình.
+- Ảnh được chụp theo chu kỳ phụ huynh chọn, lưu trên **Google Drive của
+  chính phụ huynh** (kết nối qua OAuth, SafePC chỉ truy cập thư mục do
+  chính SafePC tạo). **SafePC không lưu ảnh chụp trên server của mình** —
+  server chỉ giữ metadata (thời điểm chụp, kích thước, định danh file)
+  để hiển thị danh mục cho phụ huynh.
+- **Con được thông báo 1 lần mỗi tuần ngay trên máy con** rằng màn hình
+  đang được chụp và bố mẹ có quyền xem ảnh; biểu tượng khay hệ thống luôn
+  hiển thị trạng thái chụp. Không chụp khi màn hình đang khóa.
+- Phụ huynh **tắt tính năng bất cứ lúc nào** trên Dashboard; việc chụp
+  dừng ngay từ lượt kế tiếp.
+- Ảnh tự xóa sau hạn giữ phụ huynh chọn (mặc định 14 ngày). Khi phụ
+  huynh xóa dữ liệu của con, SafePC xóa metadata và cài đặt chụp; **file
+  ảnh trên Google Drive do phụ huynh tự quản** (xóa thư mục SafePC
+  trong Drive của mình nếu muốn xóa hẳn).
 
 ## 2. SafePC KHÔNG thu thập
 
-- **Không** chụp màn hình, **không** ghi phím (keylogger), **không** đọc
-  nội dung chat, email, file của con.
+- **Không** ghi phím (keylogger), **không** đọc nội dung chat, email,
+  file của con. Chụp màn hình chỉ diễn ra trong đúng phạm vi mục "Ảnh
+  chụp màn hình định kỳ" ở trên (phụ huynh bật, con được thông báo,
+  không chụp lén, không chụp khi màn hình khóa).
 - **Không** bật micro, camera, định vị.
 - **Không** tiêu đề cửa sổ, **không** nội dung trang web, **không** mật khẩu
   (mật khẩu phụ huynh do Supabase Auth quản lý, SafePC không tự lưu).
@@ -62,6 +85,11 @@ không dùng dữ liệu để huấn luyện AI.
   tự xóa các hàng cũ hơn mỗi ngày.
 - **Ghi nhận khi luật không chặn** (bảng rule_observations): giữ **90 ngày**,
   tự xóa các hàng cũ hơn mỗi ngày.
+- **Ảnh chụp màn hình định kỳ**: file ảnh nằm trên Google Drive của phụ
+  huynh, tự xóa sau hạn giữ phụ huynh chọn (mặc định **14 ngày**; chọn
+  được 14 / 30 / 90 / 180 ngày). Metadata chụp trên server giữ cùng hạn
+  giữ đó; khi phụ huynh xóa dữ liệu của con thì metadata và cài đặt
+  chụp bị xóa, còn file ảnh trên Drive do phụ huynh tự quản.
 - **Tin nhắn trong SafePC**: giữ tới khi phụ huynh xóa dữ liệu của con
   (không tự hết hạn theo ngày như lịch sử web).
 - **Đăng ký thông báo đẩy của phụ huynh**: giữ tới khi phụ huynh tắt

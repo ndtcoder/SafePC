@@ -259,6 +259,34 @@ Kiểu Microsoft Family Safety: chặn ngay tại lúc con tìm kiếm, và th�
 
 **Trạng thái:** ĐÃ XÂY ở cây local ngày 27/11/2026 (migration 31 + publisher `monitorRules` + đối chiếu/gộp/đẩy trong Service + công tắc trong form luật + mục mới trong Báo cáo tuần + mục xuất dữ liệu con; harness PGlite m31 đạt 40/40). Ngữ cảnh `unenforceable` chỉ cài cho một trường hợp quy nguyên nhân chắc chắn: lượt web thuộc diện luật chặn domain đang bật trong lúc extension mất dấu theo heartbeat của chính nó. CHƯA áp migration 31, CHƯA kiểm chứng trên máy thật.
 
+### 2.16. Chụp màn hình định kỳ (anh Tiến quyết TRIỂN KHAI ngày 28/11/2026 — xem AMENDMENTS A-19)
+
+**Quan hệ với quyết định cũ.** Ngày 17/11/2026 chụp màn hình đã bị LOẠI KHỎI KẾ HOẠCH vì ranh giới riêng tư (xem §4/§5 cũ và docs/11 mục 0). Ngày 28/11/2026 anh Tiến quyết định TRIỂN KHAI tính năng này — quyết định cũ bị đảo ngược bởi AMENDMENTS A-19. Thiết kế chi tiết nền tảng nằm ở docs/11-RESEARCH-SCREENSHOTS.md, NHƯNG mô hình quyết định/thông báo triển khai theo quyết định đã sửa lúc 11:16 ngày 28/11/2026 của anh Tiến (ghi dưới đây), KHÁC thiết kế cổng đồng ý 2 lớp + đồng ý của con trong docs/11.
+
+**Mô tả tính năng.** Khi phụ huynh bật cho một hồ sơ con, Tray trên máy con (chạy trong phiên của con — Service ở session 0 không nhìn thấy desktop) chụp màn hình chính theo chu kỳ, thu nhỏ + nén, ghi ảnh vào thư mục hàng đợi dùng chung `screen_queue` trên máy (mỗi ảnh kèm một file .json nhỏ mang SID phiên + thời điểm + kích thước); Service đọc từ hàng đợi đó và đẩy ảnh lên Google Drive của chính phụ huynh. (IPC giữa Service và Tray chỉ mang TRẠNG THÁI bật/tắt + nhịp chụp từ Service xuống Tray, không mang ảnh.) Dashboard cho phụ huynh xem DANH MỤC ảnh theo ngày/giờ (giờ chụp, kích thước) kèm nút "Mở trong Drive" để xem ảnh trên chính Drive của phụ huynh; thumbnail và xem ảnh lớn trực tiếp trong Dashboard CHƯA làm — để đợt sau. Mặc định TẮT cho mọi hồ sơ con.
+
+- **Các mức chụp:** 1 / 2 / 5 / 10 / 15 / 30 phút — có cả mức 1 phút theo quyết định của anh (mức 1 phút là mức dày nhất, UI phải cảnh báo rõ về dung lượng và mức độ xâm phạm; không đặt làm mặc định, mặc định khi bật là 5 phút).
+- **Nén:** thu nhỏ về tối đa 1280px chiều rộng, JPEG chất lượng 72 — thực tế ~80–250 KB/ảnh, luôn dưới trần 1 MB/ảnh. Khử trùng lặp bằng perceptual hash: màn hình gần như không đổi thì bỏ qua lượt upload.
+- **Lưu trữ:** Google Drive RIÊNG của phụ huynh, kết nối qua OAuth với scope tối thiểu `drive.file` (SafePC chỉ thấy file/thư mục do chính nó tạo). Ảnh đi thẳng máy con → Drive của phụ huynh, KHÔNG qua server SafePC; Supabase chỉ giữ metadata (thời điểm chụp, kích thước, định danh file Drive) để Dashboard lập danh mục.
+- **Hạn giữ:** mặc định 14 ngày; phụ huynh chọn 14 / 30 / 90 / 180 ngày. Quá hạn thì xóa vĩnh viễn (cả file Drive lẫn metadata), Agent tự dọn khi máy con online.
+- **Ước tính dung lượng** (ngày dùng máy 10 giờ, chưa tính khử trùng lặp, số liệu từ docs/11): mức 5 phút ≈ 120 ảnh/ngày, ~36 MB/ngày ở 300 KB/ảnh, ~1,1 GB/tháng — gói Drive miễn phí 15 GB giữ được hơn 1 năm; mức 1 phút ≈ 600 ảnh/ngày, ~180 MB/ngày, ~5,4 GB/tháng — 15 GB chỉ giữ được ~83 ngày. SafePC KHÔNG thu tiền cho tính năng này: phụ huynh muốn giữ lâu/dung lượng lớn thì TỰ nâng cấp Google One cho tài khoản Google của chính mình (tham khảo 100 GB: 45.000đ/tháng — giá kiểm chứng 28/11/2026, xem docs/11 mục 4); Dashboard tính trước dung lượng ước tính theo mức chụp × hạn giữ và cảnh báo khi Drive sắp đầy.
+
+**Mô hình quyết định và thông báo (bản 11:16 ngày 28/11/2026 — quyết định của anh Tiến, thay mô hình cổng đồng ý trong docs/11):**
+
+- **KHÔNG có cổng đồng ý của con.** Phụ huynh quyết định cứng bật/tắt chụp theo từng hồ sơ con; con không có nút đồng ý/từ chối và không chặn được việc bật.
+- **Con được THÔNG BÁO 1 lần/tuần** trên máy con rằng màn hình đang được chụp và bố mẹ có quyền xem ảnh. Thông báo **KHÔNG nêu tần suất chụp**.
+- **Tray luôn hiện trạng thái chụp** khi tính năng đang bật — không chụp lén, không chạy ẩn.
+- **Không chụp khi màn hình đang khóa** (về kỹ thuật cũng không chụp được — xem giới hạn dưới đây); lượt bị bỏ qua vì khóa máy KHÔNG ghi metadata lên server (chỉ ghi log cục bộ trên máy con), nên danh mục ảnh trên Dashboard có thể có khoảng trống ở những lúc máy đang khóa — đó là dấu hiệu bình thường, không phải lỗi mất ảnh.
+
+**Giới hạn trung thực:**
+
+- Không chụp được màn hình khóa, màn hình đăng nhập, secure desktop (hộp thoại UAC, Ctrl+Alt+Del) — các lượt này bị bỏ qua, không có ảnh đen giả.
+- Nội dung được bảo vệ bản quyền (DRM, VD video Netflix) có thể hiện thành vùng đen trong ảnh — không có cách hợp lệ để vượt qua.
+- **Ảnh có thể chứa nội dung nhạy cảm của con** (tin nhắn đang gõ dở, thông tin cá nhân, cả dữ liệu của người đang trò chuyện với con). Vì vậy trước khi bật, phụ huynh phải qua màn hình xác nhận đã hiểu rõ điều này trên Dashboard; đây là loại dữ liệu nhạy cảm nhất SafePC từng xử lý (xem A-19).
+- Việc chụp gắn với con đang active ở console (Sprint 5); phiên nền không chụp.
+
+**Trạng thái:** Đang xây ở cây local ngày 28/11/2026 (migration 32 + Agent + Dashboard), CHƯA kiểm chứng trên máy thật. Việc tay của anh còn chờ: áp migration 32 (theo thứ tự sau các migration đang chờ), tạo Google OAuth client và đặt secret để luồng kết nối Drive hoạt động.
+
 ## 3. Giai đoạn 2: App Android cho phụ huynh
 
 Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng thảo luận Android khi bắt đầu, để khỏi làm lại.
@@ -269,7 +297,7 @@ Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng t
 
 ## 4. Giai đoạn 3: Nâng cao (chỉ làm khi giai đoạn 1-2 ổn định)
 
-- [ ] ~~Chụp màn hình theo lịch (opt-in, phụ huynh bật rõ ràng, ảnh mã hóa, tự xóa sau 7 ngày)~~ — **ĐÃ LOẠI KHỎI KẾ HOẠCH ngày 17/11/2026** theo quyết định giữ ranh giới riêng tư (không chụp màn hình, không ghi phím, không đọc nội dung).
+- [ ] Chụp màn hình theo lịch — từng **ĐÃ LOẠI KHỎI KẾ HOẠCH ngày 17/11/2026**, nhưng ngày 28/11/2026 anh Tiến đã quyết định TRIỂN KHAI LẠI (đảo ngược bởi AMENDMENTS A-19, thiết kế ở §2.16): opt-in do phụ huynh quyết định cứng theo từng con, ảnh lưu Drive riêng của phụ huynh, giữ mặc định 14 ngày. Đang xây ở cây local, chưa kiểm chứng máy thật.
 - [x] Giới hạn theo website (thời gian cho từng domain). — Đã triển khai (chế độ giới hạn thời gian theo domain của extension, Sprint 2 đợt 2); chờ kiểm chứng đầu-cuối cùng extension.
 - [ ] Nhiều con/nhiều máy — đã có hướng đi ở §2.11 / Sprint 5 (phương án 2: một phiên active; phê duyệt 20/11/2026, chưa bắt đầu code). Quy tắc theo nhóm tuổi: chưa làm.
 - [ ] Cảnh báo nội dung nguy hiểm theo từ khóa trên tiêu đề cửa sổ — **CẦN ĐÁNH GIÁ LẠI**: đọc tiêu đề cửa sổ mâu thuẫn với nguyên tắc thu thập tối thiểu hiện tại (Agent cố tình không đọc tiêu đề cửa sổ, không gọi `GetWindowText`); chỉ làm khi có quyết định riêng, sau khi đánh giá quyền riêng tư kỹ.
@@ -278,7 +306,7 @@ Tính năng nâng cao đã chốt ngày 17/11/2026 (xem §2.8) — sẵn sàng t
 ## 5. Không làm (Non-goals)
 
 - Không ghi phím (keylogger), không đọc tin nhắn/email/file, không nghe mic/bật camera.
-- Không chụp màn hình (đã loại khỏi kế hoạch ngày 17/11/2026, xem §4).
+- Không chụp màn hình NGOÀI tính năng chụp định kỳ ở §2.16 (tính năng này từng bị loại ngày 17/11/2026, đã được anh Tiến quyết triển khai lại ngày 28/11/2026 — AMENDMENTS A-19); không chụp lén, không chụp khi màn hình khóa.
 - Không quản lý điện thoại Android/iOS của con trong MVP (chỉ PC).
 - Không thanh toán trong MVP.
 - Không hỗ trợ macOS/Linux trong MVP.
