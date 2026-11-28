@@ -114,11 +114,13 @@ import {
   describeRuleConfig,
   formatDurationVi,
   formatTimeVi,
+  isMissingTableError,
   overrideActionLabel,
   parseEnforcementSnapshot,
   ruleTypeLabel,
   toVietnameseError,
 } from '../lib/format'
+import { dateKeyLocal, weekRange } from '../lib/weekReport'
 import {
   EDGE_ONLY_TEMPLATE_NAME,
   KNOWN_BROWSERS,
@@ -494,6 +496,15 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
   // chứng minh được rule của máy khác vẫn đang thi hành.
   const [staleEnforcingRuleIds, setStaleEnforcingRuleIds] = useState<ReadonlySet<string>>(new Set())
 
+  // Tóm tắt theo dõi khi luật không chặn (bảng rule_observations,
+  // migration 31) của TUẦN HIỆN TẠI theo từng rule_id — truy vấn gộp
+  // best-effort trong load() cho MỘT dòng gọn trên RuleCard. Map rỗng
+  // (chưa có dữ liệu / bảng chưa tồn tại / lỗi) thì thẻ không hiện gì
+  // thêm.
+  const [observationSummaryByRuleId, setObservationSummaryByRuleId] = useState<
+    ReadonlyMap<string, { count: number; totalSeconds: number }>
+  >(new Map())
+
   // Thẻ quy tắc đang mở rộng trong danh sách nhóm; mặc định tất cả đóng.
   const [expandedRuleIds, setExpandedRuleIds] = useState<ReadonlySet<string>>(new Set())
 
@@ -703,6 +714,59 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
       } catch {
         setEnforcingRuleIds(new Set())
         setStaleEnforcingRuleIds(new Set())
+      }
+      // Truy vấn GỘP, best-effort: tóm tắt theo dõi khi luật không
+      // chặn (bảng rule_observations, migration 31) của TUẦN HIỆN TẠI
+      // cho mọi rule đang bật mặt theo dõi — MỘT truy vấn cho cả trang
+      // (rule_id thuộc danh sách), cộng dồn phía client theo rule_id,
+      // hiện một dòng gọn trên RuleCard. Bảng chưa tồn tại (migration
+      // 31 chưa áp) hoặc lỗi bất kỳ thì ẩn lặng lẽ: thẻ luật không nhắc
+      // lại việc thiếu migration (trang Báo cáo tuần đã có thông báo
+      // riêng) và trang vẫn chạy bình thường.
+      try {
+        const observedRuleIds = loadedRules
+          .filter((rule) => ruleObserveEnabled(rule.config))
+          .map((rule) => rule.id)
+        if (observedRuleIds.length === 0) {
+          setObservationSummaryByRuleId(new Map())
+        } else {
+          const range = weekRange(0)
+          const startDay = dateKeyLocal(range.start)
+          const endDay = dateKeyLocal(new Date(range.end.getTime() - 1))
+          const summary = new Map<string, { count: number; totalSeconds: number }>()
+          const PAGE_SIZE = 1000
+          const MAX_PAGES = 10
+          for (let page = 0; page < MAX_PAGES; page++) {
+            const { data, error } = await supabase
+              .from('rule_observations')
+              .select('rule_id, occurrence_count, total_seconds')
+              .in('rule_id', observedRuleIds)
+              .gte('day', startDay)
+              .lte('day', endDay)
+              .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+            if (error) throw error
+            const pageRows = (data ?? []) as Array<{
+              rule_id: string | null
+              occurrence_count: number
+              total_seconds: number
+            }>
+            for (const row of pageRows) {
+              if (!row.rule_id) continue
+              const entry = summary.get(row.rule_id) ?? { count: 0, totalSeconds: 0 }
+              entry.count += row.occurrence_count
+              entry.totalSeconds += row.total_seconds
+              summary.set(row.rule_id, entry)
+            }
+            if (pageRows.length < PAGE_SIZE) break
+          }
+          setObservationSummaryByRuleId(summary)
+        }
+      } catch (err) {
+        // Bảng chưa tồn tại (migration 31 chưa áp — PGRST205/404) là
+        // trường hợp chờ đợi được; lỗi khác (mạng, quyền...) cũng ẩn
+        // lặng lẽ như nhau vì tóm tắt trên thẻ chỉ là best-effort.
+        void isMissingTableError(err, 'rule_observations')
+        setObservationSummaryByRuleId(new Map())
       }
       setState('ready')
     } catch (err) {
@@ -1911,6 +1975,11 @@ export default function RulesPage({ childIdFilter }: { childIdFilter?: string } 
                             category={category.key}
                             enforcing={enforcingRuleIds.has(rule.id)}
                             enforcingStale={staleEnforcingRuleIds.has(rule.id)}
+                            observationSummary={
+                              ruleObserveEnabled(rule.config)
+                                ? observationSummaryByRuleId.get(rule.id)
+                                : undefined
+                            }
                             expanded={expandedRuleIds.has(rule.id)}
                             toggling={togglingId === rule.id}
                             confirmingDelete={confirmDeleteId === rule.id}
