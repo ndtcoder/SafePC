@@ -376,6 +376,57 @@ export interface NotificationRead {
   read_at: string
 }
 
+/**
+ * Cài đặt chụp màn hình định kỳ của một con (bảng
+ * child_screen_settings, migration 32 — PRD §2.16). Một hàng cho
+ * mỗi con (child_id là khóa chính). Phụ huynh quyết định cứng
+ * bật/tắt; KHÔNG có khái niệm đồng ý của con trong dữ liệu này —
+ * con chỉ được Tray thông báo hàng tuần trên máy con rằng màn hình
+ * đang được chụp. RLS: thành viên đọc, chỉ role 'parent' ghi.
+ */
+export interface ChildScreenSettings {
+  child_id: string
+  family_id: string
+  enabled: boolean
+  interval_minutes: number
+  retention_days: number
+  updated_by: string | null
+  updated_at: string
+}
+
+/**
+ * Một dòng danh mục ảnh chụp màn hình (bảng screenshot_metadata,
+ * migration 32). Ảnh thật nằm trên Google Drive của phụ huynh;
+ * dòng này chỉ giữ thời điểm chụp, ngày (theo giờ gia đình), id
+ * file Drive và kích thước để Dashboard liệt kê + mở link Drive.
+ */
+export interface ScreenshotMetadata {
+  id: string
+  family_id: string
+  child_id: string
+  device_id: string | null
+  captured_at: string
+  /** Ngày theo giờ gia đình, dạng 'YYYY-MM-DD'. */
+  day: string
+  drive_file_id: string
+  size_bytes: number
+  width: number | null
+  height: number | null
+  created_at: string
+}
+
+/**
+ * Trạng thái kết nối Google Drive của gia đình, trả về bởi RPC
+ * safepc_get_drive_connection (migration 32). RPC chỉ trả trạng
+ * thái — KHÔNG BAO GIỜ kèm token.
+ */
+export interface DriveConnectionStatus {
+  connected: boolean
+  revoked?: boolean
+  google_email?: string | null
+  connected_at?: string | null
+}
+
 // Dòng pairing_codes theo migration 1: mã ghép nối 6 số, chỉ lưu hash.
 // Dashboard KHÔNG bao giờ SELECT cột code_hash (xem ChildDataTab): mã
 // thô chỉ tồn tại lúc tạo, hash không có giá trị xuất dữ liệu.

@@ -3,6 +3,7 @@ import type {
   AppUsage,
   AuditLog,
   Child,
+  ChildScreenSettings,
   Command,
   Device,
   Message,
@@ -10,6 +11,7 @@ import type {
   PairingCode,
   Rule,
   RuleObservation,
+  ScreenshotMetadata,
   TimeBankGrant,
   WebVisit,
 } from './types'
@@ -39,6 +41,8 @@ export type ChildDataSectionKey =
   | 'time_bank_grants'
   | 'notification_sends'
   | 'pairing_codes'
+  | 'screen_settings'
+  | 'screenshots'
 
 export const CHILD_DATA_SECTIONS: Array<{
   key: ChildDataSectionKey
@@ -57,6 +61,8 @@ export const CHILD_DATA_SECTIONS: Array<{
   { key: 'time_bank_grants', label: 'Thưởng giờ', description: 'Lịch sử thưởng / thu hồi giờ của ngân hàng giờ.' },
   { key: 'notification_sends', label: 'Thông báo đã gửi', description: 'Email thông báo đã gửi gắn với con.' },
   { key: 'pairing_codes', label: 'Mã ghép nối', description: 'Mã ghép nối đã tạo cho con (chỉ còn thông tin, không còn mã).' },
+  { key: 'screen_settings', label: 'Cài đặt chụp màn hình', description: 'Cài đặt chụp màn hình định kỳ của con: đang bật/tắt, mức chụp, hạn giữ ảnh (migration 32).' },
+  { key: 'screenshots', label: 'Ảnh chụp màn hình (danh mục)', description: 'Danh mục ảnh chụp màn hình: thời điểm chụp, id file và kích thước. Ảnh thật nằm trên Google Drive của phụ huynh — file xuất chỉ có danh mục kèm id file Drive, không có nội dung ảnh.' },
 ]
 
 export function sectionLabel(key: ChildDataSectionKey): string {
@@ -109,6 +115,8 @@ export interface ChildDataExportInput {
   timeBankGrants: TimeBankGrant[]
   notificationSends: NotificationSend[]
   pairingCodes: PairingCode[]
+  screenSettings: ChildScreenSettings[]
+  screenshots: ScreenshotMetadata[]
   truncatedSections: ChildDataSectionKey[]
   unavailableSections: Array<{ section: ChildDataSectionKey; reason: string }>
 }
@@ -119,6 +127,8 @@ const EXCLUDED_NOTES = [
   'pairing_codes.code_hash: hash mã ghép nối — mã thô không bao giờ lưu, hash không có giá trị xuất.',
   'chat_sessions: phiên nhắn tin của con — chứa hash token phiên, là thông tin xác thực, không xuất (như device_tokens).',
   'Dữ liệu cấp gia đình (mẫu quy tắc, lời mời, lịch sử gửi email báo cáo tuần) không thuộc về riêng con nên không có trong file này.',
+  'Ảnh chụp màn hình: file xuất chỉ gồm cài đặt + danh mục (thời điểm, id file Drive, kích thước). File ảnh thật nằm trên Google Drive của phụ huynh — phụ huynh tự tải/xóa trực tiếp trong Drive; SafePC không tải hộ ảnh qua máy chủ.',
+  'Token Google Drive là dữ liệu cấp gia đình (không thuộc riêng con này) và là thông tin xác thực — không có trong file này.',
 ]
 
 /**
@@ -184,6 +194,8 @@ export function buildChildDataExport(input: ChildDataExportInput): ChildDataExpo
       time_bank_grants: section('time_bank_grants', input.timeBankGrants.map(toRow)),
       notification_sends: section('notification_sends', input.notificationSends.map(toRow)),
       pairing_codes: section('pairing_codes', input.pairingCodes.map(sanitizePairingCodeForExport)),
+      screen_settings: section('screen_settings', input.screenSettings.map(toRow)),
+      screenshots: section('screenshots', input.screenshots.map(toRow)),
     },
     excluded: [...EXCLUDED_NOTES],
   }
@@ -267,6 +279,14 @@ export interface ChildDataDeleteCounts {
    * này.
    */
   rule_observations?: number
+  /**
+   * Số hàng cài đặt chụp màn hình + danh mục ảnh đã xóa (migration
+   * 32). TÙY CHỌN như các khóa trên. LƯU Ý: đây chỉ là cài đặt và
+   * DANH MỤC trên máy chủ — file ảnh thật nằm trên Google Drive của
+   * phụ huynh, không thuộc phạm vi xóa của RPC.
+   */
+  screen_settings?: number
+  screenshots?: number
 }
 
 export interface ChildDataDeleteResult {
@@ -290,11 +310,9 @@ const DELETE_COUNT_KEYS: Array<keyof ChildDataDeleteCounts> = [
   'pairing_codes',
 ]
 
-const OPTIONAL_DELETE_COUNT_KEYS: Array<'messages' | 'chat_sessions' | 'rule_observations'> = [
-  'messages',
-  'chat_sessions',
-  'rule_observations',
-]
+const OPTIONAL_DELETE_COUNT_KEYS: Array<
+  'messages' | 'chat_sessions' | 'rule_observations' | 'screen_settings' | 'screenshots'
+> = ['messages', 'chat_sessions', 'rule_observations', 'screen_settings', 'screenshots']
 
 /** Kiểm tra kết quả RPC có đúng hình dạng không trước khi hiển thị số liệu. */
 export function isChildDataDeleteResult(value: unknown): value is ChildDataDeleteResult {
